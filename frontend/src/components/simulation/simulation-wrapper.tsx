@@ -1,101 +1,140 @@
+
 'use client';
 
-import { useRef, useState, useEffect } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { UploadCloud, Trash2 } from 'lucide-react';
+
 import { Button } from '@/components/ui/button';
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogHeader,
+    DialogTitle,
+    DialogTrigger,
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { UploadCloud, Trash2 } from 'lucide-react';
 
-type LineData = {
-  tool: string;
-  points: number[];
-};
+import { CanvasLayer, type CanvasStroke } from './canvas-layer';
+import {
+    SimulationLayer,
+    type SimulationObjectPosition,
+} from './simulation-layer';
 
-export default function SimulationWrapper() {
-  const [lines, setLines] = useState<LineData[]>([]);
-  const isDrawing = useRef(false);
-  const wrapperRef = useRef<HTMLDivElement>(null);
-  const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
+type InteractionMode = 'simulation' | 'draw';
 
-  useEffect(() => {
-    const resizeObserver = new ResizeObserver(entries => {
-      if (entries[0]) {
-        const { width, height } = entries[0].contentRect;
-        setDimensions({ width, height });
-      }
-    });
+const INITIAL_MODE: InteractionMode = 'simulation';
 
-    if (wrapperRef.current) {
-      resizeObserver.observe(wrapperRef.current);
-    }
+export default function SimulationCanvasStack() {
+    const wrapperRef = useRef<HTMLDivElement>(null);
 
-    return () => {
-      if (wrapperRef.current) {
-        resizeObserver.unobserve(wrapperRef.current);
-      }
+    const [mode, setMode] = useState<InteractionMode>(INITIAL_MODE);
+    const [strokes, setStrokes] = useState<CanvasStroke[]>([]);
+    const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
+    const [objectPosition, setObjectPosition] = useState<SimulationObjectPosition>({ x: 0, y: 0 });
+
+    const hasCanvasContent = strokes.length > 0;
+
+    useEffect(() => {
+        const resizeObserver = new ResizeObserver((entries) => {
+            if (!entries[0]) return;
+            const { width, height } = entries[0].contentRect;
+            setDimensions({ width, height });
+        });
+
+        const wrapper = wrapperRef.current;
+        if (wrapper) {
+            resizeObserver.observe(wrapper);
+        }
+
+        return () => {
+            if (wrapper) {
+                resizeObserver.unobserve(wrapper);
+            }
+        };
+    }, []);
+    const handleObjectPositionChange = useCallback((position: SimulationObjectPosition) => {
+        setObjectPosition(position);
+    }, []);
+
+    const handleClear = () => {
+        setStrokes([]);
     };
-  }, []);
 
-  const handleMouseUp = () => {
-    isDrawing.current = false;
-  };
-
-  const handleClear = () => {
-    setLines([]);
-  };
-
-  return (
-    <div ref={wrapperRef} className="relative h-full w-full p-4 md:p-6">
-      <div className="absolute inset-0 bg-muted/30 rounded-lg border-2 border-dashed border-muted-foreground/30 flex items-center justify-center -z-10">
-        <p className="text-muted-foreground text-sm">Simulation Area</p>
-      </div>
-
-      {/* Placeholder for Simulation Canvas (e.g., PixiJS) */}
-      <div
-        id="simulation-canvas"
-        className="absolute top-4 left-4 right-4 bottom-4 bg-primary/5 rounded-md flex items-center justify-center text-primary/50"
-      >
-        <p className="font-mono text-sm">[Simulation Canvas (PixiJS)]</p>
-      </div>
-      <div className="absolute top-6 right-6 flex gap-2">
-        <Button variant="outline" size="icon" onClick={handleClear} aria-label="Clear drawing">
-          <Trash2 className="h-4 w-4" />
-        </Button>
-        <Dialog>
-          <DialogTrigger asChild>
-            <Button>
-              <UploadCloud className="mr-2 h-4 w-4" />
-              Upload Diagram
-            </Button>
-          </DialogTrigger>
-          <DialogContent className="sm:max-w-md">
-            <DialogHeader>
-              <DialogTitle>Upload Physics Diagram</DialogTitle>
-              <DialogDescription>
-                Upload an image or PDF of a physics diagram to convert it into a
-                simulation.
-              </DialogDescription>
-            </DialogHeader>
-            <div className="grid flex-1 gap-2">
-              <Label htmlFor="diagram-file" className="sr-only">
-                Diagram File
-              </Label>
-              <Input id="diagram-file" type="file" />
+    return (
+        <div ref={wrapperRef} className="relative h-full w-full p-4 md:p-6">
+            <div className="absolute top-4 right-4 z-20 flex flex-wrap items-center justify-end gap-2">
+                <div className="flex gap-1 rounded-md bg-background/80 p-1 shadow-sm">
+                    <Button
+                        type="button"
+                        size="sm"
+                        variant={mode === 'simulation' ? 'default' : 'outline'}
+                        onClick={() => setMode('simulation')}
+                        aria-pressed={mode === 'simulation'}
+                    >
+                        Simulation Mode
+                    </Button>
+                    <Button
+                        type="button"
+                        size="sm"
+                        variant={mode === 'draw' ? 'default' : 'outline'}
+                        onClick={() => setMode('draw')}
+                        aria-pressed={mode === 'draw'}
+                    >
+                        Draw Mode
+                    </Button>
+                </div>
+                <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    onClick={handleClear}
+                    disabled={!hasCanvasContent}
+                    aria-label="Clear drawing"
+                >
+                    <Trash2 className="h-4 w-4" />
+                </Button>
+                <Dialog>
+                    <DialogTrigger asChild>
+                        <Button type="button">
+                            <UploadCloud className="mr-2 h-4 w-4" />
+                            Upload Diagram
+                        </Button>
+                    </DialogTrigger>
+                    <DialogContent className="sm:max-w-md">
+                        <DialogHeader>
+                            <DialogTitle>Upload Physics Diagram</DialogTitle>
+                            <DialogDescription>
+                                Upload an image or PDF of a physics diagram to convert it into a simulation.
+                            </DialogDescription>
+                        </DialogHeader>
+                        <div className="grid flex-1 gap-2">
+                            <Label htmlFor="diagram-file" className="sr-only">
+                                Diagram File
+                            </Label>
+                            <Input id="diagram-file" type="file" />
+                        </div>
+                        <Button type="submit" className="w-full">
+                            Upload and Convert
+                        </Button>
+                    </DialogContent>
+                </Dialog>
             </div>
-            <Button type="submit" className="w-full">
-              Upload and Convert
-            </Button>
-          </DialogContent>
-        </Dialog>
-      </div>
-    </div>
-  );
+
+            <SimulationLayer
+                enabled={mode === 'simulation'}
+                objectPosition={objectPosition}
+                onObjectPositionChange={handleObjectPositionChange}
+                dimensions={dimensions}
+            />
+
+            <CanvasLayer
+                enabled={mode === 'draw'}
+                strokes={strokes}
+                onStrokesChange={setStrokes}
+                dimensions={dimensions}
+            />
+        </div>
+    );
 }
