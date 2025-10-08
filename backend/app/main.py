@@ -3,8 +3,11 @@
 from fastapi import FastAPI
 
 from .models.settings import settings
+from .routers import diagram as diagram_router
 
 app = FastAPI(title="Project Einstein API", version="0.1.0")
+
+app.include_router(diagram_router.router)
 
 
 @app.get("/health", tags=["health"])

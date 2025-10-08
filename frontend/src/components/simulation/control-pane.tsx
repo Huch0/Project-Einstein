@@ -1,6 +1,6 @@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import ParametersPanel from './parameters-panel';
-import CodePanel from './code-panel';
+import AnalysisPanel from './analysis-panel';
 
 export default function ControlPane() {
   return (
@@ -8,13 +8,13 @@ export default function ControlPane() {
       <Tabs defaultValue="parameters" className="h-full flex flex-col">
         <TabsList className="grid w-full grid-cols-2">
           <TabsTrigger value="parameters">Parameters</TabsTrigger>
-          <TabsTrigger value="code">Code</TabsTrigger>
+          <TabsTrigger value="analysis">Analysis</TabsTrigger>
         </TabsList>
         <TabsContent value="parameters" className="flex-1 mt-4">
           <ParametersPanel />
         </TabsContent>
-        <TabsContent value="code" className="flex-1 mt-4">
-          <CodePanel />
+        <TabsContent value="analysis" className="flex-1 mt-4">
+          <AnalysisPanel />
         </TabsContent>
       </Tabs>
     </div>

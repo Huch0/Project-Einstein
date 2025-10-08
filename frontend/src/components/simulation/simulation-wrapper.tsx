@@ -2,6 +2,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useSimulation } from '@/simulation/SimulationContext';
 import { UploadCloud, Trash2 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -28,6 +29,7 @@ const INITIAL_MODE: InteractionMode = 'simulation';
 
 export default function SimulationCanvasStack() {
     const wrapperRef = useRef<HTMLDivElement>(null);
+    const { setBackgroundImage } = useSimulation();
 
     const [mode, setMode] = useState<InteractionMode>(INITIAL_MODE);
     const [strokes, setStrokes] = useState<CanvasStroke[]>([]);
@@ -113,10 +115,19 @@ export default function SimulationCanvasStack() {
                             <Label htmlFor="diagram-file" className="sr-only">
                                 Diagram File
                             </Label>
-                            <Input id="diagram-file" type="file" />
+                                                        <Input id="diagram-file" type="file" accept="image/*" onChange={(e) => {
+                                                            const file = e.target.files?.[0];
+                                                            if (!file) return;
+                                                            const reader = new FileReader();
+                                                            reader.onload = ev => {
+                                                                const dataUrl = ev.target?.result as string;
+                                                                setBackgroundImage(dataUrl);
+                                                            };
+                                                            reader.readAsDataURL(file);
+                                                        }} />
                         </div>
-                        <Button type="submit" className="w-full">
-                            Upload and Convert
+                        <Button type="submit" className="w-full" onClick={(e)=> e.preventDefault()}>
+                            Set As Background
                         </Button>
                     </DialogContent>
                 </Dialog>

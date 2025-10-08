@@ -9,11 +9,11 @@ export default function DashboardPage() {
                 <ChatPanel />
             </div>
             <div className="grid grid-rows-2 h-full">
-                <div className="border-b">
+                <div className="border-b overflow-hidden">
                     <SimulationWrapper />
                 </div>
-                <div>
-                    <ControlPane />
+                <div className="p-2 overflow-hidden h-full">
+                  <ControlPane />
                 </div>
             </div>
         </div>
