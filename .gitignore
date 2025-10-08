@@ -205,3 +205,17 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Node / frontend
+node_modules
+pnpm-lock.yaml
+frontend/.next/
+
+# Build artifacts
+dist/
+build/
+
+# OS/IDE
+.DS_Store
+.vscode/
+.idea/
