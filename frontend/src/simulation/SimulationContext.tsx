@@ -3,6 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, ReactNode } from 'react';
 import { simulatePulleyAnalytic } from '@/simulation/pulleyAnalytic';
 import type { SimulationFrame } from '@/simulation/types';
+import { parseDiagram, type DiagramParseDetection } from '@/lib/api';
 
 export interface SimulationConfig {
   massA: number;
@@ -26,6 +27,10 @@ interface SimulationState extends SimulationConfig {
   updateConfig: (partial: Partial<SimulationConfig>) => void;
   backgroundImage: string | null;
   setBackgroundImage: (dataUrl: string | null) => void;
+  detections: DiagramParseDetection[];
+  imageSizePx: { width: number; height: number } | null;
+  scale_m_per_px: number | null;
+  parseAndBind: (file: File) => Promise<void>;
 }
 
 const SimulationContext = createContext<SimulationState | null>(null);
@@ -48,6 +53,9 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
   const [staticCondition, setStaticCondition] = useState<boolean | undefined>();
   const lastTimestamp = useRef<number | null>(null);
   const [backgroundImage, setBackgroundImage] = useState<string | null>(null);
+  const [detections, setDetections] = useState<DiagramParseDetection[]>([]);
+  const [imageSizePx, setImageSizePx] = useState<{ width: number; height: number } | null>(null);
+  const [scale_m_per_px, setScale] = useState<number | null>(null);
 
   const runAnalytic = useCallback(() => {
     const result = simulatePulleyAnalytic({
@@ -70,6 +78,23 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
   const updateConfig = useCallback((partial: Partial<SimulationConfig>) => {
     setConfig(prev => ({ ...prev, ...partial }));
   }, []);
+
+  const parseAndBind = useCallback(async (file: File) => {
+    const res = await parseDiagram(file);
+    setDetections(res.detections);
+    setImageSizePx({ width: res.image.width_px, height: res.image.height_px });
+    setScale(res.mapping.scale_m_per_px);
+    // Bind parameters to current config
+    setConfig(prev => ({
+      ...prev,
+      massA: res.parameters.massA_kg,
+      massB: res.parameters.massB_kg,
+      gravity: res.parameters.gravity_m_s2,
+      friction: res.parameters.mu_k,
+    }));
+    // Optional: rerun analytic with new params
+    runAnalytic();
+  }, [runAnalytic]);
 
   // Playback loop
   useEffect(() => {
@@ -106,6 +131,10 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     updateConfig,
     backgroundImage,
     setBackgroundImage,
+    detections,
+    imageSizePx,
+    scale_m_per_px,
+    parseAndBind,
   };
   return <SimulationContext.Provider value={value}>{children}</SimulationContext.Provider>;
 }
