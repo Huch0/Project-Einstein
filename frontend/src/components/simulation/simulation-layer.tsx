@@ -18,7 +18,7 @@ export function SimulationLayer({
 }: SimulationLayerProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const isDragging = useRef(false);
-    const { frames, currentIndex, backgroundImage, detections, imageSizePx } = useSimulation();
+    const { frames, currentIndex, backgroundImage, detections, imageSizePx, scale_m_per_px, scene } = useSimulation();
     const currentFrame = frames[currentIndex];
 
     const clamp = (value: number, min: number, max: number) =>
@@ -64,9 +64,23 @@ export function SimulationLayer({
         event.currentTarget.releasePointerCapture(event.pointerId);
     };
 
-        // Basic 2D mapping: physical coordinates (meters) -> pixels.
-        const scale = 120; // px per meter (temporary constant)
-        const originY = (dimensions.height - 32) / 2; // vertical center offset
+    // Compute object-contain layout box for background image
+    const rect = containerRef.current?.getBoundingClientRect();
+    const containerW = rect?.width || dimensions.width;
+    const containerH = rect?.height || dimensions.height;
+    const imgW = imageSizePx?.width || containerW;
+    const imgH = imageSizePx?.height || containerH;
+    const s = Math.min(containerW / imgW, containerH / imgH);
+    const renderW = imgW * s;
+    const renderH = imgH * s;
+    const offsetX = (containerW - renderW) / 2;
+    const offsetY = (containerH - renderH) / 2;
+    // Mapping: meters -> container pixels (image px/m * object-contain scale)
+    const containerPxPerMeter = (scale_m_per_px ? (1 / scale_m_per_px) : 100) * s;
+    // World origin policy: anchor_centered (backend mapping.origin_mode)
+    // For now, treat (0,0) near visual center horizontally and some vertical offset from scene
+    const originPxX = offsetX + renderW / 2;
+    const originPxY = offsetY + renderH / 2;
 
         return (
                     <div
@@ -84,25 +98,102 @@ export function SimulationLayer({
                         )}
 
                         {/* Detection overlay */}
-                                                {backgroundImage && imageSizePx && detections.length > 0 && (
-                                                    <DetectionOverlay containerRef={containerRef} imageSize={imageSizePx} boxes={detections.map(d => ({ id: d.id, label: d.label, bbox: d.bbox_px }))} containerSize={dimensions} />
+                        {backgroundImage && imageSizePx && detections.length > 0 && (
+                            <DetectionOverlay
+                                containerRef={containerRef}
+                                imageSize={imageSizePx}
+                                boxes={detections.map(d => ({ id: d.id, label: d.label, bbox: d.bbox_px }))}
+                                containerSize={dimensions}
+                            />
                         )}
-                {/* Bodies rendering */}
-                {currentFrame && currentFrame.bodies.map(b => {
-                    // Interpret: m1 horizontal positive x to the right, m2 vertical downward positive y (we stored m2 position as [0,-s])
-                    const [x, y] = b.id === 'm1'
-                        ? [b.position_m[0] * scale + 40, originY]
-                        : [dimensions.width / 2 + 120, originY + (-b.position_m[1]) * scale - 60];
+                {/* Bodies rendering (analytic or external) */}
+                {currentFrame && currentFrame.bodies && currentFrame.bodies.map(b => {
+                    // Convert (x_m,y_m) meters (y down positive) → pixels in render box
+                    const x_m = b.position_m[0];
+                    const y_m = b.position_m[1];
+                    const x = originPxX + x_m * containerPxPerMeter;
+                    const y = originPxY + y_m * containerPxPerMeter;
                     return (
                         <div
                             key={b.id}
                             className="absolute flex items-center justify-center rounded-md bg-blue-500/80 text-white text-xs font-mono"
-                            style={{ width: 40, height: 40, transform: `translate(${x}px, ${y}px)` }}
+                            style={{ width: 24, height: 24, transform: `translate(${x - 12}px, ${y - 12}px)` }}
                         >
                             {b.id}
                         </div>
                     );
                 })}
+                {/* If frames come straight from backend meta.simulation.frames with positions dict, render simple dots */}
+                                {currentFrame && !(currentFrame as any).bodies && (currentFrame as any).positions && Object.entries((currentFrame as any).positions).map(([id, pos]) => {
+                    const [x_m, y_m] = pos as [number, number];
+                                        const x = originPxX + x_m * containerPxPerMeter;
+                                        const y = originPxY + y_m * containerPxPerMeter;
+                    return (
+                        <div key={id} className="absolute rounded-full bg-amber-500/80" style={{ width: 12, height: 12, transform: `translate(${x - 6}px, ${y - 6}px)` }} />
+                    );
+                })}
+
+                                {/* Moving SAM boxes for masses (align detection rectangles to body motion) */}
+                                {scene && currentFrame && backgroundImage && imageSizePx && detections.length > 0 && (
+                                    (() => {
+                                        // Build lookup for initial scene positions
+                                        const initialPos: Record<string, [number, number]> = {};
+                                        for (const b of (scene as any).bodies || []) {
+                                            initialPos[b.id] = b.position_m as [number, number];
+                                        }
+                                        const frameBodies: Record<string, [number, number]> = {};
+                                        if ((currentFrame as any).bodies) {
+                                            for (const b of (currentFrame as any).bodies) {
+                                                frameBodies[b.id] = b.position_m as [number, number];
+                                            }
+                                        } else if ((currentFrame as any).positions) {
+                                            Object.assign(frameBodies, (currentFrame as any).positions);
+                                        }
+                                        const elems: JSX.Element[] = [];
+                                        const dims = { s, offsetX, offsetY };
+                                                            const moveRect = (detId: string, bodyId: string) => {
+                                            const det = detections.find(d => d.id === detId);
+                                            if (!det) return;
+                                            const init = initialPos[bodyId];
+                                            const cur = frameBodies[bodyId];
+                                            if (!init || !cur) return;
+                                            const dx_m = cur[0] - init[0];
+                                            const dy_m = cur[1] - init[1];
+                                            const dx = dx_m * containerPxPerMeter;
+                                            const dy = dy_m * containerPxPerMeter;
+                                            const [bx, by, bw, bh] = det.bbox_px;
+                                            const left = dims.offsetX + bx * s + dx;
+                                            const top = dims.offsetY + by * s + dy;
+                                            const width = bw * s;
+                                            const height = bh * s;
+                                                                // Draw moving patch using background sprite technique
+                                                                const bgSize = `${renderW}px ${renderH}px`;
+                                                                const bgPos = `${-(offsetX + bx * s)}px ${-(offsetY + by * s)}px`;
+                                                                elems.push(
+                                                                    <div
+                                                                        key={`mov-${detId}`}
+                                                                        style={{
+                                                                            position: 'absolute',
+                                                                            left,
+                                                                            top,
+                                                                            width,
+                                                                            height,
+                                                                            backgroundImage: `url(${backgroundImage})`,
+                                                                            backgroundSize: bgSize,
+                                                                            backgroundPosition: bgPos,
+                                                                            backgroundRepeat: 'no-repeat',
+                                                                            border: '2px solid rgba(34,211,238,0.9)',
+                                                                            borderRadius: 4,
+                                                                            pointerEvents: 'none',
+                                                                        }}
+                                                                    />
+                                                                );
+                                        };
+                                        moveRect('massA', 'm1');
+                                        moveRect('massB', 'm2');
+                                        return <div className="absolute inset-0 pointer-events-none">{elems}</div>;
+                                    })()
+                                )}
             </div>
         );
 }
