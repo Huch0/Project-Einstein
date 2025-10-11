@@ -12,8 +12,7 @@ dependencies = [
 	"pydantic-settings>=2.4,<3",
 	"python-multipart>=0.0.9",
 	"pillow>=10,<12",
-  "httpx>=0.28.1",
-  "pytest>=8.4.2",
+	"openai>=2.3.0",
 ]
 
 [tool.uv]
