@@ -1,7 +1,8 @@
 
-'use client';
+"use client";
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useSimulation } from '@/simulation/SimulationContext';
 import { UploadCloud, Trash2 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -28,11 +29,14 @@ const INITIAL_MODE: InteractionMode = 'simulation';
 
 export default function SimulationCanvasStack() {
     const wrapperRef = useRef<HTMLDivElement>(null);
+    const contentRef = useRef<HTMLDivElement>(null);
+    const { setBackgroundImage, parseAndBind } = useSimulation();
 
     const [mode, setMode] = useState<InteractionMode>(INITIAL_MODE);
     const [strokes, setStrokes] = useState<CanvasStroke[]>([]);
     const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
     const [objectPosition, setObjectPosition] = useState<SimulationObjectPosition>({ x: 0, y: 0 });
+    const [open, setOpen] = useState(false);
 
     const hasCanvasContent = strokes.length > 0;
 
@@ -43,14 +47,14 @@ export default function SimulationCanvasStack() {
             setDimensions({ width, height });
         });
 
-        const wrapper = wrapperRef.current;
-        if (wrapper) {
-            resizeObserver.observe(wrapper);
+        const content = contentRef.current;
+        if (content) {
+            resizeObserver.observe(content);
         }
 
         return () => {
-            if (wrapper) {
-                resizeObserver.unobserve(wrapper);
+            if (content) {
+                resizeObserver.unobserve(content);
             }
         };
     }, []);
@@ -63,9 +67,10 @@ export default function SimulationCanvasStack() {
     };
 
     return (
-        <div ref={wrapperRef} className="relative h-full w-full p-4 md:p-6">
-            <div className="absolute top-4 right-4 z-20 flex flex-wrap items-center justify-end gap-2">
-                <div className="flex gap-1 rounded-md bg-background/80 p-1 shadow-sm">
+        <div ref={wrapperRef} className="flex h-full w-full flex-col p-2 md:p-4 gap-2">
+            {/* Top bezel toolbar */}
+            <div className="flex items-center justify-between rounded-md border bg-background/80 px-2 py-2 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-background/60">
+                <div className="flex gap-1">
                     <Button
                         type="button"
                         size="sm"
@@ -85,56 +90,69 @@ export default function SimulationCanvasStack() {
                         Draw Mode
                     </Button>
                 </div>
-                <Button
-                    type="button"
-                    variant="outline"
-                    size="icon"
-                    onClick={handleClear}
-                    disabled={!hasCanvasContent}
-                    aria-label="Clear drawing"
-                >
-                    <Trash2 className="h-4 w-4" />
-                </Button>
-                <Dialog>
-                    <DialogTrigger asChild>
-                        <Button type="button">
-                            <UploadCloud className="mr-2 h-4 w-4" />
-                            Upload Diagram
-                        </Button>
-                    </DialogTrigger>
-                    <DialogContent className="sm:max-w-md">
-                        <DialogHeader>
-                            <DialogTitle>Upload Physics Diagram</DialogTitle>
-                            <DialogDescription>
-                                Upload an image or PDF of a physics diagram to convert it into a simulation.
-                            </DialogDescription>
-                        </DialogHeader>
-                        <div className="grid flex-1 gap-2">
-                            <Label htmlFor="diagram-file" className="sr-only">
-                                Diagram File
-                            </Label>
-                            <Input id="diagram-file" type="file" />
-                        </div>
-                        <Button type="submit" className="w-full">
-                            Upload and Convert
-                        </Button>
-                    </DialogContent>
-                </Dialog>
+                <div className="flex items-center gap-2">
+                    <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        onClick={handleClear}
+                        disabled={!hasCanvasContent}
+                        aria-label="Clear drawing"
+                    >
+                        <Trash2 className="h-4 w-4" />
+                    </Button>
+                    <Dialog open={open} onOpenChange={setOpen}>
+                        <DialogTrigger asChild>
+                            <Button type="button" onClick={() => setOpen(true)}>
+                                <UploadCloud className="mr-2 h-4 w-4" />
+                                Upload Diagram
+                            </Button>
+                        </DialogTrigger>
+                        <DialogContent className="sm:max-w-md">
+                            <DialogHeader>
+                                <DialogTitle>Upload Physics Diagram</DialogTitle>
+                                <DialogDescription>
+                                    Upload an image or PDF of a physics diagram to convert it into a simulation.
+                                </DialogDescription>
+                            </DialogHeader>
+                            <div className="grid flex-1 gap-2">
+                                <Label htmlFor="diagram-file" className="sr-only">
+                                    Diagram File
+                                </Label>
+                                <Input id="diagram-file" type="file" accept="image/*" onChange={(e) => {
+                                  const file = e.target.files?.[0];
+                                  if (!file) return;
+                                  const reader = new FileReader();
+                                  reader.onload = ev => {
+                                    const dataUrl = ev.target?.result as string;
+                                    setBackgroundImage(dataUrl);
+                                  };
+                                  reader.readAsDataURL(file);
+                                }} />
+                            </div>
+                            <Button type="button" className="w-full" onClick={() => setOpen(false)}>
+                                Set As Background
+                            </Button>
+                        </DialogContent>
+                    </Dialog>
+                </div>
             </div>
+            {/* Content area (no overlap with toolbar) */}
+            <div ref={contentRef} className="relative flex-1 min-h-0">
+                <SimulationLayer
+                    enabled={mode === 'simulation'}
+                    objectPosition={objectPosition}
+                    onObjectPositionChange={handleObjectPositionChange}
+                    dimensions={dimensions}
+                />
 
-            <SimulationLayer
-                enabled={mode === 'simulation'}
-                objectPosition={objectPosition}
-                onObjectPositionChange={handleObjectPositionChange}
-                dimensions={dimensions}
-            />
-
-            <CanvasLayer
-                enabled={mode === 'draw'}
-                strokes={strokes}
-                onStrokesChange={setStrokes}
-                dimensions={dimensions}
-            />
+                <CanvasLayer
+                    enabled={mode === 'draw'}
+                    strokes={strokes}
+                    onStrokesChange={setStrokes}
+                    dimensions={dimensions}
+                />
+            </div>
         </div>
     );
 }
