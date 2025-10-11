@@ -30,6 +30,7 @@ interface SimulationState extends SimulationConfig {
   detections: DiagramParseDetection[];
   imageSizePx: { width: number; height: number } | null;
   scale_m_per_px: number | null;
+  scene: any | null;
   parseAndBind: (file: File) => Promise<void>;
 }
 
@@ -56,6 +57,7 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
   const [detections, setDetections] = useState<DiagramParseDetection[]>([]);
   const [imageSizePx, setImageSizePx] = useState<{ width: number; height: number } | null>(null);
   const [scale_m_per_px, setScale] = useState<number | null>(null);
+  const [scene, setScene] = useState<any | null>(null);
 
   const runAnalytic = useCallback(() => {
     const result = simulatePulleyAnalytic({
@@ -80,10 +82,33 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const parseAndBind = useCallback(async (file: File) => {
-    const res = await parseDiagram(file);
+    const res = await parseDiagram(file, { simulate: true });
     setDetections(res.detections);
     setImageSizePx({ width: res.image.width_px, height: res.image.height_px });
     setScale(res.mapping.scale_m_per_px);
+  setScene(res.scene as any);
+    // Prefer backend Rapier frames if present; else fall back to analytic
+    const sim = (res.meta as any)?.simulation;
+    const framesFromBackend = sim?.frames as Array<{ t: number; positions: Record<string, [number, number]> }> | undefined;
+    if (Array.isArray(framesFromBackend) && framesFromBackend.length > 0) {
+      const mapped: SimulationFrame[] = framesFromBackend.map(f => ({
+        t: f.t,
+        bodies: Object.entries(f.positions || {}).map(([id, pos]) => ({ id, position_m: pos as [number, number], velocity_m_s: [0, 0] })),
+      }));
+      setFrames(mapped);
+      // If backend scene includes time step, use it for playback cadence
+      const backendDt = (res.scene as any)?.world?.time_step_s;
+      setConfig(prev => ({
+        ...prev,
+        dt: typeof backendDt === 'number' && backendDt > 0 ? backendDt : prev.dt,
+      }));
+      setCurrentIndex(0);
+      setPlaying(true);
+      lastTimestamp.current = null;
+      // eslint-disable-next-line no-console
+      console.log('Rapier simulation summary', sim);
+      return;
+    }
     // Bind parameters to current config
     setConfig(prev => ({
       ...prev,
@@ -134,6 +159,7 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     detections,
     imageSizePx,
     scale_m_per_px,
+    scene,
     parseAndBind,
   };
   return <SimulationContext.Provider value={value}>{children}</SimulationContext.Provider>;
