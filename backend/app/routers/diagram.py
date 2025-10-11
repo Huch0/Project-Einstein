@@ -6,13 +6,15 @@ real CV/ML integration.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, File, UploadFile, HTTPException
+from fastapi import APIRouter, File, UploadFile, HTTPException, Query
 from PIL import Image
 import io
 from pydantic import BaseModel, Field
 
 from app.sim.schema import example_pulley_scene
 from app.pipeline.sam_detector import SamClient
+from app.agent.labeler import get_labeler, SegmentIn
+from app.tools.rapier_bridge import simulate_scene
 from app.models.settings import settings
 
 router = APIRouter(prefix="/diagram", tags=["diagram"])
@@ -22,6 +24,7 @@ class Detection(BaseModel):
   id: str
   label: str
   bbox_px: tuple[int, int, int, int]  # x,y,w,h
+  source_segment_id: int | str | None = None
 
 
 class DiagramParseResponse(BaseModel):
@@ -35,7 +38,10 @@ class DiagramParseResponse(BaseModel):
 
 
 @router.post("/parse", response_model=DiagramParseResponse)
-async def parse_diagram(file: UploadFile = File(...)) -> DiagramParseResponse:  # noqa: D401
+async def parse_diagram(
+  file: UploadFile = File(...),
+  simulate: int = Query(0, ge=0, le=1, description="If 1, run Rapier simulation and include results in meta.simulation"),
+) -> DiagramParseResponse:  # noqa: D401
   if file.content_type not in {"image/png", "image/jpeg", "image/jpg"}:
     raise HTTPException(status_code=400, detail="Unsupported file type")
 
@@ -51,60 +57,32 @@ async def parse_diagram(file: UploadFile = File(...)) -> DiagramParseResponse:  
   sam = SamClient(mode=settings.SAM_MODE, http_url=settings.SAM_HTTP_URL)
   segs = sam.segment(contents)
   segments_payload = [
-    {"id": s.id, "bbox": list(s.bbox), "mask_path": s.mask_path}
+    {"id": s.id, "bbox": list(s.bbox), "mask_path": s.mask_path, "polygon_px": s.polygon_px}
     for s in segs
   ]
 
-  # Heuristic mapping from segments -> detections
-  # - surface: widest, very low height (thin), near bottom
-  # - pulley: near top and roughly square (aspect ~1)
-  # - masses: remaining two largest rectangular boxes
-  def aspect(w: int, h: int) -> float:
-    return (w / h) if h else 9999.0
+  # Label segments using configured labeler (stub|openai)
+  labeler = get_labeler()
+  labeled = labeler.label([SegmentIn(id=s["id"], bbox=s["bbox"], mask_path=s.get("mask_path")) for s in segments_payload])
 
-  # choose surface
-  surface_cand = None
-  for s in segments_payload:
-    x, y, w, h = s["bbox"]
-    if h <= 0:
-      continue
-    ar = aspect(w, h)
-    # "thin" and near bottom third
-    if h < 0.08 * height_px and y > height_px * 0.45:
-      if surface_cand is None or w > surface_cand["bbox"][2]:
-        surface_cand = s
-
-  # pulley candidate: near top quarter and close to square
-  pulley_cand = None
-  best_sq_err = None
-  for s in segments_payload:
-    x, y, w, h = s["bbox"]
-    if y < height_px * 0.35:
-      ratio = abs(1 - (w / h) if h else 0)
-      if best_sq_err is None or ratio < best_sq_err:
-        best_sq_err = ratio
-        pulley_cand = s
-
-  # remove chosen from pool
-  remaining = [s for s in segments_payload if s is not surface_cand and s is not pulley_cand]
-  # masses: pick two largest by area
-  remaining_sorted = sorted(remaining, key=lambda s: s["bbox"][2] * s["bbox"][3], reverse=True)
-  mass_a_cand = remaining_sorted[0] if len(remaining_sorted) > 0 else None
-  mass_b_cand = remaining_sorted[1] if len(remaining_sorted) > 1 else None
-
+  # Map labeled entities to canonical detections order: massA, pulley, massB, surface
+  masses = [e for e in labeled if e.label == "mass"]
+  pulleys = [e for e in labeled if e.label == "pulley"]
+  surfaces = [e for e in labeled if e.label == "surface"]
+  # sort masses by x position (left=massA, right=massB)
+  masses_sorted = sorted(masses, key=lambda e: e.bbox_px[0])
   detections: list[Detection] = []
-  if mass_a_cand:
-    detections.append(Detection(id="massA", label="block", bbox_px=tuple(mass_a_cand["bbox"])))
-  if pulley_cand:
-    detections.append(Detection(id="pulley", label="pulley", bbox_px=tuple(pulley_cand["bbox"])))
-  if mass_b_cand:
-    detections.append(Detection(id="massB", label="block", bbox_px=tuple(mass_b_cand["bbox"])))
-  if surface_cand:
-    detections.append(Detection(id="surface", label="table", bbox_px=tuple(surface_cand["bbox"])))
+  if len(masses_sorted) > 0:
+    detections.append(Detection(id="massA", label="block", bbox_px=tuple(masses_sorted[0].bbox_px), source_segment_id=masses_sorted[0].id))
+  if len(pulleys) > 0:
+    detections.append(Detection(id="pulley", label="pulley", bbox_px=tuple(pulleys[0].bbox_px), source_segment_id=pulleys[0].id))
+  if len(masses_sorted) > 1:
+    detections.append(Detection(id="massB", label="block", bbox_px=tuple(masses_sorted[1].bbox_px), source_segment_id=masses_sorted[1].id))
+  if len(surfaces) > 0:
+    detections.append(Detection(id="surface", label="table", bbox_px=tuple(surfaces[0].bbox_px), source_segment_id=surfaces[0].id))
 
-  # Fallbacks if something missing
   if not detections:
-    raise HTTPException(status_code=422, detail="Could not map SAM segments to detections")
+    raise HTTPException(status_code=422, detail="Labeler returned no usable entities")
 
   # Parameters from detections
   def area(b):
@@ -121,24 +99,70 @@ async def parse_diagram(file: UploadFile = File(...)) -> DiagramParseResponse:  
   gravity = 10.0
   mu_k = 0.5
 
-  # Heuristic scale assumption: derive from surface width if available; else 100px=1m
-  if surface_cand:
-    surf_w = surface_cand["bbox"][2]
+  # Heuristic scale assumption: derive from detected surface width if available; else 100px=1m
+  if len(surfaces) > 0:
+    surf_w = surfaces[0].bbox_px[2]
     scale_m_per_px = 1.0 / max(100.0, float(surf_w))  # rough estimate
   else:
     scale_m_per_px = 1.0 / 100.0
 
-  scene = example_pulley_scene(mass_a_kg=mass_a, mass_b_kg=mass_b, gravity=gravity).model_dump()
-  scene["meta"] = {"diagram_scale_m_per_px": scale_m_per_px}
+  # Build scene with positions inferred from detections (centers in px -> meters relative to image center)
+  def center_of(b: tuple[int,int,int,int]) -> tuple[float,float]:
+    x,y,w,h = b
+    return (x + w/2.0, y + h/2.0)
+
+  img_cx, img_cy = width_px/2.0, height_px/2.0
+  def px_to_m(pt: tuple[float,float]) -> tuple[float,float]:
+    px, py = pt
+    return ((px - img_cx) * scale_m_per_px, (py - img_cy) * scale_m_per_px)
+
+  # Defaults if missing
+  m1_pos_m = (-0.5, 0.5)
+  m2_pos_m = (0.5, 1.5)
+  pulley_anchor_m = (0.0, 2.0)
+  if mA:
+    m1_pos_m = px_to_m(center_of(mA.bbox_px))
+  if mB:
+    m2_pos_m = px_to_m(center_of(mB.bbox_px))
+  if len(pulleys) > 0:
+    pulley_anchor_m = px_to_m(center_of(pulleys[0].bbox_px))
+
+  from app.sim.schema import Scene, Body, PulleyConstraint, WorldSettings
+  scene_model = Scene(
+    bodies=[
+      Body(id="m1", mass_kg=mass_a, position_m=(float(m1_pos_m[0]), float(m1_pos_m[1]))),
+      Body(id="m2", mass_kg=mass_b, position_m=(float(m2_pos_m[0]), float(m2_pos_m[1]))),
+    ],
+    constraints=[
+      PulleyConstraint(body_a="m1", body_b="m2", pulley_anchor_m=(float(pulley_anchor_m[0]), float(pulley_anchor_m[1])))
+    ],
+    world=WorldSettings(gravity_m_s2=gravity),
+    notes="Scene initialized from SAM detections (centers mapped from px to m)",
+  ).normalize()
+  scene = scene_model.model_dump()
+  scene["meta"] = {"diagram_scale_m_per_px": scale_m_per_px, "origin_mode": "anchor_centered"}
 
   meta = {
     "version": "0.1.0",
-    "generator": "sam+heuristic",
+    "generator": f"sam+{settings.LABELER_MODE}",
     "sam_mode": settings.SAM_MODE,
     "sam_segments_count": len(segments_payload),
     "sam_http": bool(settings.SAM_HTTP_URL),
     "filename": file.filename,
   }
+
+  # Optionally run Rapier simulation of the assembled scene
+  if simulate == 1:
+    try:
+      sim_result = simulate_scene(scene)
+      meta["simulation"] = {
+        "engine": "rapier2d",
+        "frames_count": len(sim_result.get("frames", [])),
+        "frames": sim_result.get("frames", []),
+        "energy": sim_result.get("energy", {}),
+      }
+    except Exception as e:
+      meta["simulation_error"] = str(e)
 
   return DiagramParseResponse(
     image={"width_px": width_px, "height_px": height_px},
