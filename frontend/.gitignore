@@ -42,4 +42,6 @@ next-env.d.ts
 
 # firebase
 firebase-debug.log
-firestore-debug.log
+firestore-debug.logbackend/sam_server/.venv/ 
+backend/sam_server/weights/ 
+test2.jpg 
