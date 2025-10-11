@@ -119,16 +119,23 @@ export default function SimulationCanvasStack() {
                                 <Label htmlFor="diagram-file" className="sr-only">
                                     Diagram File
                                 </Label>
-                                <Input id="diagram-file" type="file" accept="image/*" onChange={(e) => {
-                                  const file = e.target.files?.[0];
-                                  if (!file) return;
-                                  const reader = new FileReader();
-                                  reader.onload = ev => {
-                                    const dataUrl = ev.target?.result as string;
-                                    setBackgroundImage(dataUrl);
-                                  };
-                                  reader.readAsDataURL(file);
-                                }} />
+                                                                <Input id="diagram-file" type="file" accept="image/*" onChange={async (e) => {
+                                                                    const file = e.target.files?.[0];
+                                                                    if (!file) return;
+                                                                    const reader = new FileReader();
+                                                                    reader.onload = ev => {
+                                                                        const dataUrl = ev.target?.result as string;
+                                                                        setBackgroundImage(dataUrl);
+                                                                    };
+                                                                    reader.readAsDataURL(file);
+                                                                    // Trigger backend parse (+simulate=1 via SimulationContext)
+                                                                    try {
+                                                                        await parseAndBind(file);
+                                                                    } catch (err) {
+                                                                        // eslint-disable-next-line no-console
+                                                                        console.error('Parse failed', err);
+                                                                    }
+                                                                }} />
                             </div>
                             <Button type="button" className="w-full" onClick={() => setOpen(false)}>
                                 Set As Background
