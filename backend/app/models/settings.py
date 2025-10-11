@@ -16,6 +16,12 @@ class Settings(BaseSettings):
   JWT_SECRET: str = "change-me"
   SAM_MODE: str = "http"  # "stub" | "http"
   SAM_HTTP_URL: str | None = "http://localhost:9001/segment"
+  LABELER_MODE: str = "openai"  # "stub" | "openai"
+  OPENAI_API_KEY: str | None = None
+  LABELER_MODEL: str = "gpt-5"
+  # Rapier Node.js worker integration
+  RAPIER_WORKER_PATH: str | None = None  # If None, defaults to backend/sim_worker/rapier_worker.js
+  RAPIER_WORKER_TIMEOUT_S: float = 10.0
 
   model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
