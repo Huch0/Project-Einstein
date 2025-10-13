@@ -1,111 +1,82 @@
 ---
 applyTo: '**'
 ---
-Project Einstein – Authoritative Instruction Set
+Project Einstein – GPT↔Simulator Interface (Authoritative Instruction)
 
-Purpose
-Test an AI-powered pipeline that detects and interprets objects in physics problem diagrams (e.g., pulley systems, blocks, and ropes) using **SAM (Segment Anything Model)** and **GPT-5**, then converts them into a structured **Scene JSON** ready for simulation via **Rapier 2D (Node.js)**.
+Goal
+Define and validate a robust interface that bridges GPT’s semantic understanding of diagram segments and the physics simulator’s scene requirements. We assume high-quality segments from SAM/SAM2 and accurate labeling from GPT-5. Our job is to specify the intermediate contracts and implement a minimal but testable builder that produces a simulator-ready Scene JSON (Rapier 2D).
 
+Key Principles
+- Separation of concerns: segmentation (SAM) → labeling (GPT) → scene assembly (Interface Builder) → simulation (Rapier)
+- Contracts over heuristics: precise JSON schemas for inputs/outputs; deterministic, testable transforms
+- Coordinate rigor: explicit px↔m mapping, origin policy, and reference consistency (segment ids ↔ entities ↔ bodies)
 
-Objectives
-1. Accept a physics problem diagram image (`.jpg`, `.png`).
-2. Use **SAM/SAM2** for object segmentation.
-3. Use **GPT-5** for semantic labeling (mass, pulley, rope, surface).
-4. Generate a validated **Scene JSON** for Rapier simulation.
-5. Send Scene JSON to a **Node.js Rapier Worker** and receive simulation results (positions, velocities, etc).
+Data Contracts
+1) Segments (from SAM)
+  - Format:
+    {
+      "segments": [
+        { "id": 1, "bbox": [x,y,w,h], "polygon_px": [[x,y],...], "mask_path": null }
+      ],
+      "image": { "width_px": W, "height_px": H }
+    }
 
-Implementation Steps
+2) GPT Labels (from GPT-5)
+  - Format (strict JSON):
+    {
+      "entities": [
+        { "segment_id": "1", "label": "mass", "props": { "mass_guess_kg": 2.0 } },
+        { "segment_id": "3", "label": "pulley", "props": { "wheel_radius_m": 0.1 } },
+        { "segment_id": "4", "label": "surface" }
+      ]
+    }
 
-1. Input Handling (`backend/app/routers/diagram.py`)
-- Accept .jpg or .png images uploaded to /uploads.
-- Max size: 4 MB; Max dimension: 4096 px per side.
+3) Build Scene Request (Interface Builder input)
+  - Format:
+    {
+      "image": { "width_px": W, "height_px": H },
+      "segments": [{ "id": 1, "bbox": [x,y,w,h], "polygon_px": [[x,y],...] }],
+      "labels": { "entities": [...] },
+      "mapping": { "origin_mode": "anchor_centered", "scale_m_per_px": S },
+      "defaults": { "gravity_m_s2": 9.81 }
+    }
 
-2. Segmentation (`backend/app/pipeline/`)
-- Call SAM or SAM2 via API or local inference.
-- Example output:
-```json
-{
-  "segments": [
-    { "id": 1, "bbox": [x, y, w, h], "mask_path": "..." },
-    { "id": 2, "bbox": [x, y, w, h], "mask_path": "..." }
-  ]
-}
-```
+4) Build Scene Response (Interface Builder output)
+  - Format:
+    {
+      "scene": <Scene JSON v0.1.0>,
+      "warnings": ["string"],
+      "meta": { "source": "sam+gpt", "resolver": "v1" }
+    }
 
-3. Semantic Interpretation (backend/app/agent/)
+Scene JSON (Simulator-ready)
+- Canonical schema defined in backend/app/sim/schema.py (v0.1.0) for a single fixed pulley:
+  - world: gravity/time_step
+  - bodies: exactly two dynamic bodies with mass and initial position (meters)
+  - constraints: one ideal_fixed_pulley with anchor and rope_length (computed if omitted)
+  - normalization: reference checks + rope length derivation
 
-- Prompt GPT-5 with: “This image is a physics problem diagram.” “Identify each segment as a mass, pulley, rope, or surface.”
-- Output example: 
-```json
-{
-  "entities": [
-    { "label": "mass", "id": "A", "mass_guess_kg": 2.0 },
-    { "label": "pulley", "id": "P1" }
-  ]
-}
-```
+Builder Rules (v1)
+- Entity mapping: pick exactly two masses (left→body_a=m1, right→body_b=m2), one pulley (anchor), optional surface (friction/scale hints)
+- Positioning: body/pulley positions = centers of segment bboxes, mapped from px to meters using mapping.scale_m_per_px and origin_mode
+- Masses: if GPT props.mass_guess_kg present, use; else infer mass ratio by bbox areas and scale from a base value
+- Rope length: derived from initial geometry unless provided; wheel radius optional
+- Warnings: non-blocking anomalies (e.g., missing pulley, >2 masses) reported in response.warnings
 
-4. Scene Assembly (backend/app/sim/schema.py)
-- Merge SAM + GPT-5 results → canonical Scene JSON:
-```json
-{
-  "version": "0.1.0",
-  "bodies": [
-    { "id": "A", "mass_kg": 2, "shape": "box", "position": [0, 1] },
-    { "id": "B", "mass_kg": 1, "shape": "box", "position": [0, -1] }
-  ],
-  "constraints": [
-    { "type": "pulley", "bodies": ["A","B"], "rope_length_m": 2 }
-  ],
-  "parameters": { "gravity_m_s2": 9.81 },
-  "meta": { "source": "test2.jpg", "detector": "sam+gpt5" }
-}
-```
-- Validate Scene JSON using pydantic in schema.py.
+APIs and Endpoints
+- POST /diagram/parse: orchestrates segmentation→labeling→build→simulate (simulate optional via ?simulate=1) and returns images/detections/segments/mapping/scene/meta
+- Internal interface function: build_scene(request) → response
 
-5. Rapier Simulation Bridge (backend/app/tools/)
-- FastAPI sends Scene JSON to Node.js Rapier Worker via REST or subprocess.
-- Worker path: backend/sim_worker/rapier_worker.js
-- The worker uses @dimforge/rapier2d-node:
-```bash
-npm install @dimforge/rapier2d-node
-```
-- Node.js simulates and returns:
-```json
-{
-  "frames": [
-    { "t": 0.00, "positions": {"A": [0,1.0], "B": [0,-1.0]} },
-    { "t": 0.02, "positions": {"A": [0,0.98], "B": [0,-0.98]} }
-  ],
-  "energy": {"kinetic": 1.23, "potential": 9.81}
-}
-```
-6. Result Handling (backend/app/routers/diagram.py)
-- Receive simulation output from Node.js worker.
-- Return JSON or stream animation-ready frame data.
-
-Folder Integration Summary
-Path	Role
-backend/app/agent/	GPT-5 semantic reasoning
-backend/app/models/	internal data models
-backend/app/pipeline/	SAM segmentation pipeline
-backend/app/sim/schema.py	Scene JSON schema definition
-backend/app/routers/diagram.py	Upload & orchestration endpoint
-backend/app/tools/	Node.js Rapier bridge utilities
-backend/main.py	FastAPI app entry point
-
-Example Flow
-```javascript
-POST /diagram/upload
- → SAM segmentation
- → GPT-5 interpretation
- → Scene JSON build
- → Node.js Rapier simulation
- → Response: Simulation results JSON
-```
+Testing Strategy
+- Unit: feed curated segments+labels into builder and assert a valid Scene (ids, counts, normalization, coordinate transforms)
+- Property: sanity of px→m mapping around image center; deterministic selection of masses and pulley
+- Integration (optional): run Rapier worker on built Scene, return frames for visualization
 
 Roadmap
-v0.1	SAM + GPT-5 → single pulley JSON generation
-v0.2	Node.js Rapier Worker integration
-v0.3	Multi-body simulation (2+ pulleys/masses)
-v0.4	Real-time simulation + overlay visualization
+- v0.2: Interface Builder v1 (this doc), pulley.single_fixed_v0
+- v0.3: Multi-body support; polygon colliders; better friction/scale estimation
+- v0.4: Interactive editing loop (GPT suggestions ↔ scene delta)
+
+Acceptance
+- Given valid segments+labels+mapping, builder yields a valid Scene JSON (pydantic schema) with references intact and rope_length set.
+- Basic tests run green.
