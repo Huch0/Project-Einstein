@@ -4,15 +4,15 @@ import SimulationWrapper from '@/components/simulation/simulation-wrapper';
 
 export default function DashboardPage() {
     return (
-        <div className="flex-1 grid grid-cols-1 lg:grid-cols-2 h-[calc(100vh-4rem)]">
-            <div className="flex flex-col h-full border-r">
+        <div className="grid h-full min-h-0 grid-cols-1 overflow-hidden lg:grid-cols-2">
+            <div className="flex h-full min-h-0 flex-col border-r">
                 <ChatPanel />
             </div>
-            <div className="grid grid-rows-2 h-full">
-                <div className="border-b">
+            <div className="grid h-full min-h-0 grid-rows-[minmax(0,3fr)_minmax(0,2fr)]">
+                <div className="min-h-0 border-b">
                     <SimulationWrapper />
                 </div>
-                <div>
+                <div className="min-h-0 overflow-auto">
                     <ControlPane />
                 </div>
             </div>
