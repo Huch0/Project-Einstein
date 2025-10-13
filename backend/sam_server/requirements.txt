@@ -1,0 +1,13 @@
+# Minimal, reproducible deps to run SAM HTTP server (edit torch variants as needed)
+fastapi==0.115.5
+uvicorn[standard]==0.32.0
+pillow==10.4.0
+numpy==1.26.4
+
+# Torch (un-pinned variant tag so users can choose CUDA or CPU build)
+torch==2.3.1
+torchvision==0.18.1
+torchaudio==2.3.1
+
+# Segment Anything (SAM)
+git+https://github.com/facebookresearch/segment-anything.git
