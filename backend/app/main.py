@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .models.settings import settings
 from .routers import chat
+from .routers import diagram as diagram_router
 
 app = FastAPI(title="Project Einstein API", version="0.1.0")
 
@@ -17,6 +18,7 @@ app.add_middleware(
 )
 
 app.include_router(chat.router)
+app.include_router(diagram_router.router)
 
 
 @app.get("/health", tags=["health"])

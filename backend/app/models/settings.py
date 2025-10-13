@@ -45,6 +45,8 @@ class Settings(BaseSettings):
     CORS_ALLOW_ORIGINS: list[str] = Field(default_factory=list)
     CHAT_AUDIT_LOG_ENABLED: bool = True
     CHAT_AUDIT_LOG_PATH: str = "logs/chat-turns.log"
+    SAM_MODE: str = "http"  # "stub" | "http"
+    SAM_HTTP_URL: str | None = "http://localhost:9001/segment"
 
     model_config = SettingsConfigDict(env_file=_ENV_FILE, extra="ignore")
 

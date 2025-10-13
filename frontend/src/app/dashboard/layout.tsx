@@ -1,4 +1,5 @@
 import { Header } from '@/components/layout/header';
+import { SimulationProvider } from '@/simulation/SimulationContext';
 
 export default function DashboardLayout({
     children,
@@ -8,9 +9,11 @@ export default function DashboardLayout({
     return (
         <div className="flex h-screen w-full flex-col overflow-hidden">
             <Header />
-            <main className="flex min-h-0 flex-1 flex-col overflow-hidden bg-muted/40">
-                {children}
-            </main>
-        </div>
+            <SimulationProvider>
+                <main className="flex min-h-0 flex-1 flex-col overflow-hidden bg-muted/40">
+                    {children}
+                </main>
+          </SimulationProvider>
+    </div>
     );
 }
