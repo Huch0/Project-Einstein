@@ -16,6 +16,7 @@ from app.pipeline.sam_detector import SamClient
 from app.agent.labeler import get_labeler, SegmentIn
 from app.tools.rapier_bridge import simulate_scene
 from app.models.settings import settings
+from app.sim.builder import build_scene
 
 router = APIRouter(prefix="/diagram", tags=["diagram"])
 
@@ -84,18 +85,7 @@ async def parse_diagram(
   if not detections:
     raise HTTPException(status_code=422, detail="Labeler returned no usable entities")
 
-  # Parameters from detections
-  def area(b):
-    return b[2] * b[3]
-  mA = next((d for d in detections if d.id == "massA"), None)
-  mB = next((d for d in detections if d.id == "massB"), None)
-  base_mass = 3.0
-  if mA and mB:
-    mass_a = base_mass
-    mass_b = base_mass * (area(mB.bbox_px) / area(mA.bbox_px) if area(mA.bbox_px) else 1.0)
-  else:
-    mass_a = base_mass
-    mass_b = base_mass
+  # Parameters/mapping heuristics (scale) used by builder; gravity default
   gravity = 10.0
   mu_k = 0.5
 
@@ -106,41 +96,26 @@ async def parse_diagram(
   else:
     scale_m_per_px = 1.0 / 100.0
 
-  # Build scene with positions inferred from detections (centers in px -> meters relative to image center)
-  def center_of(b: tuple[int,int,int,int]) -> tuple[float,float]:
-    x,y,w,h = b
-    return (x + w/2.0, y + h/2.0)
+  # Build Scene via Interface Builder (canonical path)
+  # Convert labeler output to builder's GPT labels contract
+  gpt_labels = {
+    "entities": [
+      {"segment_id": str(e.id), "label": e.label, "props": {}} for e in labeled
+    ]
+  }
 
-  img_cx, img_cy = width_px/2.0, height_px/2.0
-  def px_to_m(pt: tuple[float,float]) -> tuple[float,float]:
-    px, py = pt
-    return ((px - img_cx) * scale_m_per_px, (py - img_cy) * scale_m_per_px)
-
-  # Defaults if missing
-  m1_pos_m = (-0.5, 0.5)
-  m2_pos_m = (0.5, 1.5)
-  pulley_anchor_m = (0.0, 2.0)
-  if mA:
-    m1_pos_m = px_to_m(center_of(mA.bbox_px))
-  if mB:
-    m2_pos_m = px_to_m(center_of(mB.bbox_px))
-  if len(pulleys) > 0:
-    pulley_anchor_m = px_to_m(center_of(pulleys[0].bbox_px))
-
-  from app.sim.schema import Scene, Body, PulleyConstraint, WorldSettings
-  scene_model = Scene(
-    bodies=[
-      Body(id="m1", mass_kg=mass_a, position_m=(float(m1_pos_m[0]), float(m1_pos_m[1]))),
-      Body(id="m2", mass_kg=mass_b, position_m=(float(m2_pos_m[0]), float(m2_pos_m[1]))),
-    ],
-    constraints=[
-      PulleyConstraint(body_a="m1", body_b="m2", pulley_anchor_m=(float(pulley_anchor_m[0]), float(pulley_anchor_m[1])))
-    ],
-    world=WorldSettings(gravity_m_s2=gravity),
-    notes="Scene initialized from SAM detections (centers mapped from px to m)",
-  ).normalize()
-  scene = scene_model.model_dump()
-  scene["meta"] = {"diagram_scale_m_per_px": scale_m_per_px, "origin_mode": "anchor_centered"}
+  builder_req = {
+    "image": {"width_px": width_px, "height_px": height_px},
+    "segments": segments_payload,
+    "labels": gpt_labels,
+    "mapping": {"origin_mode": "anchor_centered", "scale_m_per_px": scale_m_per_px},
+    "defaults": {"gravity_m_s2": gravity},
+  }
+  built = build_scene(builder_req)
+  scene = built.get("scene", {})
+  # Attach mapping meta for downstream consumers
+  scene.setdefault("meta", {})
+  scene["meta"].update({"diagram_scale_m_per_px": scale_m_per_px, "origin_mode": "anchor_centered"})
 
   meta = {
     "version": "0.1.0",
@@ -150,6 +125,10 @@ async def parse_diagram(
     "sam_http": bool(settings.SAM_HTTP_URL),
     "filename": file.filename,
   }
+  # Surface builder provenance and warnings
+  meta["builder"] = built.get("meta", {})
+  if built.get("warnings"):
+    meta["warnings"] = built.get("warnings")
 
   # Optionally run Rapier simulation of the assembled scene
   if simulate == 1:
@@ -164,12 +143,22 @@ async def parse_diagram(
     except Exception as e:
       meta["simulation_error"] = str(e)
 
+  # Reflect masses from the built scene for parameters
+  def _mass_from_scene(scn: dict, body_id: str, default: float = 3.0) -> float:
+    try:
+      for b in scn.get("bodies", []):
+        if b.get("id") == body_id:
+          return float(b.get("mass_kg", default))
+    except Exception:
+      pass
+    return default
+
   return DiagramParseResponse(
     image={"width_px": width_px, "height_px": height_px},
     detections=detections,
     parameters={
-      "massA_kg": mass_a,
-      "massB_kg": mass_b,
+      "massA_kg": _mass_from_scene(scene, "m1"),
+      "massB_kg": _mass_from_scene(scene, "m2"),
       "mu_k": mu_k,
       "gravity_m_s2": gravity,
     },
