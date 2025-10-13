@@ -17,21 +17,29 @@ It accepts raw image bytes (Content-Type: application/octet-stream) and returns 
 - Python 3.10 or 3.11 recommended
 - Torch CPU is fine; CUDA (optional) if you have a GPU
 
-## 2) Install dependencies
+## 2) Install dependencies (reproducible)
 
-We keep this server isolated from the main backend env to avoid heavy deps.
+We keep this server isolated from the main backend env to avoid heavy deps. Use one of the provided requirements files.
 
-Using uv (recommended):
+Option A — CPU-only (recommended for easy repro):
 
 ```powershell
 cd backend/sam_server
 uv venv --python 3.11
 .venv\Scripts\Activate.ps1
-uv pip install fastapi uvicorn pillow torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
-uv pip install git+https://github.com/facebookresearch/segment-anything.git
+uv pip install -r requirements-cpu.txt
 ```
 
-- If you have CUDA, replace the torch install line with the appropriate CUDA wheel from PyTorch.
+Option B — GPU/CUDA (edit as needed):
+
+```powershell
+cd backend/sam_server
+uv venv --python 3.11
+.venv\Scripts\Activate.ps1
+uv pip install -r requirements.txt
+# If you need a specific CUDA build, install the matching torch/vision/audio from pytorch.org
+```
+
 - The original SAM repo provides model weights (e.g., `sam_vit_b.pth`). Download one and place it under `backend/sam_server/weights/`.
 
 ## 3) Download SAM weights
@@ -56,6 +64,19 @@ Defaults assume `sam_vit_b.pth`.
 cd backend/sam_server
 .venv\Scripts\Activate.ps1
 uv run uvicorn server:app --host 0.0.0.0 --port 9001
+```
+
+Quick install using pip (alternate, without uv):
+
+```powershell
+cd backend/sam_server
+py -3.11 -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install --upgrade pip
+# CPU-only
+pip install -r requirements-cpu.txt
+# or, GPU/CUDA (edit requirements.txt torch lines as needed)
+# pip install -r requirements.txt
 ```
 
 You should see it start. The endpoint is:
