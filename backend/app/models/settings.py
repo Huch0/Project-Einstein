@@ -3,11 +3,19 @@
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 _BACKEND_DIR = Path(__file__).resolve().parents[2]
 _ENV_FILE = _BACKEND_DIR / ".env"
+
+
+def _expand_origin(value: str) -> list[str]:
+    origin = value.rstrip("/")
+    if origin in {"http://localhost", "http://127.0.0.1"}:
+        return [f"{origin}:3000", origin]
+    return [origin]
 
 
 class Settings(BaseSettings):
@@ -31,8 +39,29 @@ class Settings(BaseSettings):
         "You are Project Einstein, a pedagogical AI mentor. "
         "Provide clear, concise guidance grounded in accurate science."
     )
+    FRONTEND_ORIGIN: str | None = Field(
+        default=None, validation_alias="FRONTEND_ORIGIN"
+    )
+    CORS_ALLOW_ORIGINS: list[str] = Field(default_factory=list)
+    CHAT_AUDIT_LOG_ENABLED: bool = True
+    CHAT_AUDIT_LOG_PATH: str = "logs/chat-turns.log"
 
     model_config = SettingsConfigDict(env_file=_ENV_FILE, extra="ignore")
+
+    @field_validator("CORS_ALLOW_ORIGINS", mode="before")
+    @classmethod
+    def _populate_cors(cls, value: list[str] | None, info: ValidationInfo) -> list[str]:
+        origins: list[str] = []
+
+        if value:
+            for origin in value:
+                origins.extend(_expand_origin(origin))
+
+        frontend_origin = info.data.get("FRONTEND_ORIGIN") if info.data else None
+        if isinstance(frontend_origin, str) and frontend_origin.strip():
+            origins.extend(_expand_origin(frontend_origin))
+
+        return list(dict.fromkeys(origins)) or _expand_origin("http://localhost:9002")
 
 
 @lru_cache

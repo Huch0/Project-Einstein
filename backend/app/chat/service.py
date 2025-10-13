@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Sequence
 from uuid import UUID, uuid4
 
+from .audit import ChatAuditLogger
 from .engine import ChatEngine
 from .repository import ChatRepository
 from .schemas import (
@@ -32,9 +33,15 @@ class EmptyMessageError(ValueError):
 class ChatService:
     """Core application service for chat interactions."""
 
-    def __init__(self, repository: ChatRepository, engine: ChatEngine) -> None:
+    def __init__(
+        self,
+        repository: ChatRepository,
+        engine: ChatEngine,
+        audit_logger: ChatAuditLogger | None = None,
+    ) -> None:
         self._repository = repository
         self._engine = engine
+        self._audit_logger = audit_logger
 
     async def process_turn(self, request: ChatTurnRequest) -> ChatTurnResponse:
         """Handle a user turn, returning generated assistant messages."""
@@ -59,6 +66,9 @@ class ChatService:
             conversation, user_message, request.metadata
         )
         conversation = await self._append_many(conversation.id, assistant_messages)
+
+        if self._audit_logger is not None:
+            await self._audit_logger.log_turn(conversation, user_message, assistant_messages)
 
         return ChatTurnResponse(
             conversation=conversation, new_messages=[user_message, *assistant_messages]

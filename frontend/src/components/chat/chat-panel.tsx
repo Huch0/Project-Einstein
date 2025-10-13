@@ -1,10 +1,11 @@
+
 'use client';
 
 import { useState, useRef, useEffect, type FormEvent } from 'react';
 import { useToast } from '@/hooks/use-toast';
-import { handleChatSubmit } from '@/lib/actions';
 
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { sendChatTurn } from '@/lib/chat-api';
 import { ChatMessages } from './chat-messages';
 import { ChatInput } from './chat-input';
 
@@ -23,12 +24,13 @@ export default function ChatPanel() {
     ]);
     const [input, setInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
+    const [conversationId, setConversationId] = useState<string | null>(null);
 
     const scrollAreaRef = useRef<HTMLDivElement>(null);
 
     const scrollToBottom = () => {
         if (scrollAreaRef.current) {
-            const viewport = scrollAreaRef.current.querySelector('div');
+            const viewport = scrollAreaRef.current.querySelector('[data-radix-scroll-area-viewport]') as HTMLDivElement | null;
             if (viewport) {
                 viewport.scrollTop = viewport.scrollHeight;
             }
@@ -49,26 +51,29 @@ export default function ChatPanel() {
         setInput('');
         setIsLoading(true);
 
-        const formData = new FormData(e.currentTarget);
-
         try {
-            const result = await handleChatSubmit(formData);
-            if (result?.error) {
-                toast({
-                    variant: 'destructive',
-                    title: 'Error',
-                    description: result.error,
-                });
-                setMessages((prev) => prev.slice(0, -1)); // Remove user message on error
-            } else if (result?.message) {
-                const aiResponse: Message = { role: 'assistant', content: result.message };
-                setMessages((prev) => [...prev, aiResponse]);
+            const chatResult = await sendChatTurn({
+                conversationId,
+                message: userInput.content,
+            });
+            setConversationId(chatResult.conversationId);
+
+            if (chatResult.assistantMessages.length > 0) {
+                const assistantMessages = chatResult.assistantMessages.map((assistantMessage) => ({
+                    role: 'assistant' as const,
+                    content: assistantMessage.content,
+                }));
+                setMessages((prev) => [...prev, ...assistantMessages]);
+            }
+
+            if (chatResult.toolMessages.length > 0) {
+                console.debug('Received tool messages (not yet rendered):', chatResult.toolMessages);
             }
         } catch (error) {
             toast({
                 variant: 'destructive',
                 title: 'Error',
-                description: 'An unexpected error occurred.',
+                description: error instanceof Error ? error.message : 'An unexpected error occurred.',
             });
             setMessages((prev) => prev.slice(0, -1));
         } finally {

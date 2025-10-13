@@ -9,6 +9,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from openai import AsyncOpenAI
 
+from pathlib import Path
+
+from ..chat.audit import ChatAuditLogger
 from ..chat.engine import ChatEngine, EchoChatEngine, OpenAIChatConfig, OpenAIChatEngine
 from ..chat.repository import ChatRepository
 from ..chat.schemas import ChatTurnRequest, ChatTurnResponse, ConversationState
@@ -18,6 +21,13 @@ from ..models.settings import settings
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 _repository = ChatRepository()
+
+
+def _create_audit_logger() -> ChatAuditLogger | None:
+    if not settings.CHAT_AUDIT_LOG_ENABLED:
+        return None
+    log_path = Path(settings.CHAT_AUDIT_LOG_PATH)
+    return ChatAuditLogger(log_path=log_path, enabled=True)
 
 
 def _create_chat_engine() -> ChatEngine:
@@ -41,7 +51,10 @@ def _create_chat_engine() -> ChatEngine:
 
 
 _engine: ChatEngine = _create_chat_engine()
-_service = ChatService(repository=_repository, engine=_engine)
+_audit_logger = _create_audit_logger()
+_service = ChatService(
+    repository=_repository, engine=_engine, audit_logger=_audit_logger
+)
 
 
 async def get_chat_repository() -> ChatRepository:
