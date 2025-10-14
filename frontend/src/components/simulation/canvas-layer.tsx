@@ -295,8 +295,10 @@ export function CanvasLayer({
         return null;
     }
 
+    const selectedColor = activeTool === 'highlighter' ? toolSettings.highlighter.color : toolSettings.pen.color;
+
     return (
-        <div className="absolute inset-4 z-10" style={{ pointerEvents: enabled ? 'auto' : 'none' }}>
+    <div className="absolute inset-4 z-10">
             {(enabled || isToolbarRendered) && (
                 <div
                     className={cn(
@@ -374,46 +376,54 @@ export function CanvasLayer({
                                         <EraserIcon className="h-4 w-4" />
                                     </Button>
                                 </div>
-                                <div className="flex flex-1 flex-wrap items-center gap-3">
-                                    <div className="flex flex-wrap items-center gap-2" style={{ minWidth: '220px' }}>
-                                        <Label htmlFor="tool-color" className="text-xs font-medium">
+                                <div className="flex w-full flex-wrap gap-4">
+                                    <div className="flex min-w-[220px] flex-col gap-2">
+                                        <Label htmlFor="tool-color" className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                                             Color
                                         </Label>
-                                        <div className="flex items-center gap-1 overflow-x-auto pb-1 sm:pb-0">
-                                            {presetColors.map((hex) => (
-                                                <button
-                                                    key={hex}
-                                                    type="button"
-                                                    onClick={() => handleColorChange(hex)}
-                                                    className={cn(
-                                                        'h-6 w-6 rounded-full border border-border transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
-                                                        activeTool === 'eraser'
-                                                            ? 'cursor-not-allowed opacity-40'
-                                                            : 'hover:scale-110 active:scale-95'
-                                                    )}
-                                                    style={{ backgroundColor: hex }}
-                                                    aria-label={`Select color ${hex}`}
-                                                    disabled={activeTool === 'eraser'}
-                                                />
-                                            ))}
+                                        <div className="flex items-center gap-3">
+                                            <div className="flex flex-wrap items-center gap-1 overflow-x-auto pb-1 sm:pb-0">
+                                                {presetColors.map((hex) => (
+                                                    <button
+                                                        key={hex}
+                                                        type="button"
+                                                        onClick={() => handleColorChange(hex)}
+                                                        className={cn(
+                                                            'h-6 w-6 rounded-full border border-border transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+                                                            activeTool === 'eraser'
+                                                                ? 'cursor-not-allowed opacity-40'
+                                                                : 'hover:scale-110 active:scale-95',
+                                                            activeTool !== 'eraser' && selectedColor === hex
+                                                                ? 'ring-2 ring-offset-1 ring-ring'
+                                                                : null
+                                                        )}
+                                                        style={{ backgroundColor: hex }}
+                                                        aria-label={`Select color ${hex}`}
+                                                        disabled={activeTool === 'eraser'}
+                                                    />
+                                                ))}
+                                            </div>
+                                            <Input
+                                                id="tool-color"
+                                                type="color"
+                                                value={currentColor}
+                                                onChange={(event) => handleColorChange(event.target.value)}
+                                                className="h-9 w-12 rounded-md border-border/70 p-1 transition-colors"
+                                                aria-label="Stroke color"
+                                                disabled={activeTool === 'eraser'}
+                                            />
                                         </div>
-                                        <Input
-                                            id="tool-color"
-                                            type="color"
-                                            value={currentColor}
-                                            onChange={(event) => handleColorChange(event.target.value)}
-                                            className="h-9 w-12 rounded-md border-border/70 p-1 transition-colors"
-                                            aria-label="Stroke color"
-                                            disabled={activeTool === 'eraser'}
-                                        />
                                     </div>
-                                    <div className="flex items-center gap-2">
-                                        <Label htmlFor="tool-size" className="text-xs font-medium">
-                                            Size
-                                        </Label>
+                                    <div className="flex min-w-[200px] flex-1 flex-col gap-2">
+                                        <div className="flex items-center justify-between">
+                                            <Label htmlFor="tool-size" className="text-xs font-medium">
+                                                Size
+                                            </Label>
+                                            <span className="text-xs text-muted-foreground">{currentSize}px</span>
+                                        </div>
                                         <Slider
                                             id="tool-size"
-                                            className="w-28"
+                                            className="w-full"
                                             min={activeTool === 'eraser' ? 12 : 1}
                                             max={activeTool === 'eraser' ? 64 : 24}
                                             step={activeTool === 'eraser' ? 2 : 1}
@@ -423,13 +433,18 @@ export function CanvasLayer({
                                         />
                                     </div>
                                     {activeTool === 'highlighter' ? (
-                                        <div className="flex items-center gap-2">
-                                            <Label htmlFor="highlight-opacity" className="text-xs font-medium">
-                                                Opacity
-                                            </Label>
+                                        <div className="flex min-w-[180px] flex-1 flex-col gap-2">
+                                            <div className="flex items-center justify-between">
+                                                <Label htmlFor="highlight-opacity" className="text-xs font-medium">
+                                                    Opacity
+                                                </Label>
+                                                <span className="text-xs text-muted-foreground">
+                                                    {(toolSettings.highlighter.opacity * 100).toFixed(0)}%
+                                                </span>
+                                            </div>
                                             <Slider
                                                 id="highlight-opacity"
-                                                className="w-24"
+                                                className="w-full"
                                                 min={0.1}
                                                 max={0.9}
                                                 step={0.05}
@@ -480,13 +495,15 @@ export function CanvasLayer({
                     )}
                 </div>
             )}
-            <div className="pointer-events-none absolute inset-0">
+            <div
+                className={cn('absolute inset-0', enabled ? 'pointer-events-auto' : 'pointer-events-none')}
+            >
                 <Stage
                     ref={stageRef}
                     width={dimensions.width}
                     height={dimensions.height}
                     listening={enabled}
-                    style={{ touchAction: 'none', pointerEvents: enabled ? 'auto' : 'none' }}
+                    style={{ touchAction: 'none' }}
                     onPointerDown={handlePointerDown}
                     onPointerMove={handlePointerMove}
                     onPointerUp={handlePointerUp}
