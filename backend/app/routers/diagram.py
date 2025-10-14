@@ -17,6 +17,7 @@ from app.agent.labeler import get_labeler, SegmentIn
 from app.tools.rapier_bridge import simulate_scene
 from app.models.settings import settings
 from app.sim.builder import build_scene
+from app.sim.analytic import simulate_pulley_scene
 
 router = APIRouter(prefix="/diagram", tags=["diagram"])
 
@@ -36,12 +37,15 @@ class DiagramParseResponse(BaseModel):
   scene: dict
   meta: dict = Field(default_factory=lambda: {"version": "0.1.0", "generator": "stub"})
   segments: list[dict] | None = None
+  labels: dict | None = None
 
 
 @router.post("/parse", response_model=DiagramParseResponse)
 async def parse_diagram(
   file: UploadFile = File(...),
   simulate: int = Query(0, ge=0, le=1, description="If 1, run Rapier simulation and include results in meta.simulation"),
+  gravity: float | None = Query(None, description="Override gravity (m/s^2) e.g. 9.81"),
+  wheel_radius: float | None = Query(None, description="Override pulley wheel radius (m) for builder/scene"),
 ) -> DiagramParseResponse:  # noqa: D401
   if file.content_type not in {"image/png", "image/jpeg", "image/jpg"}:
     raise HTTPException(status_code=400, detail="Unsupported file type")
@@ -86,7 +90,7 @@ async def parse_diagram(
     raise HTTPException(status_code=422, detail="Labeler returned no usable entities")
 
   # Parameters/mapping heuristics (scale) used by builder; gravity default
-  gravity = 10.0
+  gravity = float(gravity) if gravity is not None else 10.0
   mu_k = 0.5
 
   # Heuristic scale assumption: derive from detected surface width if available; else 100px=1m
@@ -98,11 +102,12 @@ async def parse_diagram(
 
   # Build Scene via Interface Builder (canonical path)
   # Convert labeler output to builder's GPT labels contract
-  gpt_labels = {
-    "entities": [
-      {"segment_id": str(e.id), "label": e.label, "props": {}} for e in labeled
-    ]
-  }
+  gpt_labels = {"entities": []}
+  for e in labeled:
+    props = {}
+    if e.label == "pulley" and wheel_radius is not None:
+      props["wheel_radius_m"] = float(wheel_radius)
+    gpt_labels["entities"].append({"segment_id": str(e.id), "label": e.label, "props": props})
 
   builder_req = {
     "image": {"width_px": width_px, "height_px": height_px},
@@ -129,6 +134,9 @@ async def parse_diagram(
   meta["builder"] = built.get("meta", {})
   if built.get("warnings"):
     meta["warnings"] = built.get("warnings")
+  # Surface friction and gravity hints for analytic fallback consumers
+  meta["surface"] = {"mu_k": mu_k}
+  meta["gravity_m_s2_hint"] = gravity
 
   # Optionally run Rapier simulation of the assembled scene
   if simulate == 1:
@@ -141,7 +149,18 @@ async def parse_diagram(
         "energy": sim_result.get("energy", {}),
       }
     except Exception as e:
-      meta["simulation_error"] = str(e)
+      # Fallback to analytic frames so the frontend still gets motion in stub mode
+      try:
+        analytic = simulate_pulley_scene(scene, total_time_s=2.0)
+        meta["simulation"] = {
+          "engine": "analytic",
+          "frames_count": len(analytic.get("frames", [])),
+          "frames": analytic.get("frames", []),
+          "energy": analytic.get("energy", {}),
+        }
+        meta["simulation_error"] = str(e)
+      except Exception as ee:
+        meta["simulation_error"] = f"rapier:{e}; analytic:{ee}"
 
   # Reflect masses from the built scene for parameters
   def _mass_from_scene(scn: dict, body_id: str, default: float = 3.0) -> float:
@@ -169,4 +188,5 @@ async def parse_diagram(
     scene=scene,
     meta=meta,
     segments=segments_payload,
+    labels=gpt_labels,
   )
