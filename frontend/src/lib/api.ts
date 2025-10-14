@@ -12,6 +12,7 @@ export interface DiagramParseResponse {
   mapping: { origin_mode: string; scale_m_per_px: number };
   scene: unknown;
   meta: Record<string, unknown>;
+  labels?: { entities: Array<{ segment_id: string; label: string; props?: Record<string, unknown> }> };
   segments?: Array<{
     id: number | string;
     bbox: [number, number, number, number];
