@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     S3_SECRET_ACCESS_KEY: str | None = None
     S3_BUCKET: str | None = None
     JWT_SECRET: str = "change-me"
-    SAM_MODE: str = "http"  # "stub" | "http"
+    SAM_MODE: str = "stub"  # "stub" | "http"
     SAM_HTTP_URL: str | None = "http://localhost:9001/segment"
     LABELER_MODE: str = "openai"  # "stub" | "openai"
     OPENAI_API_KEY: str | None = None
