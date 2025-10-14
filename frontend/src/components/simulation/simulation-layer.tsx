@@ -18,7 +18,7 @@ export function SimulationLayer({
 }: SimulationLayerProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const isDragging = useRef(false);
-    const { frames, currentIndex, backgroundImage, detections, imageSizePx, scale_m_per_px, scene } = useSimulation();
+    const { frames, currentIndex, backgroundImage, detections, imageSizePx, scale_m_per_px, scene, playing } = useSimulation();
     const currentFrame = frames[currentIndex];
 
     const clamp = (value: number, min: number, max: number) =>
@@ -97,8 +97,8 @@ export function SimulationLayer({
                             </div>
                         )}
 
-                        {/* Detection overlay */}
-                        {backgroundImage && imageSizePx && detections.length > 0 && (
+                        {/* Detection overlay (show only when not playing to avoid conflicting visuals) */}
+                        {backgroundImage && imageSizePx && detections.length > 0 && !playing && (
                             <DetectionOverlay
                                 containerRef={containerRef}
                                 imageSize={imageSizePx}
@@ -106,8 +106,8 @@ export function SimulationLayer({
                                 containerSize={dimensions}
                             />
                         )}
-                {/* Bodies rendering (analytic or external) */}
-                {currentFrame && currentFrame.bodies && currentFrame.bodies.map(b => {
+                {/* Bodies rendering (debug) - hide when background + detections are present to avoid confusion */}
+                {backgroundImage && detections.length > 0 ? null : currentFrame && (currentFrame as any).bodies && (currentFrame as any).bodies.map((b: any) => {
                     // Convert (x_m,y_m) meters (y down positive) → pixels in render box
                     const x_m = b.position_m[0];
                     const y_m = b.position_m[1];
@@ -123,8 +123,8 @@ export function SimulationLayer({
                         </div>
                     );
                 })}
-                {/* If frames come straight from backend meta.simulation.frames with positions dict, render simple dots */}
-                                {currentFrame && !(currentFrame as any).bodies && (currentFrame as any).positions && Object.entries((currentFrame as any).positions).map(([id, pos]) => {
+                {/* If frames come straight from backend meta.simulation.frames with positions dict, render simple dots (debug) */}
+                                {backgroundImage && detections.length > 0 ? null : currentFrame && !(currentFrame as any).bodies && (currentFrame as any).positions && Object.entries((currentFrame as any).positions).map(([id, pos]) => {
                     const [x_m, y_m] = pos as [number, number];
                                         const x = originPxX + x_m * containerPxPerMeter;
                                         const y = originPxY + y_m * containerPxPerMeter;
@@ -149,9 +149,37 @@ export function SimulationLayer({
                                         } else if ((currentFrame as any).positions) {
                                             Object.assign(frameBodies, (currentFrame as any).positions);
                                         }
-                                        const elems: JSX.Element[] = [];
-                                        const dims = { s, offsetX, offsetY };
-                                                            const moveRect = (detId: string, bodyId: string) => {
+                                         const elems: JSX.Element[] = [];
+                                         const dims = { s, offsetX, offsetY };
+
+                                         // Compute dynamic mapping from detection ids to body ids by nearest initial x
+                                         const detCentersPx: Record<string, number> = {};
+                                         const getDet = (id: string) => detections.find(d => d.id === id);
+                                         const detA = getDet('massA');
+                                         const detB = getDet('massB');
+                                         if (detA) detCentersPx['massA'] = offsetX + (detA.bbox_px[0] + detA.bbox_px[2] / 2) * s;
+                                         if (detB) detCentersPx['massB'] = offsetX + (detB.bbox_px[0] + detB.bbox_px[2] / 2) * s;
+                                         const bodyInitPxX: Record<string, number> = {};
+                                         for (const id of Object.keys(initialPos)) {
+                                             const [ix, iy] = initialPos[id];
+                                             bodyInitPxX[id] = originPxX + ix * containerPxPerMeter;
+                                         }
+                                         const bodyForDet = (detId: 'massA' | 'massB'): string | null => {
+                                             const cx = detCentersPx[detId];
+                                             if (cx == null) return null;
+                                             // among known bodies, pick closest in x
+                                             const ids = Object.keys(bodyInitPxX);
+                                             if (ids.length === 0) return null;
+                                             let best: string | null = null;
+                                             let bestDx = Infinity;
+                                             for (const bid of ids) {
+                                                 const dx = Math.abs(bodyInitPxX[bid] - cx);
+                                                 if (dx < bestDx) { bestDx = dx; best = bid; }
+                                             }
+                                             return best;
+                                         };
+
+                                         const moveRect = (detId: string, bodyId: string) => {
                                             const det = detections.find(d => d.id === detId);
                                             if (!det) return;
                                             const init = initialPos[bodyId];
@@ -185,13 +213,16 @@ export function SimulationLayer({
                                                                             border: '2px solid rgba(34,211,238,0.9)',
                                                                             borderRadius: 4,
                                                                             pointerEvents: 'none',
+                                                                            zIndex: 2,
                                                                         }}
                                                                     />
                                                                 );
                                         };
-                                        moveRect('massA', 'm1');
-                                        moveRect('massB', 'm2');
-                                        return <div className="absolute inset-0 pointer-events-none">{elems}</div>;
+                                        const mapA = bodyForDet('massA') || 'm1';
+                                        const mapB = bodyForDet('massB') || (mapA === 'm1' ? 'm2' : 'm1');
+                                        moveRect('massA', mapA);
+                                        moveRect('massB', mapB);
+                                        return <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 2 }}>{elems}</div>;
                                     })()
                                 )}
             </div>
