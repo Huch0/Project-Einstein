@@ -5,41 +5,64 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import { Slider } from '@/components/ui/slider';
 import { Play, Pause, StepForward, RotateCcw } from 'lucide-react';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { examplePulleyScene, Scene } from '@/simulation/types';
 import { useSimulation } from '@/simulation/SimulationContext';
 
 type Scope = 'global' | 'A' | 'B';
 
 export default function ParametersPanel() {
-  const { massA, massB, gravity, wheelRadius, dt, updateConfig, runAnalytic, playing, setPlaying } = useSimulation();
-  const [scene, setScene] = useState<Scene>(() => examplePulleyScene());
+  const { massA, massB, gravity, wheelRadius, dt, updateConfig, runAnalytic, playing, setPlaying, scene, labels } = useSimulation();
+  const [localScene, setLocalScene] = useState<Scene | null>(null);
   const [scope, setScope] = useState<Scope>('global');
 
   const rebuildScene = (overrides: Partial<{ mass_a_kg: number; mass_b_kg: number; gravity: number; wheel_radius_m: number }>) => {
-    const next = examplePulleyScene({
+    // If backend scene exists, we can just adjust local preview; analytic run remains available
+    const base = localScene ?? (scene as Scene | null);
+    const next = base ?? examplePulleyScene({
       mass_a_kg: overrides.mass_a_kg ?? massA,
       mass_b_kg: overrides.mass_b_kg ?? massB,
       gravity: overrides.gravity ?? gravity,
       wheel_radius_m: overrides.wheel_radius_m ?? wheelRadius,
     });
-    setScene(next);
+    setLocalScene(next);
     runAnalytic();
   };
+
+  // Derive simple entity mapping for display (A/B masses, pulley)
+  const entityMap = useMemo(() => {
+    const entities = labels?.entities ?? [];
+    const masses = entities.filter(e => (e.label || '').toLowerCase() === 'mass');
+    const pulley = entities.find(e => (e.label || '').toLowerCase() === 'pulley');
+    // Left/right by segment center x if segments present
+    return { masses, pulley };
+  }, [labels]);
 
   return (
     <Card className="h-full flex flex-col">
       <CardHeader className="space-y-4">
         <div className="flex items-center justify-between">
           <CardTitle className="font-headline text-lg">Controls & Parameters</CardTitle>
-          <div className="flex gap-1 rounded-md border bg-background p-1">
-            <Button type="button" variant={scope === 'global' ? 'default' : 'ghost'} size="sm" onClick={() => setScope('global')} aria-pressed={scope==='global'}>Global</Button>
-            <Button type="button" variant={scope === 'A' ? 'default' : 'ghost'} size="sm" onClick={() => setScope('A')} aria-pressed={scope==='A'}>A</Button>
-            <Button type="button" variant={scope === 'B' ? 'default' : 'ghost'} size="sm" onClick={() => setScope('B')} aria-pressed={scope==='B'}>B</Button>
-          </div>
+          {labels && labels.entities?.length ? (
+            <div className="flex gap-1 rounded-md border bg-background p-1">
+              <Button type="button" variant={scope === 'global' ? 'default' : 'ghost'} size="sm" onClick={() => setScope('global')} aria-pressed={scope==='global'}>Global</Button>
+              <Button type="button" variant={scope === 'A' ? 'default' : 'ghost'} size="sm" onClick={() => setScope('A')} aria-pressed={scope==='A'}>A</Button>
+              <Button type="button" variant={scope === 'B' ? 'default' : 'ghost'} size="sm" onClick={() => setScope('B')} aria-pressed={scope==='B'}>B</Button>
+            </div>
+          ) : null}
         </div>
       </CardHeader>
       <CardContent className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-6">
+        {!scene ? (
+          <div className="col-span-1 md:col-span-2 flex items-center justify-center text-sm text-muted-foreground">
+            Upload an image to enable Controls & Parameters.
+          </div>
+        ) : !labels || !labels.entities?.length ? (
+          <div className="col-span-1 md:col-span-2 flex items-center justify-center text-sm text-muted-foreground">
+            Analyzing diagram… parameters will appear after labeling.
+          </div>
+        ) : (
+        <>
         <div className="space-y-4">
           <h3 className="font-medium text-sm text-muted-foreground">Simulation Controls</h3>
           <div className="grid grid-cols-4 gap-2">
@@ -103,10 +126,12 @@ export default function ParametersPanel() {
           )}
           <div className="text-xs text-muted-foreground space-y-1">
             <div>Scope: <code>{scope}</code></div>
-            <div>Scene kind: <code>{scene.kind}</code></div>
-            <div>Rope length: {scene.constraints[0].rope_length_m?.toFixed(3)} m</div>
+            <div>Scene kind: <code>{(scene as any)?.kind ?? (localScene?.kind ?? 'unknown')}</code></div>
+            <div>Rope length: {(localScene ?? (scene as any))?.constraints?.[0]?.rope_length_m?.toFixed?.(3) ?? '—'} m</div>
           </div>
         </div>
+        </>
+        )}
       </CardContent>
     </Card>
   );
