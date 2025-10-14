@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Literal, Optional, Dict, Any
 
 from app.models.settings import settings
@@ -21,6 +21,7 @@ class LabeledEntity:
     label: Label
     bbox_px: list[int]
     confidence: float = 0.5
+    props: Dict[str, Any] = field(default_factory=dict)
 
 
 class BaseLabeler:
@@ -39,7 +40,15 @@ class StubLabeler(BaseLabeler):
 
         # surface: thinnest (min height)
         surface = min(segments, key=lambda s: s.bbox[3])
-        out.append(LabeledEntity(id=surface.id, label="surface", bbox_px=surface.bbox, confidence=0.6))
+        out.append(
+            LabeledEntity(
+                id=surface.id,
+                label="surface",
+                bbox_px=surface.bbox,
+                confidence=0.6,
+                props={"friction_k": 0.5, "gravity_m_s2": 10.0},
+            )
+        )
         used.add(surface.id)
 
         # pulley: most square among top-half
@@ -59,15 +68,41 @@ class StubLabeler(BaseLabeler):
                 best_err = err
                 best_sq = s
         if best_sq is not None:
-            out.append(LabeledEntity(id=best_sq.id, label="pulley", bbox_px=best_sq.bbox, confidence=0.6))
+            out.append(
+                LabeledEntity(
+                    id=best_sq.id,
+                    label="pulley",
+                    bbox_px=best_sq.bbox,
+                    confidence=0.6,
+                    props={"wheel_radius_m": 0.1},
+                )
+            )
             used.add(best_sq.id)
 
         # masses: next two largest remaining
         rem = [s for s in h if s.id not in used]
-        if rem:
-            out.append(LabeledEntity(id=rem[0].id, label="mass", bbox_px=rem[0].bbox, confidence=0.6))
-        if len(rem) > 1:
-            out.append(LabeledEntity(id=rem[1].id, label="mass", bbox_px=rem[1].bbox, confidence=0.6))
+        # Sort by x to assign mass guesses 3kg (left) and 6kg (right) per the attached diagram
+        rem_sorted = sorted(rem, key=lambda s: s.bbox[0])
+        if rem_sorted:
+            out.append(
+                LabeledEntity(
+                    id=rem_sorted[0].id,
+                    label="mass",
+                    bbox_px=rem_sorted[0].bbox,
+                    confidence=0.6,
+                    props={"mass_guess_kg": 3.0},
+                )
+            )
+        if len(rem_sorted) > 1:
+            out.append(
+                LabeledEntity(
+                    id=rem_sorted[1].id,
+                    label="mass",
+                    bbox_px=rem_sorted[1].bbox,
+                    confidence=0.6,
+                    props={"mass_guess_kg": 6.0},
+                )
+            )
         return out
 
 
@@ -86,10 +121,15 @@ class OpenAILabeler(BaseLabeler):
         import json
         segments_compact = [{"id": str(s.id), "bbox": s.bbox} for s in segments]
         instruction = (
-            "You are labeling physics diagram segments. "
+            "You label physics diagram segments AND propose simulation parameters. "
             "Allowed labels: mass, pulley, rope, surface. "
-            "Return a strict JSON object with key 'entities' containing a list of {id,label}. "
-            "Do not include any extra commentary or code fences."
+            "For each entity, include 'props' with optional keys: \n"
+            "- mass: mass_guess_kg (float) \n"
+            "- pulley: wheel_radius_m (float) \n"
+            "- surface: friction_k (float), scale_m_per_px (float, optional heuristic) \n"
+            "You may also include gravity_m_s2 in any entity props to suggest world gravity. "
+            "Return STRICT JSON: { 'entities': [ { 'id': '1', 'label': 'mass', 'props': { ... } }, ... ] } "
+            "No extra text or code fences."
         )
         input_payload = {
             "instruction": instruction,
@@ -131,13 +171,14 @@ class OpenAILabeler(BaseLabeler):
         for it in items:
             sid = str(it.get("id"))
             lab = it.get("label", "unknown")
+            props = it.get("props") or {}
             seg = by_id.get(sid)
             if seg is None:
                 # try raw id
                 seg = by_id.get(str(it.get("segment_id", sid)))
             if seg is None:
                 continue
-            out.append(LabeledEntity(id=seg.id, label=lab, bbox_px=seg.bbox, confidence=0.7))
+            out.append(LabeledEntity(id=seg.id, label=lab, bbox_px=seg.bbox, confidence=0.7, props=props))
         return out
 
 
