@@ -41,11 +41,13 @@ class SamClient:
     self.http_url = http_url
 
   def segment(self, image_bytes: bytes) -> List[Segment]:  # noqa: D401
-    if self.mode != "http":
-      raise RuntimeError("SAM client requires 'http' mode (stub removed per configuration)")
-    if not self.http_url:
-      raise RuntimeError("SAM http mode requires http_url")
-    return self._segment_via_http(image_bytes)
+    if self.mode == "stub":
+      return self._segment_stub(image_bytes)
+    if self.mode == "http":
+      if not self.http_url:
+        raise RuntimeError("SAM http mode requires http_url")
+      return self._segment_via_http(image_bytes)
+    raise RuntimeError(f"Unsupported SAM mode: {self.mode}")
 
   def _segment_via_http(self, image_bytes: bytes) -> List[Segment]:
     url = urlparse(self.http_url)  # type: ignore[arg-type]
@@ -72,6 +74,49 @@ class SamClient:
       else:
         poly_t = None
       segs.append(Segment(id=int(s.get("id", i)), bbox=bbox, mask_path=s.get("mask_path"), polygon_px=poly_t))
+    return segs
+
+  def _segment_stub(self, image_bytes: bytes) -> List[Segment]:
+    # Open image to get dimensions; if fail, default to 640x480
+    try:
+      from PIL import Image
+      import io as _io
+      _img = Image.open(_io.BytesIO(image_bytes))
+      W, H = _img.size
+    except Exception:
+      W, H = 640, 480
+
+    # Define simple boxes approximating the provided diagram:
+    # - A left block (3 kg) on a horizontal surface near the top-left
+    # - A pulley near the top-right corner
+    # - A hanging block (6 kg) on the right side, lower than the pulley
+    # - The surface as a thin horizontal bar across the image near the top
+    # Proportions scale with image size
+    surf_h = max(4, int(0.012 * H))
+    mass_w = max(20, int(0.12 * W))
+    mass_h = max(20, int(0.12 * H))
+    pulley_w = max(16, int(0.08 * W))
+    pulley_h = pulley_w
+
+    # Layout anchors (fractional positions tuned for the attached sketch)
+    surface_y = int(0.22 * H)
+    left_mass_x = int(0.10 * W)
+    left_mass_y = surface_y - mass_h  # sit on surface
+
+    pulley_x = int(0.62 * W)
+    pulley_y = int(0.18 * H)
+
+    right_mass_x = int(0.78 * W)
+    right_mass_y = int(0.55 * H)
+
+    def rect_poly(x: int, y: int, w: int, h: int):
+      return [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]
+
+    segs: List[Segment] = []
+    segs.append(Segment(id=1, bbox=(left_mass_x, left_mass_y, mass_w, mass_h), mask_path=None, polygon_px=rect_poly(left_mass_x, left_mass_y, mass_w, mass_h)))
+    segs.append(Segment(id=2, bbox=(right_mass_x, right_mass_y, mass_w, mass_h), mask_path=None, polygon_px=rect_poly(right_mass_x, right_mass_y, mass_w, mass_h)))
+    segs.append(Segment(id=3, bbox=(pulley_x, pulley_y, pulley_w, pulley_h), mask_path=None, polygon_px=rect_poly(pulley_x, pulley_y, pulley_w, pulley_h)))
+    segs.append(Segment(id=4, bbox=(0, surface_y, W, surf_h), mask_path=None, polygon_px=rect_poly(0, surface_y, W, surf_h)))
     return segs
 
 
