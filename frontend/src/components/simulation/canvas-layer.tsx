@@ -12,13 +12,14 @@ import {
     Trash2,
     ChevronDown,
     ChevronUp,
+    Palette,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Slider } from '@/components/ui/slider';
 import { cn } from '@/lib/utils';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 
 export type CanvasTool = 'pen' | 'highlighter' | 'eraser';
 
@@ -65,6 +66,8 @@ export function CanvasLayer({
     const [isToolbarVisible, setIsToolbarVisible] = useState(false);
     const [isToolbarCollapsed, setIsToolbarCollapsed] = useState(false);
     const isInternalStrokeUpdate = useRef(false);
+    const colorInputRef = useRef<HTMLInputElement | null>(null);
+    const [isColorPopoverOpen, setIsColorPopoverOpen] = useState(false);
 
     const commitStrokesChange = (action: SetStateAction<CanvasStroke[]>) => {
         isInternalStrokeUpdate.current = true;
@@ -91,8 +94,15 @@ export function CanvasLayer({
     useEffect(() => {
         if (!enabled) {
             setIsToolbarCollapsed(false);
+            setIsColorPopoverOpen(false);
         }
     }, [enabled]);
+
+    useEffect(() => {
+        if (activeTool === 'eraser') {
+            setIsColorPopoverOpen(false);
+        }
+    }, [activeTool]);
 
     useEffect(() => {
         let rafHandle: number | null = null;
@@ -267,13 +277,6 @@ export function CanvasLayer({
         });
     };
 
-    const currentColor =
-        activeTool === 'pen'
-            ? toolSettings.pen.color
-            : activeTool === 'highlighter'
-                ? toolSettings.highlighter.color
-                : '#f8fafc';
-
     const handleColorChange = (color: string) => {
         if (activeTool === 'eraser') return;
         setToolSettings((prev) => {
@@ -295,7 +298,10 @@ export function CanvasLayer({
         return null;
     }
 
-    const selectedColor = activeTool === 'highlighter' ? toolSettings.highlighter.color : toolSettings.pen.color;
+    const displayColor =
+        activeTool === 'highlighter'
+            ? toolSettings.highlighter.color
+            : toolSettings.pen.color;
 
     return (
     <div className="absolute inset-4 z-10">
@@ -377,38 +383,81 @@ export function CanvasLayer({
                                     </Button>
                                 </div>
                                 <div className="flex w-full flex-wrap gap-4">
-                                    <div className="flex min-w-[220px] flex-col gap-2">
+                                    <div className="flex min-w-[220px] flex-col gap-3">
                                         <Label htmlFor="tool-color" className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                                             Color
                                         </Label>
-                                        <div className="flex items-center gap-3">
-                                            <div className="flex flex-wrap items-center gap-1 overflow-x-auto pb-1 sm:pb-0">
-                                                {presetColors.map((hex) => (
+                                        <div className="flex flex-wrap items-center gap-3">
+                                            <Popover
+                                                open={isColorPopoverOpen}
+                                                onOpenChange={(nextOpen) => {
+                                                    if (activeTool === 'eraser') return;
+                                                    setIsColorPopoverOpen(nextOpen);
+                                                }}
+                                            >
+                                                <PopoverTrigger asChild>
                                                     <button
-                                                        key={hex}
                                                         type="button"
-                                                        onClick={() => handleColorChange(hex)}
                                                         className={cn(
-                                                            'h-6 w-6 rounded-full border border-border transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
-                                                            activeTool === 'eraser'
-                                                                ? 'cursor-not-allowed opacity-40'
-                                                                : 'hover:scale-110 active:scale-95',
-                                                            activeTool !== 'eraser' && selectedColor === hex
-                                                                ? 'ring-2 ring-offset-1 ring-ring'
-                                                                : null
+                                                            'relative flex h-10 w-10 items-center justify-center rounded-full border border-border shadow-sm transition-transform hover:scale-105 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+                                                            activeTool === 'eraser' ? 'cursor-not-allowed opacity-40' : null
                                                         )}
-                                                        style={{ backgroundColor: hex }}
-                                                        aria-label={`Select color ${hex}`}
+                                                        style={{ backgroundColor: displayColor }}
+                                                        aria-label="Choose color"
                                                         disabled={activeTool === 'eraser'}
-                                                    />
-                                                ))}
-                                            </div>
-                                            <Input
+                                                    >
+                                                        <Palette className="absolute -bottom-1 -right-1 h-4 w-4 rounded-full border border-border bg-background/90 p-0.5 text-muted-foreground" />
+                                                    </button>
+                                                </PopoverTrigger>
+                                                <PopoverContent className="w-64 space-y-4" align="start">
+                                                    <div className="space-y-2">
+                                                        <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Presets</span>
+                                                        <div className="grid grid-cols-4 gap-2">
+                                                            {presetColors.map((hex) => (
+                                                                <button
+                                                                    key={hex}
+                                                                    type="button"
+                                                                    onClick={() => {
+                                                                        handleColorChange(hex);
+                                                                        setIsColorPopoverOpen(false);
+                                                                    }}
+                                                                    className={cn(
+                                                                        'h-8 w-8 rounded-full border border-border transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+                                                                        displayColor === hex ? 'ring-2 ring-offset-1 ring-ring' : 'hover:scale-110 active:scale-95'
+                                                                    )}
+                                                                    style={{ backgroundColor: hex }}
+                                                                    aria-label={`Select color ${hex}`}
+                                                                />
+                                                            ))}
+                                                        </div>
+                                                    </div>
+                                                    <div className="space-y-2">
+                                                        <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Custom</span>
+                                                        <div className="flex items-center gap-3">
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => colorInputRef.current?.click()}
+                                                                className="flex h-9 w-9 items-center justify-center rounded-full border border-border bg-muted shadow-sm transition-transform hover:scale-105 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                                                                aria-label="Choose custom color"
+                                                            >
+                                                                <span className="h-5 w-5 rounded-full border border-border shadow-sm" style={{ backgroundColor: displayColor }} />
+                                                            </button>
+                                                            <span className="text-xs text-muted-foreground">{displayColor.toUpperCase()}</span>
+                                                        </div>
+                                                    </div>
+                                                </PopoverContent>
+                                            </Popover>
+                                            <span className="text-xs font-medium text-muted-foreground">{displayColor.toUpperCase()}</span>
+                                            <input
                                                 id="tool-color"
+                                                ref={colorInputRef}
                                                 type="color"
-                                                value={currentColor}
-                                                onChange={(event) => handleColorChange(event.target.value)}
-                                                className="h-9 w-12 rounded-md border-border/70 p-1 transition-colors"
+                                                value={displayColor}
+                                                onChange={(event) => {
+                                                    handleColorChange(event.target.value);
+                                                    setIsColorPopoverOpen(false);
+                                                }}
+                                                className="sr-only"
                                                 aria-label="Stroke color"
                                                 disabled={activeTool === 'eraser'}
                                             />
