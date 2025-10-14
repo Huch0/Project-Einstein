@@ -31,6 +31,7 @@ interface SimulationState extends SimulationConfig {
   imageSizePx: { width: number; height: number } | null;
   scale_m_per_px: number | null;
   scene: any | null;
+  labels: { entities: Array<{ segment_id: string; label: string; props?: Record<string, unknown> }> } | null;
   parseAndBind: (file: File) => Promise<void>;
 }
 
@@ -58,6 +59,7 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
   const [imageSizePx, setImageSizePx] = useState<{ width: number; height: number } | null>(null);
   const [scale_m_per_px, setScale] = useState<number | null>(null);
   const [scene, setScene] = useState<any | null>(null);
+  const [labels, setLabels] = useState<{ entities: Array<{ segment_id: string; label: string; props?: Record<string, unknown> }> } | null>(null);
 
   const runAnalytic = useCallback(() => {
     const result = simulatePulleyAnalytic({
@@ -86,7 +88,12 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     setDetections(res.detections);
     setImageSizePx({ width: res.image.width_px, height: res.image.height_px });
     setScale(res.mapping.scale_m_per_px);
-  setScene(res.scene as any);
+    setScene(res.scene as any);
+    if (res.labels && Array.isArray(res.labels.entities)) {
+      setLabels(res.labels as any);
+    } else {
+      setLabels(null);
+    }
     // Prefer backend Rapier frames if present; else fall back to analytic
     const sim = (res.meta as any)?.simulation;
     const framesFromBackend = sim?.frames as Array<{ t: number; positions: Record<string, [number, number]> }> | undefined;
@@ -160,6 +167,7 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     imageSizePx,
     scale_m_per_px,
     scene,
+    labels,
     parseAndBind,
   };
   return <SimulationContext.Provider value={value}>{children}</SimulationContext.Provider>;
