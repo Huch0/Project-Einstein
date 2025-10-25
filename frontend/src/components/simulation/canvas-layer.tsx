@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import type { Dispatch, SetStateAction } from 'react';
 import { Layer, Line, Stage } from 'react-konva';
 import type { Stage as KonvaStage } from 'konva/lib/Stage';
 import type { KonvaEventObject } from 'konva/lib/Node';
+import type { Vector2d } from 'konva/lib/types';
 import {
     PenLine,
     Highlighter as HighlighterIcon,
@@ -20,83 +20,58 @@ import { Label } from '@/components/ui/label';
 import { Slider } from '@/components/ui/slider';
 import { cn } from '@/lib/utils';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { createStrokeNode, useWhiteboardStore } from '@/whiteboard/context';
+import {
+    isStrokeNode,
+    type CameraState,
+    type InteractionMode,
+    type StrokeNode,
+    type StrokePoint,
+    type WhiteboardDrawingTool,
+} from '@/whiteboard/types';
 
-export type CanvasTool = 'pen' | 'highlighter' | 'eraser';
-
-type StrokePoint = { x: number; y: number };
-
-export type CanvasStroke = {
-    id: string;
-    tool: CanvasTool;
-    color: string;
-    width: number;
-    opacity: number;
-    compositeOperation: GlobalCompositeOperation;
-    points: StrokePoint[];
-};
+export type CanvasTool = WhiteboardDrawingTool;
 
 export type CanvasLayerProps = {
-    strokes: CanvasStroke[];
-    onStrokesChange: Dispatch<SetStateAction<CanvasStroke[]>>;
-    enabled: boolean;
+    mode: InteractionMode;
     dimensions: { width: number; height: number };
+    camera: CameraState;
+    onCameraChange: (camera: CameraState) => void;
 };
 
 const createStrokeId = () =>
     typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
 
-export function CanvasLayer({
-    strokes,
-    onStrokesChange,
-    enabled,
-    dimensions,
-}: CanvasLayerProps) {
+const MIN_ZOOM = 0.35;
+const MAX_ZOOM = 3.5;
+
+export function CanvasLayer({ mode, dimensions, camera, onCameraChange }: CanvasLayerProps) {
     const presetColors = ['#1d4ed8', '#ef4444', '#22c55e', '#fbbf24', '#a855f7', '#0ea5e9', '#f97316', '#0f172a'];
     const stageRef = useRef<KonvaStage | null>(null);
     const isDrawing = useRef(false);
     const activePointerId = useRef<number | null>(null);
+    const activeStrokeIdRef = useRef<string | null>(null);
     const [activeTool, setActiveTool] = useState<CanvasTool>('pen');
     const [toolSettings, setToolSettings] = useState({
         pen: { color: '#1d4ed8', size: 3 },
         highlighter: { color: '#facc15', size: 12, opacity: 0.35 },
         eraser: { size: 24 },
     });
-    const [redoStack, setRedoStack] = useState<CanvasStroke[]>([]);
+    const [redoStack, setRedoStack] = useState<StrokeNode[]>([]);
     const [isToolbarRendered, setIsToolbarRendered] = useState(false);
     const [isToolbarVisible, setIsToolbarVisible] = useState(false);
     const [isToolbarCollapsed, setIsToolbarCollapsed] = useState(false);
-    const isInternalStrokeUpdate = useRef(false);
     const colorInputRef = useRef<HTMLInputElement | null>(null);
     const [isColorPopoverOpen, setIsColorPopoverOpen] = useState(false);
-
-    const commitStrokesChange = (action: SetStateAction<CanvasStroke[]>) => {
-        isInternalStrokeUpdate.current = true;
-        onStrokesChange((prev) => {
-            const nextValue = typeof action === 'function' ? (action as (value: CanvasStroke[]) => CanvasStroke[])(prev) : action;
-
-            if (nextValue === prev) {
-                isInternalStrokeUpdate.current = false;
-            }
-
-            return nextValue;
-        });
-    };
+    const { strokeNodes, addNode, updateNode, removeNode, clearStrokes } = useWhiteboardStore();
+    const isDrawingEnabled = mode === 'draw';
 
     useEffect(() => {
-        if (isInternalStrokeUpdate.current) {
-            isInternalStrokeUpdate.current = false;
-            return;
-        }
-
-        setRedoStack([]);
-    }, [strokes]);
-
-    useEffect(() => {
-        if (!enabled) {
+        if (!isDrawingEnabled) {
             setIsToolbarCollapsed(false);
             setIsColorPopoverOpen(false);
         }
-    }, [enabled]);
+    }, [isDrawingEnabled]);
 
     useEffect(() => {
         if (activeTool === 'eraser') {
@@ -108,7 +83,7 @@ export function CanvasLayer({
         let rafHandle: number | null = null;
         let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
 
-        if (enabled) {
+        if (isDrawingEnabled) {
             setIsToolbarRendered(true);
             rafHandle = requestAnimationFrame(() => {
                 setIsToolbarVisible(true);
@@ -128,29 +103,59 @@ export function CanvasLayer({
                 clearTimeout(timeoutHandle);
             }
         };
-    }, [enabled, isToolbarRendered]);
+    }, [isDrawingEnabled, isToolbarRendered]);
+
+    useEffect(() => {
+        if (mode !== 'pan') {
+            stageRef.current?.stopDrag();
+        }
+    }, [mode]);
+
+    const getWorldPointerPosition = (): Vector2d | null => {
+        const stage = stageRef.current;
+        if (!stage) return null;
+        const pointer = stage.getPointerPosition();
+        if (!pointer) return null;
+        const transform = stage.getAbsoluteTransform().copy();
+        transform.invert();
+        return transform.point(pointer);
+    };
+
+    const emitCameraChange = (next: Partial<CameraState>) => {
+        const nextCamera: CameraState = {
+            position: next.position ?? camera.position,
+            zoom: next.zoom ?? camera.zoom,
+        };
+        const zoomChanged = Math.abs(nextCamera.zoom - camera.zoom) > 0.0001;
+        const posChanged =
+            Math.abs(nextCamera.position.x - camera.position.x) > 0.1 ||
+            Math.abs(nextCamera.position.y - camera.position.y) > 0.1;
+        if (zoomChanged || posChanged) {
+            onCameraChange(nextCamera);
+        }
+    };
 
     const appendPoint = (point: StrokePoint) => {
-        commitStrokesChange((prev) => {
-            if (!isDrawing.current || prev.length === 0) {
-                return prev;
+        const strokeId = activeStrokeIdRef.current;
+        if (!isDrawing.current || !strokeId) {
+            return;
+        }
+
+        updateNode(strokeId, (node) => {
+            if (!isStrokeNode(node)) {
+                return node;
             }
-            const updated = [...prev];
-            const lastStroke = updated[updated.length - 1];
-            updated[updated.length - 1] = {
-                ...lastStroke,
-                points: [...lastStroke.points, point],
-            };
-            return updated;
+            return { ...node, points: [...node.points, point] };
         });
     };
 
     const resolveStrokeConfig = () => {
+        const scaleFactor = camera.zoom || 1;
         if (activeTool === 'highlighter') {
             return {
                 tool: 'highlighter' as const,
                 color: toolSettings.highlighter.color,
-                width: toolSettings.highlighter.size,
+                width: toolSettings.highlighter.size / scaleFactor,
                 opacity: toolSettings.highlighter.opacity,
                 compositeOperation: 'source-over' as const,
             };
@@ -160,7 +165,7 @@ export function CanvasLayer({
             return {
                 tool: 'eraser' as const,
                 color: '#000000',
-                width: toolSettings.eraser.size,
+                width: toolSettings.eraser.size / scaleFactor,
                 opacity: 1,
                 compositeOperation: 'destination-out' as const,
             };
@@ -169,20 +174,16 @@ export function CanvasLayer({
         return {
             tool: 'pen' as const,
             color: toolSettings.pen.color,
-            width: toolSettings.pen.size,
+            width: toolSettings.pen.size / scaleFactor,
             opacity: 1,
             compositeOperation: 'source-over' as const,
         };
     };
 
-    const getStagePointer = () => {
-        const stage = stageRef.current;
-        if (!stage) return null;
-        return stage.getPointerPosition() ?? null;
-    };
+    const getStagePointer = () => getWorldPointerPosition();
 
     const handlePointerDown = (event: KonvaEventObject<PointerEvent>) => {
-        if (!enabled) return;
+        if (!isDrawingEnabled) return;
         const pointerPosition = getStagePointer();
         if (!pointerPosition) return;
 
@@ -190,18 +191,23 @@ export function CanvasLayer({
         activePointerId.current = event.evt.pointerId ?? null;
         setRedoStack([]);
         const strokeConfig = resolveStrokeConfig();
-        commitStrokesChange((prev) => [
-            ...prev,
-            {
-                id: createStrokeId(),
+        const strokeId = createStrokeId();
+        addNode(
+            createStrokeNode({
+                id: strokeId,
+                tool: strokeConfig.tool,
+                strokeColor: strokeConfig.color,
+                strokeWidth: strokeConfig.width,
+                opacity: strokeConfig.opacity,
+                compositeOperation: strokeConfig.compositeOperation,
                 points: [{ x: pointerPosition.x, y: pointerPosition.y }],
-                ...strokeConfig,
-            },
-        ]);
+            })
+        );
+        activeStrokeIdRef.current = strokeId;
     };
 
     const handlePointerMove = (event: KonvaEventObject<PointerEvent>) => {
-        if (!enabled || !isDrawing.current) return;
+        if (!isDrawingEnabled || !isDrawing.current) return;
         if (activePointerId.current !== null && event.evt.pointerId !== activePointerId.current) return;
 
         const pointerPosition = getStagePointer();
@@ -213,6 +219,7 @@ export function CanvasLayer({
     const endDrawing = () => {
         isDrawing.current = false;
         activePointerId.current = null;
+        activeStrokeIdRef.current = null;
     };
 
     const handlePointerUp = (event: KonvaEventObject<PointerEvent>) => {
@@ -225,17 +232,13 @@ export function CanvasLayer({
     };
 
     const handleUndo = () => {
-        if (strokes.length === 0) {
+        if (strokeNodes.length === 0) {
             return;
         }
 
-        const removed = strokes[strokes.length - 1];
-        const nextStrokes = strokes.slice(0, -1);
-
-        commitStrokesChange(nextStrokes);
-        if (removed) {
-            setRedoStack((stack) => [...stack, removed]);
-        }
+        const removed = strokeNodes[strokeNodes.length - 1];
+        removeNode(removed.id);
+        setRedoStack((stack) => [...stack, removed]);
     };
 
     const handleRedo = () => {
@@ -243,19 +246,57 @@ export function CanvasLayer({
             return;
         }
 
-        const restored = redoStack[redoStack.length - 1];
-        if (!restored) {
-            return;
-        }
-
-        const nextRedo = redoStack.slice(0, -1);
-        commitStrokesChange((strokesState) => [...strokesState, restored]);
-        setRedoStack(nextRedo);
+        setRedoStack((stack) => {
+            const restored = stack[stack.length - 1];
+            if (!restored) {
+                return stack;
+            }
+            addNode(restored);
+            return stack.slice(0, -1);
+        });
     };
 
     const handleClear = () => {
-        commitStrokesChange(() => []);
+        clearStrokes();
         setRedoStack([]);
+    };
+
+    const handleStageDrag = (event: KonvaEventObject<DragEvent>) => {
+        if (mode !== 'pan') return;
+        const stage = event.target.getStage();
+        if (!stage) return;
+        const pos = stage.position();
+        emitCameraChange({ position: pos });
+    };
+
+    const handleWheel = (event: KonvaEventObject<WheelEvent>) => {
+        if (!stageRef.current) return;
+        event.evt.preventDefault();
+        const stage = stageRef.current;
+        const pointer = stage.getPointerPosition();
+        if (!pointer) return;
+
+        const scaleBy = 1.05;
+        const oldScale = stage.scaleX();
+        const direction = event.evt.deltaY > 0 ? -1 : 1;
+        const newScale = direction > 0 ? oldScale * scaleBy : oldScale / scaleBy;
+        const clampedScale = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, newScale));
+
+        const mousePointTo = {
+            x: (pointer.x - stage.x()) / oldScale,
+            y: (pointer.y - stage.y()) / oldScale,
+        };
+
+        const newPosition = {
+            x: pointer.x - mousePointTo.x * clampedScale,
+            y: pointer.y - mousePointTo.y * clampedScale,
+        };
+
+        stage.scale({ x: clampedScale, y: clampedScale });
+        stage.position(newPosition);
+        stage.batchDraw();
+
+        emitCameraChange({ zoom: clampedScale, position: newPosition });
     };
 
     const currentSize =
@@ -303,9 +344,12 @@ export function CanvasLayer({
             ? toolSettings.highlighter.color
             : toolSettings.pen.color;
 
+    const pointerClassName =
+        mode === 'simulation' ? 'pointer-events-none' : 'pointer-events-auto';
+
     return (
     <div className="absolute inset-4 z-10">
-            {(enabled || isToolbarRendered) && (
+            {(isDrawingEnabled || isToolbarRendered) && (
                 <div
                     className={cn(
                         'pointer-events-auto absolute bottom-4 left-1/2 z-20 -translate-x-1/2 rounded-xl border border-border/60 bg-background/95 shadow-xl backdrop-blur-md transition-all duration-300 ease-out',
@@ -510,7 +554,7 @@ export function CanvasLayer({
                                         variant="outline"
                                         size="icon"
                                         onClick={handleUndo}
-                                        disabled={strokes.length === 0}
+                                        disabled={strokeNodes.length === 0}
                                         aria-label="Undo"
                                         className="transition-transform duration-200 hover:scale-105 disabled:cursor-not-allowed"
                                     >
@@ -532,7 +576,7 @@ export function CanvasLayer({
                                         variant="outline"
                                         size="icon"
                                         onClick={handleClear}
-                                        disabled={strokes.length === 0}
+                                        disabled={strokeNodes.length === 0}
                                         aria-label="Clear drawing"
                                         className="transition-transform duration-200 hover:scale-105 disabled:cursor-not-allowed"
                                     >
@@ -545,27 +589,35 @@ export function CanvasLayer({
                 </div>
             )}
             <div
-                className={cn('absolute inset-0', enabled ? 'pointer-events-auto' : 'pointer-events-none')}
+                className={cn('absolute inset-0', pointerClassName)}
             >
                 <Stage
                     ref={stageRef}
                     width={dimensions.width}
                     height={dimensions.height}
-                    listening={enabled}
+                    listening={true}
                     style={{ touchAction: 'none' }}
+                    x={camera.position.x}
+                    y={camera.position.y}
+                    scaleX={camera.zoom}
+                    scaleY={camera.zoom}
+                    draggable={mode === 'pan'}
                     onPointerDown={handlePointerDown}
                     onPointerMove={handlePointerMove}
                     onPointerUp={handlePointerUp}
                     onPointerCancel={handlePointerLeave}
                     onPointerLeave={handlePointerLeave}
+                    onDragMove={handleStageDrag}
+                    onDragEnd={handleStageDrag}
+                    onWheel={handleWheel}
                 >
                     <Layer>
-                        {strokes.map((stroke, index) => (
+                        {strokeNodes.map((stroke) => (
                             <Line
-                                key={stroke.id ?? `stroke-${index}`}
+                                key={stroke.id}
                                 points={stroke.points.flatMap((point) => [point.x, point.y])}
-                                stroke={stroke.tool === 'eraser' ? '#ffffff' : stroke.color}
-                                strokeWidth={stroke.width}
+                                stroke={stroke.tool === 'eraser' ? '#ffffff' : stroke.strokeColor}
+                                strokeWidth={stroke.strokeWidth}
                                 lineJoin="round"
                                 lineCap="round"
                                 opacity={stroke.opacity}
