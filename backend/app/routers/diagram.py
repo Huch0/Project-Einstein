@@ -1,12 +1,13 @@
-"""Diagram parsing stub endpoint.
+"""Diagram parsing endpoint.
 
-Accepts an uploaded image and returns deterministic mock detections plus a
-pulley scene (two masses). This scaffolds the image→scene pipeline until
-real CV/ML integration.
+Accepts an uploaded image and returns detections, scene, and optional simulation.
+Orchestrates SAM segmentation → GPT labeling → Scene building → Matter.js physics.
 """
 from __future__ import annotations
 
 from fastapi import APIRouter, File, UploadFile, HTTPException, Query
+import logging
+import json
 from PIL import Image
 import io
 from pydantic import BaseModel, Field
@@ -14,12 +15,13 @@ from pydantic import BaseModel, Field
 from app.sim.schema import example_pulley_scene
 from app.pipeline.sam_detector import SamClient
 from app.agent.labeler import get_labeler, SegmentIn
-from app.tools.rapier_bridge import simulate_scene
+from app.sim.physics import simulate_scene, simulate_pulley_scene, simulate_ramp_scene
 from app.models.settings import settings
-from app.sim.builder import build_scene
-from app.sim.analytic import simulate_pulley_scene
+from app.sim.builder import build_scene as build_scene_v1
+from app.sim.registry import build_scene_v2
 
 router = APIRouter(prefix="/diagram", tags=["diagram"])
+logger = logging.getLogger("diagram")
 
 
 class Detection(BaseModel):
@@ -27,6 +29,7 @@ class Detection(BaseModel):
   label: str
   bbox_px: tuple[int, int, int, int]  # x,y,w,h
   source_segment_id: int | str | None = None
+  polygon_px: list[tuple[float, float]] | None = None  # precise object outline from SAM
 
 
 class DiagramParseResponse(BaseModel):
@@ -43,9 +46,10 @@ class DiagramParseResponse(BaseModel):
 @router.post("/parse", response_model=DiagramParseResponse)
 async def parse_diagram(
   file: UploadFile = File(...),
-  simulate: int = Query(0, ge=0, le=1, description="If 1, run Rapier simulation and include results in meta.simulation"),
+  simulate: int = Query(0, ge=0, le=1, description="If 1, run Matter.js simulation and include results in meta.simulation"),
   gravity: float | None = Query(None, description="Override gravity (m/s^2) e.g. 9.81"),
   wheel_radius: float | None = Query(None, description="Override pulley wheel radius (m) for builder/scene"),
+  debug: int = Query(0, ge=0, le=1, description="If 1, include detailed builder/labeler information in meta.debug and log it."),
 ) -> DiagramParseResponse:  # noqa: D401
   if file.content_type not in {"image/png", "image/jpeg", "image/jpg"}:
     raise HTTPException(status_code=400, detail="Unsupported file type")
@@ -70,21 +74,71 @@ async def parse_diagram(
   labeler = get_labeler()
   labeled = labeler.label([SegmentIn(id=s["id"], bbox=s["bbox"], mask_path=s.get("mask_path")) for s in segments_payload])
 
-  # Map labeled entities to canonical detections order: massA, pulley, massB, surface
-  masses = [e for e in labeled if e.label == "mass"]
-  pulleys = [e for e in labeled if e.label == "pulley"]
-  surfaces = [e for e in labeled if e.label == "surface"]
-  # sort masses by x position (left=massA, right=massB)
-  masses_sorted = sorted(masses, key=lambda e: e.bbox_px[0])
+  # Prepare compact debug view of labeler output
+  debug_labeler_entities = [
+    {
+      "id": str(e.id),
+      "label": e.label,
+      "bbox_px": list(e.bbox_px),
+      "props": getattr(e, "props", {}),
+    }
+    for e in labeled
+  ]
+
+  # Map labeled entities to detections (dynamic based on GPT labeling)
+  # GPT determines what entities exist; we assign canonical IDs for frontend compatibility
+  segment_map = {s.id: s for s in segs}
+  
   detections: list[Detection] = []
-  if len(masses_sorted) > 0:
-    detections.append(Detection(id="massA", label="block", bbox_px=tuple(masses_sorted[0].bbox_px), source_segment_id=masses_sorted[0].id))
-  if len(pulleys) > 0:
-    detections.append(Detection(id="pulley", label="pulley", bbox_px=tuple(pulleys[0].bbox_px), source_segment_id=pulleys[0].id))
-  if len(masses_sorted) > 1:
-    detections.append(Detection(id="massB", label="block", bbox_px=tuple(masses_sorted[1].bbox_px), source_segment_id=masses_sorted[1].id))
-  if len(surfaces) > 0:
-    detections.append(Detection(id="surface", label="table", bbox_px=tuple(surfaces[0].bbox_px), source_segment_id=surfaces[0].id))
+  
+  # Collect masses and sort by x position for deterministic ordering
+  masses = [e for e in labeled if e.label == "mass"]
+  masses_sorted = sorted(masses, key=lambda e: e.bbox_px[0])
+  
+  # Add masses with canonical IDs (massA for first, massB for second, then mass_2, mass_3, ...)
+  # This maintains frontend compatibility while allowing GPT to determine mass count
+  for idx, mass in enumerate(masses_sorted):
+    seg = segment_map.get(mass.id)
+    if idx == 0:
+      mass_id = "massA"
+    elif idx == 1:
+      mass_id = "massB"
+    else:
+      mass_id = f"mass_{idx}"  # Additional masses beyond pulley constraint
+    
+    detections.append(Detection(
+      id=mass_id,
+      label="block", 
+      bbox_px=tuple(mass.bbox_px), 
+      source_segment_id=mass.id,
+      polygon_px=seg.polygon_px if seg and seg.polygon_px else None
+    ))
+  
+  # Add pulleys with canonical ID (pulley for first, then pulley_1, pulley_2, ...)
+  pulleys = [e for e in labeled if e.label == "pulley"]
+  for idx, pulley in enumerate(pulleys):
+    seg = segment_map.get(pulley.id)
+    pulley_id = "pulley" if idx == 0 else f"pulley_{idx}"
+    detections.append(Detection(
+      id=pulley_id,
+      label="pulley", 
+      bbox_px=tuple(pulley.bbox_px), 
+      source_segment_id=pulley.id,
+      polygon_px=seg.polygon_px if seg and seg.polygon_px else None
+    ))
+  
+  # Add surfaces with canonical ID (surface for first, then surface_1, surface_2, ...)
+  surfaces = [e for e in labeled if e.label == "surface"]
+  for idx, surface in enumerate(surfaces):
+    seg = segment_map.get(surface.id)
+    surface_id = "surface" if idx == 0 else f"surface_{idx}"
+    detections.append(Detection(
+      id=surface_id,
+      label="table", 
+      bbox_px=tuple(surface.bbox_px), 
+      source_segment_id=surface.id,
+      polygon_px=seg.polygon_px if seg and seg.polygon_px else None
+    ))
 
   if not detections:
     raise HTTPException(status_code=422, detail="Labeler returned no usable entities")
@@ -102,12 +156,14 @@ async def parse_diagram(
 
   # Build Scene via Interface Builder (canonical path)
   # Convert labeler output to builder's GPT labels contract
-  gpt_labels = {"entities": []}
+  # v0.2 label envelope (with v0.1 compatibility via 'type' mirroring 'label')
+  gpt_labels = {"version": "v0.2", "entities": []}
   for e in labeled:
-    props = {}
+    # Forward labeler props verbatim so builder can use mass guesses, gravity, friction, etc.
+    props = dict(getattr(e, "props", {}) or {})
     if e.label == "pulley" and wheel_radius is not None:
       props["wheel_radius_m"] = float(wheel_radius)
-    gpt_labels["entities"].append({"segment_id": str(e.id), "label": e.label, "props": props})
+    gpt_labels["entities"].append({"segment_id": str(e.id), "type": e.label, "label": e.label, "props": props})
 
   builder_req = {
     "image": {"width_px": width_px, "height_px": height_px},
@@ -116,7 +172,11 @@ async def parse_diagram(
     "mapping": {"origin_mode": "anchor_centered", "scale_m_per_px": scale_m_per_px},
     "defaults": {"gravity_m_s2": gravity},
   }
-  built = build_scene(builder_req)
+  # Build via v2 registry first; fallback to v1 builder on error
+  try:
+    built = build_scene_v2(builder_req)
+  except Exception as _err:
+    built = build_scene_v1(builder_req)
   scene = built.get("scene", {})
   # Attach mapping meta for downstream consumers
   scene.setdefault("meta", {})
@@ -138,20 +198,69 @@ async def parse_diagram(
   meta["surface"] = {"mu_k": mu_k}
   meta["gravity_m_s2_hint"] = gravity
 
-  # Optionally run Rapier simulation of the assembled scene
+  # Optionally include detailed debug info in response + logs
+  if debug == 1:
+    # Summarize scene for quick inspection
+    try:
+      bodies = scene.get("bodies", [])
+      cons = (scene.get("constraints", []) or [{}])[0]
+      scene_summary = {
+        "masses": {b.get("id"): {"mass_kg": b.get("mass_kg"), "position_m": b.get("position_m")} for b in bodies},
+        "pulley": {
+          "anchor_m": cons.get("pulley_anchor_m"),
+          "wheel_radius_m": cons.get("wheel_radius_m"),
+          "rope_length_m": cons.get("rope_length_m"),
+        },
+        "world": scene.get("world", {}),
+      }
+    except Exception:
+      scene_summary = {"error": "failed_to_summarize_scene"}
+
+    debug_blob = {
+      "image": {"width_px": width_px, "height_px": height_px},
+      "mapping": {"origin_mode": "anchor_centered", "scale_m_per_px": scale_m_per_px},
+      "labeler_entities": debug_labeler_entities,
+      "builder_request": builder_req,
+      "scene_summary": scene_summary,
+    }
+    meta["debug"] = debug_blob
+    try:
+      logger.info("diagram.debug %s", json.dumps(debug_blob, ensure_ascii=False))
+    except Exception:
+      pass
+
+  # Optionally run simulation of the assembled scene
   if simulate == 1:
     try:
-      sim_result = simulate_scene(scene)
-      meta["simulation"] = {
-        "engine": "rapier2d",
-        "frames_count": len(sim_result.get("frames", [])),
-        "frames": sim_result.get("frames", []),
-        "energy": sim_result.get("energy", {}),
-      }
+      kind = (built.get("meta") or {}).get("scene_kind", scene.get("kind"))
+      if kind == "pulley.single_fixed_v0":
+        # Try Matter.js with rope constraint enforcement
+        try:
+          sim_result = simulate_scene(scene)
+          frames = sim_result.get("frames", [])
+          if frames and len(frames) > 0:
+            meta["simulation"] = {"engine": "matter-js", "frames_count": len(frames), "frames": frames, "energy": sim_result.get("energy", {})}
+          else:
+            raise RuntimeError("Matter.js returned empty frames")
+        except Exception as matter_err:
+          logger.warning(f"Matter.js simulation failed: {matter_err}, falling back to analytic")
+          analytic = simulate_pulley_scene(scene, total_time_s=2.0)
+          meta["simulation"] = {"engine": "analytic", "frames_count": len(analytic.get("frames", [])), "frames": analytic.get("frames", []), "energy": analytic.get("energy", {})}
+      elif kind == "ramp.block_v0":
+        analytic = simulate_ramp_scene(scene, total_time_s=2.0)
+        meta["simulation"] = {"engine": "analytic", "frames_count": len(analytic.get("frames", [])), "frames": analytic.get("frames", []), "energy": analytic.get("energy", {})}
+      else:
+        # Unknown kind: attempt analytic pulley as a safe default
+        analytic = simulate_pulley_scene(scene, total_time_s=2.0)
+        meta["simulation"] = {"engine": "analytic", "frames_count": len(analytic.get("frames", [])), "frames": analytic.get("frames", []), "energy": analytic.get("energy", {})}
     except Exception as e:
       # Fallback to analytic frames so the frontend still gets motion in stub mode
       try:
-        analytic = simulate_pulley_scene(scene, total_time_s=2.0)
+        kind = (built.get("meta") or {}).get("scene_kind", scene.get("kind"))
+        if kind == "ramp.block_v0":
+          analytic = simulate_ramp_scene(scene, total_time_s=2.0)
+        else:
+          analytic = simulate_pulley_scene(scene, total_time_s=2.0)
         meta["simulation"] = {
           "engine": "analytic",
           "frames_count": len(analytic.get("frames", [])),
@@ -160,7 +269,7 @@ async def parse_diagram(
         }
         meta["simulation_error"] = str(e)
       except Exception as ee:
-        meta["simulation_error"] = f"rapier:{e}; analytic:{ee}"
+        meta["simulation_error"] = f"matter:{e}; analytic:{ee}"
 
   # Reflect masses from the built scene for parameters
   def _mass_from_scene(scn: dict, body_id: str, default: float = 3.0) -> float:

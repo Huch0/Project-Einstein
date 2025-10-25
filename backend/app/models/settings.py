@@ -27,15 +27,14 @@ class Settings(BaseSettings):
     S3_SECRET_ACCESS_KEY: str | None = None
     S3_BUCKET: str | None = None
     JWT_SECRET: str = "change-me"
-    SAM_MODE: str = "stub"  # "stub" | "http"
+    SAM_MODE: str = "http"  # Using real SAM HTTP server
     SAM_HTTP_URL: str | None = "http://localhost:9001/segment"
-    LABELER_MODE: str = "openai"  # "stub" | "openai"
+    LABELER_MODE: str = "openai"  # Use real GPT for labeling
     OPENAI_API_KEY: str | None = None
-    LABELER_MODEL: str = "gpt-5"
-    # Rapier Node.js worker integration
-    RAPIER_WORKER_PATH: str | None = None  # If None, defaults to backend/sim_worker/rapier_worker.js
-    RAPIER_WORKER_TIMEOUT_S: float = 10.0
-    OPENAI_API_KEY: str | None = None
+    LABELER_MODEL: str = "gpt-5"  # Use gpt-5 for labeling
+    # Matter.js Node.js worker integration
+    MATTER_WORKER_PATH: str | None = None  # If None, defaults to backend/sim_worker/matter_worker.js
+    MATTER_WORKER_TIMEOUT_S: float = 10.0
     OPENAI_BASE_URL: str | None = None
     OPENAI_MODEL: str = "gpt-4o-mini"
     OPENAI_TEMPERATURE: float = 0.5

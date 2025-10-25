@@ -6,6 +6,7 @@
   "main": "rapier_worker.js",
   "license": "MIT",
   "dependencies": {
-    "@dimforge/rapier2d": "^0.13.1"
+    "@dimforge/rapier2d-compat": "^0.13.1",
+    "matter-js": "^0.20.0"
   }
 }
