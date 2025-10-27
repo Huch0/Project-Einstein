@@ -5,11 +5,21 @@
  */
 
 import { useState, useRef, useEffect } from 'react';
-import { Send, X } from 'lucide-react';
+import { Send, X, AtSign, GripVertical } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
 import type { AgentContext } from '@/lib/agent-api';
+
+export interface SimulationBoxInfo {
+  id: string;
+  name?: string;
+}
 
 export interface AgentChatPanelProps {
   boxName?: string;  // Name of the simulation box
@@ -18,6 +28,7 @@ export interface AgentChatPanelProps {
   onSendMessage: (message: string) => Promise<void>;
   onClose: () => void;
   loading?: boolean;
+  availableBoxes?: SimulationBoxInfo[];  // List of available simulation boxes
 }
 
 export function AgentChatPanel({
@@ -27,9 +38,16 @@ export function AgentChatPanel({
   onSendMessage,
   onClose,
   loading = false,
+  availableBoxes = [],
 }: AgentChatPanelProps) {
   const [input, setInput] = useState('');
+  const [width, setWidth] = useState(400); // Resizable width
   const scrollRef = useRef<HTMLDivElement>(null);
+  const resizeRef = useRef<{
+    isResizing: boolean;
+    startX: number;
+    startWidth: number;
+  }>({ isResizing: false, startX: 0, startWidth: 400 });
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
@@ -37,6 +55,42 @@ export function AgentChatPanel({
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [context?.messages]);
+
+  // Handle resize
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!resizeRef.current.isResizing) return;
+      const deltaX = resizeRef.current.startX - e.clientX;
+      const newWidth = Math.max(300, Math.min(800, resizeRef.current.startWidth + deltaX));
+      setWidth(newWidth);
+    };
+
+    const handleMouseUp = () => {
+      resizeRef.current.isResizing = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+
+    if (resizeRef.current.isResizing) {
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+      return () => {
+        document.removeEventListener('mousemove', handleMouseMove);
+        document.removeEventListener('mouseup', handleMouseUp);
+      };
+    }
+  }, []);
+
+  const handleResizeStart = (e: React.MouseEvent) => {
+    e.preventDefault();
+    resizeRef.current = {
+      isResizing: true,
+      startX: e.clientX,
+      startWidth: width,
+    };
+    document.body.style.cursor = 'ew-resize';
+    document.body.style.userSelect = 'none';
+  };
 
   const handleSend = async () => {
     if (!input.trim() || loading) return;
@@ -51,10 +105,28 @@ export function AgentChatPanel({
     }
   };
 
+  const insertBoxReference = (box: SimulationBoxInfo) => {
+    const reference = `@${box.name || box.id}`;
+    setInput(prev => prev ? `${prev} ${reference}` : reference);
+  };
+
   return (
-    <div className="absolute inset-0 z-20 flex flex-col bg-background/95 backdrop-blur">
+    <div 
+      className="absolute right-0 top-0 bottom-0 z-20 flex flex-col bg-background/98 backdrop-blur border-l shadow-xl"
+      style={{ width: `${width}px` }}
+    >
+      {/* Resize Handle */}
+      <div
+        className="absolute left-0 top-0 bottom-0 w-1 cursor-ew-resize hover:bg-primary/50 transition-colors group"
+        onMouseDown={handleResizeStart}
+      >
+        <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity">
+          <GripVertical className="h-4 w-4 text-muted-foreground" />
+        </div>
+      </div>
+
       {/* Header */}
-      <div className="flex items-center justify-between border-b px-3 py-2">
+      <div className="flex items-center justify-between border-b px-3 py-2 ml-1">
         <div className="flex flex-col">
           <span className="text-sm font-medium">
             {boxName ? `${boxName} - Agent Chat` : 'Agent Chat'}
@@ -76,7 +148,7 @@ export function AgentChatPanel({
       </div>
 
       {/* Messages */}
-      <ScrollArea className="flex-1 p-3" ref={scrollRef}>
+      <ScrollArea className="flex-1 p-3 ml-1" ref={scrollRef}>
         <div className="space-y-3">
           {!context || context.messages.length === 0 ? (
             <div className="text-center text-sm text-muted-foreground py-8">
@@ -128,8 +200,44 @@ export function AgentChatPanel({
       </ScrollArea>
 
       {/* Input */}
-      <div className="border-t p-3">
+      <div className="border-t p-3 ml-1">
         <div className="flex gap-2">
+          {/* Context Insertion Button */}
+          {availableBoxes.length > 0 && (
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  disabled={loading || !conversationId}
+                  className="shrink-0"
+                  title="Insert simulation box reference"
+                >
+                  <AtSign className="h-4 w-4" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-64 p-2" align="start">
+                <div className="text-xs font-medium text-muted-foreground mb-2 px-2">
+                  Insert Box Reference
+                </div>
+                <div className="space-y-1">
+                  {availableBoxes.map((box) => (
+                    <button
+                      key={box.id}
+                      onClick={() => insertBoxReference(box)}
+                      className="w-full text-left px-2 py-1.5 text-sm rounded hover:bg-muted transition-colors"
+                    >
+                      <div className="font-medium">{box.name || 'Unnamed Box'}</div>
+                      <div className="text-xs text-muted-foreground truncate">
+                        {box.id}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </PopoverContent>
+            </Popover>
+          )}
+          
           <Input
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -139,7 +247,7 @@ export function AgentChatPanel({
                 handleSend();
               }
             }}
-            placeholder="Ask the agent anything..."
+            placeholder="Ask the agent anything... (@boxname for context)"
             disabled={loading || !conversationId}
             className="flex-1"
           />
@@ -147,6 +255,7 @@ export function AgentChatPanel({
             onClick={handleSend}
             disabled={!input.trim() || loading || !conversationId}
             size="icon"
+            className="shrink-0"
           >
             <Send className="h-4 w-4" />
           </Button>
