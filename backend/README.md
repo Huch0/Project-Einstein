@@ -74,6 +74,26 @@ curl http://127.0.0.1:8000/health
 
 ---
 
+## Rapier worker (optional, for real physics)
+
+We ship a tiny Node-based worker under `backend/sim_worker/` that runs the Rapier 2D engine. If it's not installed, the backend will fall back to an analytic solver so you still see motion.
+
+Install once:
+
+```powershell
+cd backend/sim_worker
+npm install
+```
+
+Notes:
+
+- If you see an error like `Cannot find module ...@dimforge/rapier2d/exports imported from .../rapier.js`, you're using Node's ESM loader directly with the non-compat build. Our worker uses `@dimforge/rapier2d-compat`, which resolves correctly on Node 18/20/22. Re-run `npm install` inside `backend/sim_worker`.
+- Node 18+ is recommended. If you switch Node versions, reinstall the worker dependencies.
+
+The Python backend will automatically spawn this worker when `simulate=1` is passed to `/diagram/parse`.
+
+---
+
 ## Chat Subsystem Overview
 
 New chat-focused modules live under `app/chat/` and integrate with FastAPI via `app/routers/chat.py`.

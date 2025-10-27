@@ -23,6 +23,7 @@ interface SimulationState extends SimulationConfig {
   tension?: number;
   staticCondition?: boolean;
   runAnalytic: () => void;
+  resetSimulation: () => void;
   setPlaying: (p: boolean) => void;
   updateConfig: (partial: Partial<SimulationConfig>) => void;
   backgroundImage: string | null;
@@ -79,12 +80,26 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     lastTimestamp.current = null;
   }, [config]);
 
+  const resetSimulation = useCallback(() => {
+    console.log('[SimulationContext] resetSimulation called');
+    // Stop playback and reset to beginning
+    setPlaying(false);
+    setCurrentIndex(0);
+    lastTimestamp.current = null;
+    console.log('[SimulationContext] reset complete, playing set to false');
+  }, []);
+
   const updateConfig = useCallback((partial: Partial<SimulationConfig>) => {
     setConfig(prev => ({ ...prev, ...partial }));
   }, []);
 
   const parseAndBind = useCallback(async (file: File) => {
-    const res = await parseDiagram(file, { simulate: true });
+    // Reset state before parsing
+    setPlaying(false);
+    setCurrentIndex(0);
+    setFrames([]);
+    
+    const res = await parseDiagram(file, { simulate: true, debug: true });
     setDetections(res.detections);
     setImageSizePx({ width: res.image.width_px, height: res.image.height_px });
     setScale(res.mapping.scale_m_per_px);
@@ -96,12 +111,22 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     }
     // Prefer backend Rapier frames if present; else fall back to analytic
     const sim = (res.meta as any)?.simulation;
-    const framesFromBackend = sim?.frames as Array<{ t: number; positions: Record<string, [number, number]> }> | undefined;
+    const framesFromBackend = sim?.frames as Array<any> | undefined;
     if (Array.isArray(framesFromBackend) && framesFromBackend.length > 0) {
-      const mapped: SimulationFrame[] = framesFromBackend.map(f => ({
-        t: f.t,
-        bodies: Object.entries(f.positions || {}).map(([id, pos]) => ({ id, position_m: pos as [number, number], velocity_m_s: [0, 0] })),
-      }));
+      // Rapier returns { t, positions: { id: [x,y] } }, convert to { t, bodies: [{id, position_m, velocity_m_s}] }
+      const mapped: SimulationFrame[] = framesFromBackend.map(f => {
+        const positions = f.positions || {};
+        const bodies = Object.entries(positions).map(([id, pos]) => ({ 
+          id, 
+          position_m: pos as [number, number], 
+          velocity_m_s: [0, 0] as [number, number]
+        }));
+        console.log('[SimulationContext] frame:', { t: f.t, positions, bodiesCount: bodies.length });
+        return {
+          t: f.t,
+          bodies,
+        };
+      });
       setFrames(mapped);
       // If backend scene includes time step, use it for playback cadence
       const backendDt = (res.scene as any)?.world?.time_step_s;
@@ -159,6 +184,7 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     tension,
     staticCondition,
     runAnalytic,
+    resetSimulation,
     setPlaying,
     updateConfig,
     backgroundImage,

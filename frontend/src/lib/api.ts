@@ -3,6 +3,7 @@ export interface DiagramParseDetection {
   label: string;
   bbox_px: [number, number, number, number];
   source_segment_id?: number | string | null;
+  polygon_px?: Array<[number, number]>;  // precise object outline from SAM
 }
 
 export interface DiagramParseResponse {
@@ -21,11 +22,15 @@ export interface DiagramParseResponse {
   }>;
 }
 
-export async function parseDiagram(file: File, opts?: { simulate?: boolean }): Promise<DiagramParseResponse> {
+export async function parseDiagram(file: File, opts?: { simulate?: boolean; debug?: boolean }): Promise<DiagramParseResponse> {
   const base = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
   const form = new FormData();
   form.append('file', file, file.name);
-  const url = `${base}/diagram/parse${opts?.simulate ? '?simulate=1' : ''}`;
+  const params = new URLSearchParams();
+  if (opts?.simulate) params.set('simulate', '1');
+  if (opts?.debug) params.set('debug', '1');
+  const qs = params.toString();
+  const url = `${base}/diagram/parse${qs ? `?${qs}` : ''}`;
   const res = await fetch(url, {
     method: 'POST',
     body: form,

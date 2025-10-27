@@ -12,12 +12,14 @@ import { useSimulation } from '@/simulation/SimulationContext';
 type Scope = 'global' | 'A' | 'B';
 
 export default function ParametersPanel() {
-  const { massA, massB, gravity, wheelRadius, dt, updateConfig, runAnalytic, playing, setPlaying, scene, labels } = useSimulation();
+  const { massA, massB, gravity, wheelRadius, dt, updateConfig, runAnalytic, resetSimulation, playing, setPlaying, scene, labels } = useSimulation();
   const [localScene, setLocalScene] = useState<Scene | null>(null);
   const [scope, setScope] = useState<Scope>('global');
 
   const rebuildScene = (overrides: Partial<{ mass_a_kg: number; mass_b_kg: number; gravity: number; wheel_radius_m: number }>) => {
-    // If backend scene exists, we can just adjust local preview; analytic run remains available
+    // If backend scene exists, we can just adjust local preview
+    // NOTE: Do NOT call runAnalytic() here - it would replace Matter.js frames with analytic!
+    // User needs to re-upload image to get new physics simulation with updated parameters
     const base = localScene ?? (scene as Scene | null);
     const next = base ?? examplePulleyScene({
       mass_a_kg: overrides.mass_a_kg ?? massA,
@@ -26,7 +28,7 @@ export default function ParametersPanel() {
       wheel_radius_m: overrides.wheel_radius_m ?? wheelRadius,
     });
     setLocalScene(next);
-    runAnalytic();
+    // Do NOT run analytic here - let user re-upload for new simulation
   };
 
   // Derive simple entity mapping for display (A/B masses, pulley)
@@ -66,7 +68,7 @@ export default function ParametersPanel() {
         <div className="space-y-4">
           <h3 className="font-medium text-sm text-muted-foreground">Simulation Controls</h3>
           <div className="grid grid-cols-4 gap-2">
-            <Button variant="outline" size="icon" aria-label="Play" onClick={() => { setPlaying(true); runAnalytic(); }} disabled={playing}>
+            <Button variant="outline" size="icon" aria-label="Play" onClick={() => { setPlaying(true); }} disabled={playing}>
               <Play className="h-4 w-4" />
             </Button>
             <Button variant="outline" size="icon" aria-label="Pause" onClick={() => setPlaying(false)} disabled={!playing}>
@@ -75,8 +77,8 @@ export default function ParametersPanel() {
             <Button variant="outline" size="icon" aria-label="Step Forward">
               <StepForward className="h-4 w-4" />
             </Button>
-            <Button variant="outline" size="icon" aria-label="Reset">
-              <RotateCcw className="h-4 w-4" onClick={() => { runAnalytic(); setPlaying(false); }} />
+            <Button variant="outline" size="icon" aria-label="Reset" onClick={() => resetSimulation()}>
+              <RotateCcw className="h-4 w-4" />
             </Button>
           </div>
         </div>

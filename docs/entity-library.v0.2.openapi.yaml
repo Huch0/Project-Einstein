@@ -1,0 +1,331 @@
+openapi: 3.0.3
+info:
+  title: Project Einstein Entity Library and Builder API
+  version: v0.2.0-draft
+  description: |
+    Contracts for segments, labels (Entity Library v0.2), mapping/defaults, and builder request/response.
+    This spec is the authoritative source for interface schemas. Builders must conform to these types.
+    Backward compatibility: if labels.version is absent and an entity uses {label, props}, map label→type (v0.1 compat).
+servers:
+  - url: http://localhost:8000
+    description: Local dev
+tags:
+  - name: diagram
+    description: Diagram parsing and scene building
+paths:
+  /diagram/parse:
+    post:
+      summary: Parse a physics diagram into a simulator-ready Scene
+      description: Segmentation → labeling → build → optional simulate; returns mappings, labels, and scene.
+      tags: [diagram]
+      parameters:
+        - in: query
+          name: simulate
+          schema: { type: integer, enum: [0, 1], default: 1 }
+          description: Run simulation worker (1) or skip (0)
+        - in: query
+          name: debug
+          schema: { type: integer, enum: [0, 1], default: 0 }
+          description: Include debug summaries for labeler/builder/scene
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BuildSceneRequestV2'
+      responses:
+        '200':
+          description: Parse result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BuildSceneResponse'
+              examples:
+                pulley:
+                  summary: Two masses and a pulley
+                  value:
+                    scene:
+                      world: { gravity_m_s2: 9.81, time_step_s: 0.0167 }
+                      bodies:
+                        - { id: "m1", mass_kg: 2.0, position_m: [-0.4, 0.1], velocity_m_s: [0,0] }
+                        - { id: "m2", mass_kg: 4.0, position_m: [ 0.4,-0.3], velocity_m_s: [0,0] }
+                      constraints:
+                        - { type: ideal_fixed_pulley, anchor_m: [0.4, 0.1], rope_length_m: 1.6 }
+                    warnings: []
+                    meta: { source: "sam+gpt", resolver: "v2", scene_kind: "pulley.single_fixed_v0" }
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '422':
+          description: Validation error
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '500':
+          description: Internal error
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+components:
+  schemas:
+    ImageRef:
+      type: object
+      required: [width_px, height_px]
+      properties:
+        width_px: { type: integer, minimum: 1 }
+        height_px: { type: integer, minimum: 1 }
+
+    Segment:
+      type: object
+      required: [id, bbox]
+      properties:
+        id: { type: integer }
+        bbox:
+          type: array
+          minItems: 4
+          maxItems: 4
+          items: { type: number }
+          description: [x, y, w, h] in pixels
+        polygon_px:
+          type: array
+          items:
+            type: array
+            minItems: 2
+            maxItems: 2
+            items: { type: number }
+          description: Polygon vertices in pixels
+        mask_path:
+          type: string
+          nullable: true
+
+    SegmentSet:
+      type: object
+      required: [segments, image]
+      properties:
+        segments:
+          type: array
+          items: { $ref: '#/components/schemas/Segment' }
+        image: { $ref: '#/components/schemas/ImageRef' }
+
+    Vec2:
+      type: array
+      minItems: 2
+      maxItems: 2
+      items: { type: number }
+
+    Mapping:
+      type: object
+      required: [origin_mode, scale_m_per_px]
+      properties:
+        origin_mode:
+          type: string
+          enum: [anchor_centered, image_centered]
+          description: Policy for mapping px→m origins
+        scale_m_per_px:
+          type: number
+          exclusiveMinimum: 0
+        anchor_m:
+          $ref: '#/components/schemas/Vec2'
+          description: Optional global anchor override (meters)
+
+    Defaults:
+      type: object
+      properties:
+        gravity_m_s2: { type: number, default: 9.81 }
+
+    # Entity Library v0.2
+    MassProps:
+      type: object
+      properties:
+        mass_kg: { type: number }
+        density_hint_kg_m2: { type: number }
+        initial_vx_m_s: { type: number }
+        initial_vy_m_s: { type: number }
+
+    PulleyProps:
+      type: object
+      properties:
+        wheel_radius_m: { type: number, minimum: 0 }
+        anchor_mode: { type: string, enum: [center, custom] }
+        anchor_m: { $ref: '#/components/schemas/Vec2' }
+
+    SurfaceProps:
+      type: object
+      properties:
+        mu_k: { type: number, minimum: 0 }
+        mu_s: { type: number, minimum: 0 }
+        is_floor: { type: boolean }
+
+    RampProps:
+      type: object
+      properties:
+        angle_deg: { type: number }
+        mu_k: { type: number, minimum: 0 }
+        mu_s: { type: number, minimum: 0 }
+
+    SpringProps:
+      type: object
+      required: [k_n_m]
+      properties:
+        k_n_m: { type: number, minimum: 0 }
+        rest_length_m: { type: number, minimum: 0 }
+
+    PendulumPivotProps:
+      type: object
+      properties:
+        pivot_m: { $ref: '#/components/schemas/Vec2' }
+        rod_length_m: { type: number, minimum: 0 }
+
+    AnchorProps:
+      type: object
+      required: [position_m]
+      properties:
+        position_m: { $ref: '#/components/schemas/Vec2' }
+
+    Entity:
+      type: object
+      required: [segment_id, type]
+      properties:
+        segment_id: { type: string }
+        type:
+          type: string
+          enum: [mass, pulley, surface, ramp, spring, pendulum_pivot, anchor]
+        props:
+          oneOf:
+            - $ref: '#/components/schemas/MassProps'
+            - $ref: '#/components/schemas/PulleyProps'
+            - $ref: '#/components/schemas/SurfaceProps'
+            - $ref: '#/components/schemas/RampProps'
+            - $ref: '#/components/schemas/SpringProps'
+            - $ref: '#/components/schemas/PendulumPivotProps'
+            - $ref: '#/components/schemas/AnchorProps'
+          description: Entity-type specific properties (optional)
+
+    LabelEnvelopeV02:
+      type: object
+      required: [version, entities]
+      properties:
+        version:
+          type: string
+          enum: [v0.2]
+        entities:
+          type: array
+          items: { $ref: '#/components/schemas/Entity' }
+      example:
+        version: v0.2
+        entities:
+          - segment_id: "1"
+            type: mass
+            props: { mass_kg: 2.0 }
+          - segment_id: "2"
+            type: mass
+            props: { mass_kg: 4.0 }
+          - segment_id: "3"
+            type: pulley
+            props: { wheel_radius_m: 0.1 }
+          - segment_id: "4"
+            type: surface
+            props: { mu_k: 0.5 }
+
+    BuildSceneRequestV2:
+      type: object
+      required: [image, segments, labels, mapping]
+      properties:
+        image: { $ref: '#/components/schemas/ImageRef' }
+        segments:
+          type: array
+          items: { $ref: '#/components/schemas/Segment' }
+        labels: { $ref: '#/components/schemas/LabelEnvelopeV02' }
+        mapping: { $ref: '#/components/schemas/Mapping' }
+        defaults: { $ref: '#/components/schemas/Defaults' }
+        scene_kind:
+          type: string
+          description: Optional explicit SceneKind; if omitted or "auto", resolver selects
+      example:
+        image: { width_px: 1280, height_px: 720 }
+        segments:
+          - { id: 1, bbox: [100, 360, 80, 80] }
+          - { id: 2, bbox: [1080, 200, 80, 80] }
+          - { id: 3, bbox: [960, 120, 100, 100] }
+          - { id: 4, bbox: [60, 440, 1160, 20] }
+        labels:
+          version: v0.2
+          entities:
+            - { segment_id: "1", type: mass, props: { mass_kg: 2.0 } }
+            - { segment_id: "2", type: mass, props: { mass_kg: 4.0 } }
+            - { segment_id: "3", type: pulley, props: { wheel_radius_m: 0.1 } }
+            - { segment_id: "4", type: surface, props: { mu_k: 0.5 } }
+        mapping: { origin_mode: anchor_centered, scale_m_per_px: 0.001 }
+        defaults: { gravity_m_s2: 9.81 }
+        scene_kind: auto
+
+    # Minimal simulator Scene shape (placeholder canonical subset)
+    World:
+      type: object
+      properties:
+        gravity_m_s2: { type: number }
+        time_step_s: { type: number }
+
+    Body:
+      type: object
+      properties:
+        id: { type: string }
+        mass_kg: { type: number }
+        position_m: { $ref: '#/components/schemas/Vec2' }
+        velocity_m_s: { $ref: '#/components/schemas/Vec2' }
+
+    Constraint:
+      type: object
+      properties:
+        type: { type: string, example: ideal_fixed_pulley }
+        anchor_m: { $ref: '#/components/schemas/Vec2' }
+        rope_length_m: { type: number, minimum: 0 }
+
+    Scene:
+      type: object
+      properties:
+        world: { $ref: '#/components/schemas/World' }
+        bodies:
+          type: array
+          items: { $ref: '#/components/schemas/Body' }
+        constraints:
+          type: array
+          items: { $ref: '#/components/schemas/Constraint' }
+        scene_kind:
+          $ref: '#/components/schemas/SceneKind'
+
+    SceneKind:
+      type: string
+      enum:
+        - pulley.single_fixed_v0
+        - ramp.block_v0
+        - pendulum.single_v0
+        - spring_mass.single_v0
+
+    BuildSceneResponse:
+      type: object
+      required: [scene, warnings, meta]
+      properties:
+        scene: { $ref: '#/components/schemas/Scene' }
+        warnings:
+          type: array
+          items: { type: string }
+        meta:
+          type: object
+          properties:
+            source: { type: string, example: sam+gpt }
+            resolver: { type: string, example: v2 }
+            scene_kind: { $ref: '#/components/schemas/SceneKind' }
+            debug:
+              type: object
+              description: Optional debug blob (when debug=1)
+    ErrorResponse:
+      type: object
+      properties:
+        code: { type: string, example: invalid_request }
+        message: { type: string }
+        hints:
+          type: array
+          items: { type: string }
