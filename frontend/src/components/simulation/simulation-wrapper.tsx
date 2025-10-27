@@ -1,9 +1,9 @@
 
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useSimulation } from '@/simulation/SimulationContext';
-import { UploadCloud, Trash2 } from 'lucide-react';
+import { Hand, UploadCloud, Trash2, SquarePlus } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import {
@@ -17,28 +17,31 @@ import {
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 
-import { CanvasLayer, type CanvasStroke } from './canvas-layer';
-import {
-    SimulationLayer,
-    type SimulationObjectPosition,
-} from './simulation-layer';
-
-type InteractionMode = 'simulation' | 'draw';
+import { WhiteboardProvider, useWhiteboardStore } from '@/whiteboard/context';
+import WhiteboardCanvas from '@/whiteboard/WhiteboardCanvas';
+import type { InteractionMode } from '@/whiteboard/types';
 
 const INITIAL_MODE: InteractionMode = 'simulation';
 
 export default function SimulationCanvasStack() {
+    return (
+        <WhiteboardProvider>
+            <SimulationCanvasInner />
+        </WhiteboardProvider>
+    );
+}
+
+function SimulationCanvasInner() {
     const wrapperRef = useRef<HTMLDivElement>(null);
     const contentRef = useRef<HTMLDivElement>(null);
-    const { setBackgroundImage, parseAndBind } = useSimulation();
+    const { setBackgroundImage } = useSimulation();
 
     const [mode, setMode] = useState<InteractionMode>(INITIAL_MODE);
-    const [strokes, setStrokes] = useState<CanvasStroke[]>([]);
     const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
-    const [objectPosition, setObjectPosition] = useState<SimulationObjectPosition>({ x: 0, y: 0 });
     const [open, setOpen] = useState(false);
+    const { strokeNodes, clearStrokes, createSimulationBox } = useWhiteboardStore();
 
-    const hasCanvasContent = strokes.length > 0;
+    const hasCanvasContent = strokeNodes.length > 0;
 
     useEffect(() => {
         const resizeObserver = new ResizeObserver((entries) => {
@@ -58,12 +61,8 @@ export default function SimulationCanvasStack() {
             }
         };
     }, []);
-    const handleObjectPositionChange = useCallback((position: SimulationObjectPosition) => {
-        setObjectPosition(position);
-    }, []);
-
     const handleClear = () => {
-        setStrokes([]);
+        clearStrokes();
     };
 
     return (
@@ -71,6 +70,16 @@ export default function SimulationCanvasStack() {
             {/* Top bezel toolbar */}
             <div className="flex items-center justify-between rounded-md border bg-background/80 px-2 py-2 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-background/60">
                 <div className="flex gap-1">
+                    <Button
+                        type="button"
+                        size="sm"
+                        variant={mode === 'pan' ? 'default' : 'outline'}
+                        onClick={() => setMode('pan')}
+                        aria-pressed={mode === 'pan'}
+                    >
+                        <Hand className="mr-2 h-4 w-4" />
+                        Pan Mode
+                    </Button>
                     <Button
                         type="button"
                         size="sm"
@@ -91,6 +100,17 @@ export default function SimulationCanvasStack() {
                     </Button>
                 </div>
                 <div className="flex items-center gap-2">
+                    <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                            createSimulationBox();
+                        }}
+                    >
+                        <SquarePlus className="mr-2 h-4 w-4" />
+                        New Simulation Box
+                    </Button>
                     <Button
                         type="button"
                         variant="outline"
@@ -151,19 +171,7 @@ export default function SimulationCanvasStack() {
             </div>
             {/* Content area (no overlap with toolbar) */}
             <div ref={contentRef} className="relative flex-1 min-h-0">
-                <SimulationLayer
-                    enabled={mode === 'simulation'}
-                    objectPosition={objectPosition}
-                    onObjectPositionChange={handleObjectPositionChange}
-                    dimensions={dimensions}
-                />
-
-                <CanvasLayer
-                    enabled={mode === 'draw'}
-                    strokes={strokes}
-                    onStrokesChange={setStrokes}
-                    dimensions={dimensions}
-                />
+                <WhiteboardCanvas mode={mode} dimensions={dimensions} />
             </div>
         </div>
     );
