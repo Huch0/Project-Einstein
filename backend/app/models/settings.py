@@ -31,13 +31,13 @@ class Settings(BaseSettings):
     SAM_HTTP_URL: str | None = "http://localhost:9001/segment"
     LABELER_MODE: str = "openai"  # Use real GPT for labeling
     OPENAI_API_KEY: str | None = None
-    LABELER_MODEL: str = "gpt-5"  # Use gpt-5 for labeling
+    LABELER_MODEL: str = "gpt-5"  # GPT-5 with Responses API
     # Matter.js Node.js worker integration
     MATTER_WORKER_PATH: str | None = None  # If None, defaults to backend/sim_worker/matter_worker.js
     MATTER_WORKER_TIMEOUT_S: float = 10.0
     OPENAI_BASE_URL: str | None = None
-    OPENAI_MODEL: str = "gpt-4o-mini"
-    OPENAI_TEMPERATURE: float = 0.5
+    OPENAI_MODEL: str = "gpt-5"  # GPT-5 for agent chat
+    OPENAI_TEMPERATURE: float = 1.0  # GPT-5 only supports default (1.0)
     OPENAI_TOP_P: float | None = None
     OPENAI_MAX_OUTPUT_TOKENS: int | None = None
     OPENAI_PRESENCE_PENALTY: float | None = None

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
-import { GripHorizontal, Trash2 } from 'lucide-react';
+import { GripHorizontal, Trash2, Upload, MessageSquare, FlaskConical } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 import { useWhiteboardStore } from '@/whiteboard/context';
@@ -15,6 +15,10 @@ import {
     SimulationLayer,
     type SimulationObjectPosition,
 } from '@/components/simulation/simulation-layer';
+import { useSimulationBoxAgent } from '@/hooks/use-simulation-box-agent';
+import { AgentChatPanel } from '@/components/simulation/agent-chat-panel';
+import { Input } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
 
 interface SimulationBoxNodeProps {
     node: SimulationBoxNodeType;
@@ -60,6 +64,37 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
         state: { selection },
     } = useWhiteboardStore();
     const [objectPosition, setObjectPosition] = useState<SimulationObjectPosition>({ x: 0, y: 0 });
+    
+    // Agent integration
+    const {
+        conversationId,
+        agentState,
+        context: agentContext,
+        loading: agentLoading,
+        error: agentError,
+        uploadImage,
+        sendMessage,
+        inspectSimulation,
+    } = useSimulationBoxAgent({
+        boxId: node.id,
+        boxName: node.name,
+        conversationId: node.conversationId,
+        onConversationUpdate: (convId, state) => {
+            // Update node with conversation ID and state
+            updateNode(node.id, (current) => {
+                if (current.type !== 'simulation-box') return current;
+                return {
+                    ...current,
+                    conversationId: convId,
+                    agentState: state,
+                };
+            });
+        },
+    });
+    
+    const [showChat, setShowChat] = useState(false);
+    const [isEditingName, setIsEditingName] = useState(false);
+    const [boxName, setBoxName] = useState(node.name || '');
 
     const draggable = mode === 'pan';
     const resizable = mode !== 'draw';
@@ -315,19 +350,116 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
                 onPointerUp={handleDragPointerUp}
                 onPointerCancel={handleDragPointerUp}
             >
-                <span className="flex items-center gap-2 text-muted-foreground">
+                <div className="flex items-center gap-2 text-muted-foreground flex-1">
                     <GripHorizontal className="h-3 w-3" />
-                    Simulation Box
-                </span>
-                <button
-                    type="button"
-                    className="rounded p-1 text-muted-foreground transition-colors hover:bg-muted"
-                    onClick={() => removeNode(node.id)}
-                    aria-label="Remove simulation box"
-                    data-node-action="true"
-                >
-                    <Trash2 className="h-3.5 w-3.5" />
-                </button>
+                    
+                    {/* Editable Box Name */}
+                    {isEditingName ? (
+                        <Input
+                            value={boxName}
+                            onChange={(e) => setBoxName(e.target.value)}
+                            onBlur={() => {
+                                setIsEditingName(false);
+                                if (boxName.trim()) {
+                                    updateNode(node.id, (current) => {
+                                        if (current.type !== 'simulation-box') return current;
+                                        return { ...current, name: boxName.trim() };
+                                    });
+                                }
+                            }}
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                    e.currentTarget.blur();
+                                } else if (e.key === 'Escape') {
+                                    setBoxName(node.name || '');
+                                    setIsEditingName(false);
+                                }
+                            }}
+                            className="h-6 w-32 text-xs px-2"
+                            autoFocus
+                            data-node-action="true"
+                        />
+                    ) : (
+                        <span 
+                            className="cursor-text hover:text-foreground transition-colors"
+                            onDoubleClick={(e) => {
+                                e.stopPropagation();
+                                setIsEditingName(true);
+                            }}
+                            data-node-action="true"
+                        >
+                            {node.name || 'Simulation Box'}
+                        </span>
+                    )}
+                    
+                    {agentState && (
+                        <span className="text-[10px] bg-primary/20 px-1.5 py-0.5 rounded">
+                            {agentState.scene_kind || `${agentState.entities_count} entities`}
+                        </span>
+                    )}
+                </div>
+                <div className="flex items-center gap-1">
+                    {/* Upload Image */}
+                    <label
+                        className="rounded p-1 text-muted-foreground transition-colors hover:bg-muted cursor-pointer"
+                        data-node-action="true"
+                    >
+                        <Upload className="h-3.5 w-3.5" />
+                        <input
+                            type="file"
+                            accept="image/*"
+                            className="hidden"
+                            onChange={async (e) => {
+                                const file = e.target.files?.[0];
+                                if (file) {
+                                    await uploadImage(file);
+                                }
+                            }}
+                            disabled={agentLoading}
+                        />
+                    </label>
+                    
+                    {/* Inspect Simulation */}
+                    {conversationId && (
+                        <button
+                            type="button"
+                            className="rounded p-1 text-muted-foreground transition-colors hover:bg-muted"
+                            onClick={() => inspectSimulation()}
+                            aria-label="Inspect simulation"
+                            data-node-action="true"
+                            disabled={agentLoading}
+                        >
+                            <FlaskConical className="h-3.5 w-3.5" />
+                        </button>
+                    )}
+                    
+                    {/* Chat with Agent */}
+                    {conversationId && (
+                        <button
+                            type="button"
+                            className={cn(
+                                "rounded p-1 transition-colors hover:bg-muted",
+                                showChat ? "bg-primary text-primary-foreground" : "text-muted-foreground"
+                            )}
+                            onClick={() => setShowChat(!showChat)}
+                            aria-label="Chat with agent"
+                            data-node-action="true"
+                        >
+                            <MessageSquare className="h-3.5 w-3.5" />
+                        </button>
+                    )}
+                    
+                    {/* Remove Box */}
+                    <button
+                        type="button"
+                        className="rounded p-1 text-muted-foreground transition-colors hover:bg-muted"
+                        onClick={() => removeNode(node.id)}
+                        aria-label="Remove simulation box"
+                        data-node-action="true"
+                    >
+                        <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                </div>
             </div>
             <div
                 className={cn(
@@ -336,6 +468,32 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
                 )}
                 style={{ height: Math.max(MIN_BOUNDS.height - HEADER_HEIGHT, node.bounds.height - HEADER_HEIGHT) }}
             >
+                {/* Agent Error Display */}
+                {agentError && (
+                    <div className="absolute top-2 left-2 right-2 z-10 bg-destructive/90 text-destructive-foreground text-xs px-2 py-1 rounded">
+                        {agentError}
+                    </div>
+                )}
+                
+                {/* Agent Loading Overlay */}
+                {agentLoading && (
+                    <div className="absolute inset-0 z-10 bg-background/50 flex items-center justify-center">
+                        <div className="text-sm text-muted-foreground">Agent processing...</div>
+                    </div>
+                )}
+                
+                {/* Agent Chat Panel */}
+                {showChat && (
+                    <AgentChatPanel
+                        boxName={node.name}
+                        conversationId={conversationId}
+                        context={agentContext}
+                        onSendMessage={sendMessage}
+                        onClose={() => setShowChat(false)}
+                        loading={agentLoading}
+                    />
+                )}
+                
                 <SimulationLayer
                     enabled={mode === 'simulation'}
                     objectPosition={objectPosition}

@@ -117,38 +117,44 @@ class OpenAILabeler(BaseLabeler):
         self.model = model
 
     def label(self, segments: List[SegmentIn]) -> List[LabeledEntity]:
-        # Build a compact prompt with bbox stats; Responses API for GPT-5
+        # Use prompts from YAML configuration
         import json
+        from app.agent.prompts import get_labeler_system_prompt, get_labeler_user_prompt
+        
         segments_compact = [{"id": str(s.id), "bbox": s.bbox} for s in segments]
-        instruction = (
-            "You label physics diagram segments AND propose simulation parameters. "
-            "Allowed labels: mass, pulley, rope, surface. "
-            "For each entity, include 'props' with optional keys: \n"
-            "- mass: mass_guess_kg (float) \n"
-            "- pulley: wheel_radius_m (float) \n"
-            "- surface: friction_k (float), scale_m_per_px (float, optional heuristic) \n"
-            "You may also include gravity_m_s2 in any entity props to suggest world gravity. "
-            "Return STRICT JSON: { 'entities': [ { 'id': '1', 'label': 'mass', 'props': { ... } }, ... ] } "
-            "No extra text or code fences."
-        )
+        segments_json = json.dumps(segments_compact, indent=2)
+        
+        # Load prompts from YAML
+        system_prompt = get_labeler_system_prompt()
+        user_prompt = get_labeler_user_prompt(segments_json)
+        
+        # Prepare input for GPT-5 Responses API
         input_payload = {
-            "instruction": instruction,
+            "instruction": system_prompt,
+            "user_request": user_prompt,
             "segments": segments_compact,
         }
-        resp = self.client.responses.create(
-            model=self.model,
-            input=json.dumps(input_payload),
-            reasoning={"effort": "minimal"},
-            text={"verbosity": "low"},
-        )
-        # Prefer the convenience accessor if available
-        content = getattr(resp, "output_text", None)
-        if not content:
-            # Fallback to first text item
-            try:
-                content = resp.output[0].content[0].text
-            except Exception:
-                content = "{}"
+        
+        try:
+            # Use Responses API for GPT-5
+            resp = self.client.responses.create(
+                model=self.model,
+                input=json.dumps(input_payload),
+                reasoning={"effort": "minimal"},
+                text={"verbosity": "low"},
+            )
+            # Prefer the convenience accessor if available
+            content = getattr(resp, "output_text", None)
+            if not content:
+                # Fallback to first text item
+                try:
+                    content = resp.output[0].content[0].text
+                except Exception:
+                    content = "{}"
+        except Exception as e:
+            print(f"[OpenAILabeler] GPT-5 API call failed: {e}, falling back to stub")
+            print(f"[OpenAILabeler] GPT-5 API call failed: {e}, falling back to stub")
+            return StubLabeler().label(segments)
 
         def _clean_json_text(t: str) -> str:
             t = t.strip()
@@ -164,8 +170,10 @@ class OpenAILabeler(BaseLabeler):
         try:
             data: Dict[str, Any] = json.loads(content)
             items = data.get("entities") or data.get("labels") or []
-        except Exception:
-            items = []
+        except Exception as e:
+            print(f"[OpenAILabeler] JSON parse failed: {e}, falling back to stub")
+            return StubLabeler().label(segments)
+            
         out: List[LabeledEntity] = []
         by_id = {str(s.id): s for s in segments}
         for it in items:
@@ -179,6 +187,12 @@ class OpenAILabeler(BaseLabeler):
             if seg is None:
                 continue
             out.append(LabeledEntity(id=seg.id, label=lab, bbox_px=seg.bbox, confidence=0.7, props=props))
+        
+        # If no entities parsed, fallback to stub
+        if not out:
+            print(f"[OpenAILabeler] No entities parsed from GPT-5 response, using stub")
+            return StubLabeler().label(segments)
+            
         return out
 
 

@@ -34,7 +34,7 @@ export default function SimulationCanvasStack() {
 function SimulationCanvasInner() {
     const wrapperRef = useRef<HTMLDivElement>(null);
     const contentRef = useRef<HTMLDivElement>(null);
-    const { setBackgroundImage } = useSimulation();
+    const { setBackgroundImage, parseAndBind } = useSimulation();
 
     const [mode, setMode] = useState<InteractionMode>(INITIAL_MODE);
     const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
