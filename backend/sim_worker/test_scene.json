@@ -1,0 +1,35 @@
+{
+  "world": {
+    "gravity_m_s2": 9.81,
+    "time_step_s": 0.016
+  },
+  "bodies": [
+    {
+      "id": "m1",
+      "mass_kg": 2.0,
+      "position_m": [1.0, 0.5],
+      "collider": {
+        "type": "circle",
+        "radius_m": 0.05
+      }
+    },
+    {
+      "id": "m2",
+      "mass_kg": 1.0,
+      "position_m": [2.0, 0.5],
+      "collider": {
+        "type": "circle",
+        "radius_m": 0.05
+      }
+    }
+  ],
+  "constraints": [
+    {
+      "type": "ideal_fixed_pulley",
+      "anchor_m": [1.5, 0.0],
+      "body_a": "m1",
+      "body_b": "m2",
+      "rope_length_m": 1.5
+    }
+  ]
+}

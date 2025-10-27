@@ -1,0 +1,14 @@
+# Minimal, reproducible deps to run SAM HTTP server on CPU
+fastapi==0.115.5
+uvicorn[standard]==0.32.0
+pillow==10.4.0
+numpy==1.26.4
+
+# Torch CPU wheels (use PyTorch CPU index)
+torch==2.3.1+cpu ; platform_system == 'Windows'
+torchvision==0.18.1+cpu ; platform_system == 'Windows'
+torchaudio==2.3.1+cpu ; platform_system == 'Windows'
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+# Segment Anything (SAM)
+git+https://github.com/facebookresearch/segment-anything.git

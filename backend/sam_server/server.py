@@ -11,6 +11,7 @@ from PIL import Image
 # Install: pip install git+https://github.com/facebookresearch/segment-anything.git
 from segment_anything import sam_model_registry, SamPredictor
 import torch
+import numpy as np
 
 MODEL_VARIANT = "vit_b"  # vit_b, vit_l, vit_h
 CHECKPOINT_PATH = "weights/sam_vit_b.pth"  # update if using another variant
@@ -61,7 +62,7 @@ async def segment(request: Request):
                 for m in mask:
                     masks.append(m)
 
-        # Convert masks to bounding boxes
+        # Convert masks to bounding boxes and convex polygons
         segments = []
         seg_id = 1
         for m in masks:
@@ -71,7 +72,15 @@ async def segment(request: Request):
             x0, x1 = int(xs.min()), int(xs.max())
             y0, y1 = int(ys.min()), int(ys.max())
             w, h = x1 - x0 + 1, y1 - y0 + 1
-            segments.append({"id": seg_id, "bbox": [x0, y0, w, h], "mask_path": None})
+            # Build convex hull polygon in pixel coords
+            pts = np.stack([xs, ys], axis=1)
+            if len(pts) > 5000:
+                # Subsample to bound complexity
+                idx = np.random.choice(len(pts), 5000, replace=False)
+                pts = pts[idx]
+            hull = _convex_hull_mono(pts)
+            polygon = [[int(px), int(py)] for px, py in hull]
+            segments.append({"id": seg_id, "bbox": [x0, y0, w, h], "mask_path": None, "polygon_px": polygon})
             seg_id += 1
 
         # Optionally, deduplicate overlapping boxes (simple IoU threshold)
@@ -112,5 +121,26 @@ def iou(a: List[int], b: List[int]) -> float:
     area_b = bw * bh
     return inter_area / float(area_a + area_b - inter_area)
 
-# Missing numpy import fix
-import numpy as np
+def _cross(o, a, b):
+    return (a[0]-o[0])*(b[1]-o[1]) - (a[1]-o[1])*(b[0]-o[0])
+
+def _convex_hull_mono(points: np.ndarray):
+    # points: Nx2 array (x,y)
+    pts = points[np.lexsort((points[:,1], points[:,0]))]
+    lower = []
+    for p in pts:
+        while len(lower) >= 2 and _cross(lower[-2], lower[-1], p) <= 0:
+            lower.pop()
+        lower.append((int(p[0]), int(p[1])))
+    upper = []
+    for p in reversed(pts):
+        while len(upper) >= 2 and _cross(upper[-2], upper[-1], p) <= 0:
+            upper.pop()
+        upper.append((int(p[0]), int(p[1])))
+    hull = lower[:-1] + upper[:-1]
+    # Deduplicate consecutive duplicates
+    dedup = []
+    for pt in hull:
+        if not dedup or pt != dedup[-1]:
+            dedup.append(pt)
+    return dedup

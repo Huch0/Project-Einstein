@@ -23,6 +23,7 @@ interface SimulationState extends SimulationConfig {
   tension?: number;
   staticCondition?: boolean;
   runAnalytic: () => void;
+  resetSimulation: () => void;
   setPlaying: (p: boolean) => void;
   updateConfig: (partial: Partial<SimulationConfig>) => void;
   backgroundImage: string | null;
@@ -30,6 +31,8 @@ interface SimulationState extends SimulationConfig {
   detections: DiagramParseDetection[];
   imageSizePx: { width: number; height: number } | null;
   scale_m_per_px: number | null;
+  scene: any | null;
+  labels: { entities: Array<{ segment_id: string; label: string; props?: Record<string, unknown> }> } | null;
   parseAndBind: (file: File) => Promise<void>;
 }
 
@@ -56,6 +59,8 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
   const [detections, setDetections] = useState<DiagramParseDetection[]>([]);
   const [imageSizePx, setImageSizePx] = useState<{ width: number; height: number } | null>(null);
   const [scale_m_per_px, setScale] = useState<number | null>(null);
+  const [scene, setScene] = useState<any | null>(null);
+  const [labels, setLabels] = useState<{ entities: Array<{ segment_id: string; label: string; props?: Record<string, unknown> }> } | null>(null);
 
   const runAnalytic = useCallback(() => {
     const result = simulatePulleyAnalytic({
@@ -75,15 +80,67 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     lastTimestamp.current = null;
   }, [config]);
 
+  const resetSimulation = useCallback(() => {
+    console.log('[SimulationContext] resetSimulation called');
+    // Stop playback and reset to beginning
+    setPlaying(false);
+    setCurrentIndex(0);
+    lastTimestamp.current = null;
+    console.log('[SimulationContext] reset complete, playing set to false');
+  }, []);
+
   const updateConfig = useCallback((partial: Partial<SimulationConfig>) => {
     setConfig(prev => ({ ...prev, ...partial }));
   }, []);
 
   const parseAndBind = useCallback(async (file: File) => {
-    const res = await parseDiagram(file);
+    // Reset state before parsing
+    setPlaying(false);
+    setCurrentIndex(0);
+    setFrames([]);
+    
+    const res = await parseDiagram(file, { simulate: true, debug: true });
     setDetections(res.detections);
     setImageSizePx({ width: res.image.width_px, height: res.image.height_px });
     setScale(res.mapping.scale_m_per_px);
+    setScene(res.scene as any);
+    if (res.labels && Array.isArray(res.labels.entities)) {
+      setLabels(res.labels as any);
+    } else {
+      setLabels(null);
+    }
+    // Prefer backend Rapier frames if present; else fall back to analytic
+    const sim = (res.meta as any)?.simulation;
+    const framesFromBackend = sim?.frames as Array<any> | undefined;
+    if (Array.isArray(framesFromBackend) && framesFromBackend.length > 0) {
+      // Rapier returns { t, positions: { id: [x,y] } }, convert to { t, bodies: [{id, position_m, velocity_m_s}] }
+      const mapped: SimulationFrame[] = framesFromBackend.map(f => {
+        const positions = f.positions || {};
+        const bodies = Object.entries(positions).map(([id, pos]) => ({ 
+          id, 
+          position_m: pos as [number, number], 
+          velocity_m_s: [0, 0] as [number, number]
+        }));
+        console.log('[SimulationContext] frame:', { t: f.t, positions, bodiesCount: bodies.length });
+        return {
+          t: f.t,
+          bodies,
+        };
+      });
+      setFrames(mapped);
+      // If backend scene includes time step, use it for playback cadence
+      const backendDt = (res.scene as any)?.world?.time_step_s;
+      setConfig(prev => ({
+        ...prev,
+        dt: typeof backendDt === 'number' && backendDt > 0 ? backendDt : prev.dt,
+      }));
+      setCurrentIndex(0);
+      setPlaying(true);
+      lastTimestamp.current = null;
+      // eslint-disable-next-line no-console
+      console.log('Rapier simulation summary', sim);
+      return;
+    }
     // Bind parameters to current config
     setConfig(prev => ({
       ...prev,
@@ -127,6 +184,7 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     tension,
     staticCondition,
     runAnalytic,
+    resetSimulation,
     setPlaying,
     updateConfig,
     backgroundImage,
@@ -134,6 +192,8 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     detections,
     imageSizePx,
     scale_m_per_px,
+    scene,
+    labels,
     parseAndBind,
   };
   return <SimulationContext.Provider value={value}>{children}</SimulationContext.Provider>;

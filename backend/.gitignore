@@ -1,3 +1,4 @@
+sam_server/weights/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

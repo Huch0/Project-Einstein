@@ -1,0 +1,12 @@
+{
+  "name": "einstein-rapier-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "rapier_worker.js",
+  "license": "MIT",
+  "dependencies": {
+    "@dimforge/rapier2d-compat": "^0.13.1",
+    "matter-js": "^0.20.0"
+  }
+}
