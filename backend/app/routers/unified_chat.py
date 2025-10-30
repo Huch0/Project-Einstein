@@ -18,7 +18,7 @@ import asyncio
 from typing import Any, AsyncGenerator, Literal
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 import openai
@@ -459,6 +459,73 @@ async def _stream_agent_mode(
 # ===========================
 # API Endpoints
 # ===========================
+
+@router.get("", response_class=StreamingResponse)
+async def chat_sse(
+    message: str = Query(..., description="User message"),
+    mode: Literal["ask", "agent"] = Query("ask", description="Chat mode"),
+    conversation_id: str | None = Query(None, description="Conversation ID"),
+    stream: bool = Query(True, description="Enable streaming"),
+    attachments: str | None = Query(None, description="JSON-encoded attachments")
+):
+    """
+    GET endpoint for SSE streaming (EventSource compatibility).
+    
+    EventSource only supports GET requests, so we provide this endpoint
+    for streaming mode. Use POST /chat for non-streaming requests.
+    
+    Query Parameters:
+    - message: User message (required)
+    - mode: "ask" or "agent" (default: "ask")
+    - conversation_id: Optional conversation ID
+    - stream: Must be true for streaming (default: true)
+    - attachments: JSON-encoded attachments array
+    
+    Example:
+        GET /chat?message=hello&mode=agent&stream=true
+    """
+    if not stream:
+        raise HTTPException(
+            status_code=400,
+            detail="Use POST /chat for non-streaming requests"
+        )
+    
+    if mode != "agent":
+        raise HTTPException(
+            status_code=400,
+            detail="Streaming only supported in Agent mode"
+        )
+    
+    # Parse attachments from query string
+    parsed_attachments = []
+    if attachments:
+        try:
+            parsed_attachments = json.loads(attachments)
+        except json.JSONDecodeError:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid attachments JSON"
+            )
+    
+    # Generate conversation ID if not provided
+    conv_id = conversation_id or str(uuid4())
+    
+    # Stream Agent mode
+    context_store = get_context_store()
+    return StreamingResponse(
+        _stream_agent_mode(
+            message,
+            conv_id,
+            parsed_attachments,
+            context_store
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # Disable buffering in nginx
+        }
+    )
+
 
 @router.post("", response_model=ChatResponse, status_code=status.HTTP_200_OK)
 async def chat(request: ChatRequest) -> ChatResponse | StreamingResponse:

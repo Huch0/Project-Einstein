@@ -25,34 +25,33 @@ logger = logging.getLogger("diagram")
 
 
 def _segment_via_http(image_bytes: bytes, sam_server_url: str) -> list[dict]:
-    """Call SAM server via HTTP POST."""
+    """Call SAM server via HTTP POST with raw image bytes."""
     parsed = urlparse(sam_server_url)
     host = parsed.hostname or "localhost"
     port = parsed.port or 9001
     path = parsed.path or "/segment"
     
-    boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW"
-    body = (
-        f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="image"; filename="diagram.jpg"\r\n'
-        f"Content-Type: image/jpeg\r\n\r\n"
-    ).encode() + image_bytes + f"\r\n--{boundary}--\r\n".encode()
-    
+    # SAM server expects raw image bytes (not multipart)
     headers = {
-        "Content-Type": f"multipart/form-data; boundary={boundary}",
-        "Content-Length": str(len(body))
+        "Content-Type": "application/octet-stream",
+        "Content-Length": str(len(image_bytes))
     }
     
+    logger.info(f"Sending image to SAM server: {len(image_bytes)} bytes")
+    
     conn = http.client.HTTPConnection(host, port, timeout=30)
-    conn.request("POST", path, body, headers)
+    conn.request("POST", path, image_bytes, headers)
     response = conn.getresponse()
     
     if response.status != 200:
+        error_body = response.read().decode()
+        logger.error(f"SAM server error {response.status}: {error_body}")
         raise ValueError(f"SAM server error: {response.status}")
     
     data = json.loads(response.read().decode())
     conn.close()
     
+    logger.info(f"Received {len(data.get('segments', []))} segments from SAM")
     return data.get("segments", [])
 
 
