@@ -10,10 +10,18 @@ import { MessageSquare, Bot } from 'lucide-react';
 import { sendUnifiedChat, streamAgentChat, type ChatMode } from '@/lib/unified-chat-api';
 import { ChatMessages } from './chat-messages';
 import { ChatInput } from './chat-input';
+import { SimulationViewer } from '@/components/simulation/simulation-viewer';
 
 export type Message = {
     role: 'user' | 'assistant' | 'system';
     content: string;
+};
+
+export type SimulationData = {
+    scene: any;
+    frames: any[];
+    imageWidth?: number;
+    imageHeight?: number;
 };
 
 export default function ChatPanel() {
@@ -31,6 +39,7 @@ export default function ChatPanel() {
     const [isLoading, setIsLoading] = useState(false);
     const [conversationId, setConversationId] = useState<string | null>(null);
     const [progressMessages, setProgressMessages] = useState<string[]>([]);
+    const [simulationData, setSimulationData] = useState<SimulationData | null>(null);
     const eventSourceRef = useRef<EventSource | null>(null);
 
     const scrollAreaRef = useRef<HTMLDivElement>(null);
@@ -133,8 +142,17 @@ export default function ChatPanel() {
                             ]);
                         },
                         onStateUpdate: (state) => {
-                            // TODO: Update simulation visualization
                             console.debug('State update:', state);
+                            
+                            // Capture simulation data when frames are available
+                            if ((state as any).frames && (state as any).scene) {
+                                setSimulationData({
+                                    scene: (state as any).scene,
+                                    frames: (state as any).frames,
+                                    imageWidth: (state as any).image?.width_px || 800,
+                                    imageHeight: (state as any).image?.height_px || 600,
+                                });
+                            }
                         },
                         onMessage: ({ content }) => {
                             setMessages((prev) => [
@@ -224,6 +242,18 @@ export default function ChatPanel() {
             <div className="flex flex-1 min-h-0 flex-col p-4 md:p-6">
                 <ScrollArea className="flex-1" ref={scrollAreaRef}>
                     <ChatMessages messages={messages} />
+                    
+                    {/* Simulation Visualization */}
+                    {simulationData && simulationData.frames.length > 0 && (
+                        <div className="mt-6">
+                            <SimulationViewer
+                                scene={simulationData.scene}
+                                frames={simulationData.frames}
+                                imageWidth={simulationData.imageWidth}
+                                imageHeight={simulationData.imageHeight}
+                            />
+                        </div>
+                    )}
                     
                     {/* Progress Messages (Agent mode streaming) */}
                     {progressMessages.length > 0 && (

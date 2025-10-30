@@ -414,13 +414,21 @@ async def _stream_agent_mode(
                 # Update context state
                 _update_context_state(context, tool_name, result)
                 
-                # State update event
+                # State update event with full data for simulate_physics
                 state_snapshot = {
                     "segments_count": len(context.segments),
                     "entities_count": len(context.entities),
                     "has_scene": context.scene is not None,
                     "frames_count": len(context.frames)
                 }
+                
+                # Include full simulation data for visualization
+                if tool_name == "simulate_physics" and result:
+                    state_snapshot["scene"] = context.scene
+                    state_snapshot["frames"] = result.get("frames", [])
+                    if context.image_metadata:
+                        state_snapshot["image"] = context.image_metadata
+                
                 yield f"event: state_update\ndata: {json.dumps(state_snapshot)}\n\n"
                 
             except Exception as e:
