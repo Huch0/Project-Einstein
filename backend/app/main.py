@@ -12,7 +12,7 @@ app = FastAPI(title="Project Einstein API", version="0.4.0")
 # CORS middleware - must be added before routes
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ALLOW_ORIGINS or ["http://localhost:3000"],
+    allow_origins=settings.CORS_ALLOW_ORIGINS or ["http://localhost:9002"],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],

@@ -129,8 +129,10 @@ class OpenAILabeler(BaseLabeler):
         user_prompt = get_labeler_user_prompt(segments_json)
         
         try:
-            # Check if model is GPT-5
+            # Check if model is GPT-5 or o1
             is_gpt5 = self.model.startswith("gpt-5") or self.model.startswith("o1")
+            
+            print(f"[OpenAILabeler] Model: {self.model}, is_gpt5: {is_gpt5}")
             
             if is_gpt5:
                 # Use Responses API for GPT-5 / o1 models

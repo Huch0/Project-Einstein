@@ -103,7 +103,7 @@ async def _handle_ask_mode(
     """
     Ask mode: Normal conversation without tool calls.
     
-    Uses OpenAI Chat API with system prompt for educational assistance.
+    Uses OpenAI API (GPT-5 Responses or GPT-4 Chat Completions).
     """
     client = openai.AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
     
@@ -112,15 +112,40 @@ async def _handle_ask_mode(
     messages.extend(history)
     messages.append({"role": "user", "content": message})
     
-    # Call OpenAI
-    response = await client.chat.completions.create(
-        model=settings.OPENAI_MODEL,
-        messages=messages,
-        temperature=settings.OPENAI_TEMPERATURE,
-        max_tokens=settings.OPENAI_MAX_OUTPUT_TOKENS,
-    )
+    # Check if using GPT-5
+    is_gpt5 = settings.OPENAI_MODEL.startswith("gpt-5") or settings.OPENAI_MODEL.startswith("o1")
     
-    assistant_message = response.choices[0].message.content or ""
+    if is_gpt5:
+        # GPT-5 Responses API
+        # Convert messages to single input string
+        conversation_text = "\n".join([
+            f"{msg['role']}: {msg['content']}" for msg in messages
+        ])
+        
+        response = await client.responses.create(
+            model=settings.OPENAI_MODEL,
+            input=conversation_text,
+            text={"verbosity": "medium"}
+        )
+        
+        # Extract text from response
+        assistant_message = ""
+        if hasattr(response, "output_text"):
+            assistant_message = response.output_text
+        else:
+            try:
+                assistant_message = response.output[0].content[0].text
+            except Exception:
+                assistant_message = "Sorry, I couldn't process that request."
+    else:
+        # GPT-4 Chat Completions API
+        response = await client.chat.completions.create(
+            model=settings.OPENAI_MODEL,
+            messages=messages,
+            temperature=settings.OPENAI_TEMPERATURE,
+        )
+        assistant_message = response.choices[0].message.content or ""
+    
     return assistant_message
 
 
@@ -144,7 +169,8 @@ async def _handle_agent_mode(
     # Get or create context
     context = context_store.get_context(conversation_id)
     if not context:
-        context = context_store.create_context(conversation_id)
+        context = context_store.create_context()
+        context.conversation_id = conversation_id
     
     # Add user message
     context.add_message("user", message)
@@ -315,7 +341,8 @@ async def _stream_agent_mode(
     # Get or create context
     context = context_store.get_context(conversation_id)
     if not context:
-        context = context_store.create_context(conversation_id)
+        context = context_store.create_context()
+        context.conversation_id = conversation_id
     
     yield f"event: init\ndata: {json.dumps({'conversation_id': conversation_id})}\n\n"
     
