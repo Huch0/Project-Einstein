@@ -57,16 +57,30 @@ class OpenAIChatEngine:
         metadata: dict[str, Any],
     ) -> list[ChatMessage]:
         prompt_messages = list(self._build_prompt(conversation, user_message))
+        
+        # Build API call parameters
+        api_params: dict[str, Any] = {
+            "model": self._config.model,
+            "messages": prompt_messages,
+        }
+        
+        # GPT-5 only supports default temperature (1.0)
+        # For other models, include temperature if specified
+        if not self._config.model.startswith("gpt-5"):
+            api_params["temperature"] = self._config.temperature
+        
+        # Only include optional parameters if they are not None
+        if self._config.top_p is not None:
+            api_params["top_p"] = self._config.top_p
+        if self._config.max_output_tokens is not None:
+            api_params["max_tokens"] = self._config.max_output_tokens
+        if self._config.presence_penalty is not None:
+            api_params["presence_penalty"] = self._config.presence_penalty
+        if self._config.frequency_penalty is not None:
+            api_params["frequency_penalty"] = self._config.frequency_penalty
+        
         try:
-            response = await self._client.chat.completions.create(
-                model=self._config.model,
-                messages=prompt_messages,
-                temperature=self._config.temperature,
-                top_p=self._config.top_p,
-                max_tokens=self._config.max_output_tokens,
-                presence_penalty=self._config.presence_penalty,
-                frequency_penalty=self._config.frequency_penalty,
-            )
+            response = await self._client.chat.completions.create(**api_params)
         except OpenAIError as exc:  # pragma: no cover - network failure guard
             raise RuntimeError("OpenAI chat completion failed") from exc
         return self._to_chat_messages(response, metadata)

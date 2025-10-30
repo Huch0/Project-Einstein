@@ -45,6 +45,17 @@ export interface SimulationBoxNode extends BaseNode {
     bounds: { width: number; height: number };
     linkedSimulationId: string;
     childIds: NodeId[];
+    // User-defined name for the box
+    name?: string;
+    // Agent context integration
+    conversationId?: string;
+    agentState?: {
+        segments_count: number;
+        entities_count: number;
+        scene_kind?: string;
+        has_scene: boolean;
+        frames_count: number;
+    };
 }
 
 export interface ImageNode extends BaseNode {
