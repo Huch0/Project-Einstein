@@ -1,7 +1,8 @@
 """
-Agent Tool Registry
+Agent Tool Registry (v0.4)
 
 Registers all agent tools with OpenAI function calling format and validation.
+Updated for Universal Physics Builder architecture.
 """
 
 from typing import Any, Callable
@@ -97,9 +98,10 @@ class ToolRegistry:
         self.register_tool(ToolMetadata(
             name="validate_scene_entities",
             description=(
-                "Validate entity set and determine scene type (pulley, ramp, pendulum, spring). "
-                "Checks if entities are sufficient for building a physical scene. "
-                "Returns warnings and suggestions for missing or extra entities."
+                "Validate entity set for Universal Builder (v0.4). "
+                "Checks if entities can build a physics scene (very permissive). "
+                "Returns entity summary and suggestions, NO scene_kind classification. "
+                "Any mass count is valid - Universal Builder handles N bodies."
             ),
             input_schema=ValidateEntitiesInput,
             output_schema=ValidateEntitiesOutput,
@@ -111,9 +113,11 @@ class ToolRegistry:
         self.register_tool(ToolMetadata(
             name="build_physics_scene",
             description=(
-                "Convert entities and geometry into simulator-ready Scene JSON. "
-                "Maps pixel coordinates to physical units, creates bodies and constraints. "
-                "Returns complete scene specification with warnings for inferred values."
+                "Build Scene JSON via Universal Builder (v0.4). "
+                "Handles ANY entity combination - no scene-kind restrictions. "
+                "Dynamically infers constraints from spatial relationships: "
+                "pulley + masses → rope constraint, spring + mass → elastic constraint. "
+                "Supports 1 to N bodies. Maps pixels to meters, provides defaults for missing properties."
             ),
             input_schema=BuildSceneInput,
             output_schema=BuildSceneOutput,
@@ -125,9 +129,10 @@ class ToolRegistry:
         self.register_tool(ToolMetadata(
             name="simulate_physics",
             description=(
-                "Run physics simulation using Matter.js or analytic solver. "
-                "Generates motion frames showing positions over time. "
-                "Returns frames, energy data, and simulation summary."
+                "Run Matter.js 2D rigid body physics simulation (v0.4 - Matter.js ONLY). "
+                "Default: 5 seconds at 60 fps (configurable via duration_s and frame_rate). "
+                "Generates motion frames with positions, velocities, forces. "
+                "No analytic fallback - all simulations use realistic physics engine."
             ),
             input_schema=SimulatePhysicsInput,
             output_schema=SimulatePhysicsOutput,
@@ -139,9 +144,11 @@ class ToolRegistry:
         self.register_tool(ToolMetadata(
             name="analyze_simulation",
             description=(
-                "Analyze simulation results for correctness and pedagogical insights. "
-                "Checks energy conservation, constraint violations, motion characteristics. "
-                "Provides human-readable explanations of system behavior."
+                "Analyze simulation results for physics correctness (v0.4). "
+                "Validates energy conservation (<1% error expected). "
+                "Checks constraint violations (rope stretch, spring compression). "
+                "Analyzes motion: acceleration, velocity, displacement patterns. "
+                "Provides pedagogical insights - NO scene_kind assumptions, infers from motion."
             ),
             input_schema=AnalyzeSimulationInput,
             output_schema=AnalyzeSimulationOutput,

@@ -9,9 +9,10 @@ type ChatInputProps = {
     onInputChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => void;
     onFormSubmit: (e: FormEvent<HTMLFormElement>) => void;
     isLoading: boolean;
+    placeholder?: string;
 };
 
-export function ChatInput({ input, onInputChange, onFormSubmit, isLoading }: ChatInputProps) {
+export function ChatInput({ input, onInputChange, onFormSubmit, isLoading, placeholder }: ChatInputProps) {
     const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
@@ -28,7 +29,7 @@ export function ChatInput({ input, onInputChange, onFormSubmit, isLoading }: Cha
             <textarea
                 id="message"
                 name="message"
-                placeholder="e.g., Set the ramp angle to 45°, friction μ=0.2"
+                placeholder={placeholder || "e.g., Set the ramp angle to 45°, friction μ=0.2"}
                 className="w-full min-h-12 resize-none border-none bg-transparent p-3 text-sm text-foreground outline-none focus:border-none focus:outline-none focus:ring-0 focus-visible:border-none focus-visible:outline-none focus-visible:ring-0 disabled:cursor-not-allowed disabled:opacity-50"
                 value={input}
                 onChange={onInputChange}
