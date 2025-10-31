@@ -1,7 +1,8 @@
 """
-Agent Conversation Context Management
+Agent Conversation Context Management (v0.4)
 
 Manages state persistence across multi-turn conversations.
+Updated for Universal Builder architecture - no scene_kind field.
 """
 
 import uuid
@@ -13,14 +14,19 @@ from pydantic import BaseModel, Field
 
 class ConversationContext(BaseModel):
     """
-    State container for a conversation session.
+    State container for a conversation session (v0.4).
     
     Tracks intermediate results through the pipeline:
     - Image upload
     - Segmentation
-    - Entity labeling
-    - Scene building
-    - Simulation frames
+    - Entity labeling (supports N entities, not just 2)
+    - Scene building (via Universal Builder)
+    - Simulation frames (Matter.js only)
+    
+    v0.4 Changes:
+    - Removed scene_kind field (no classification)
+    - entities list is unbounded (N-body support)
+    - All simulations use Matter.js
     """
     
     conversation_id: str = Field(
@@ -56,12 +62,12 @@ class ConversationContext(BaseModel):
     
     entities: list[dict[str, Any]] = Field(
         default_factory=list,
-        description="GPT labeled entities"
+        description="GPT labeled entities (any count - v0.4 supports N bodies)"
     )
     
-    scene_kind: str | None = Field(
-        default=None,
-        description="Determined scene type (pulley, ramp, etc.)"
+    entity_summary: dict[str, int] = Field(
+        default_factory=dict,
+        description="Entity type counts (mass: 3, pulley: 1, etc.)"
     )
     
     scene: dict[str, Any] | None = Field(

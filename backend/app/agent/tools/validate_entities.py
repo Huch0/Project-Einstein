@@ -1,7 +1,8 @@
 """
-Tool 3: validate_scene_entities - Entity Set Validation
+Tool 3: validate_scene_entities - Entity Set Validation (v0.4)
 
-Checks if entity set is sufficient for scene building and determines scene type.
+Checks if entity set is sufficient for scene building.
+In v0.4, no rigid scene_kind required - universal builder handles any combination.
 """
 
 from collections import Counter
@@ -17,7 +18,7 @@ class ValidateEntitiesInput(BaseModel):
         description="Entity list from label_segments tool"
     )
     allow_incomplete: bool = Field(
-        default=False,
+        default=True,  # v0.4: more permissive
         description="Allow incomplete entity sets (for iterative building)"
     )
 
@@ -26,19 +27,15 @@ class ValidateEntitiesOutput(BaseModel):
     """Output schema for validate_scene_entities tool."""
     
     valid: bool = Field(
-        description="Whether entity set is valid for scene building"
+        description="Whether entity set can build a physics scene"
     )
-    scene_kind: str | None = Field(
-        default=None,
-        description="Determined scene type (e.g., 'pulley.single_fixed_v0')"
+    entity_summary: dict[str, int] = Field(
+        default_factory=dict,
+        description="Count of each entity type detected"
     )
     warnings: list[str] = Field(
         default_factory=list,
         description="Non-blocking validation warnings"
-    )
-    missing_required: list[str] = Field(
-        default_factory=list,
-        description="Required entities that are missing"
     )
     suggestions: list[str] = Field(
         default_factory=list,
@@ -50,19 +47,23 @@ async def validate_scene_entities(
     input_data: ValidateEntitiesInput
 ) -> ValidateEntitiesOutput:
     """
-    Validate entity set and determine scene type.
+    Validate entity set for universal builder (v0.4).
     
-    Resolver rules (from instruction.instructions.md):
-    - ≥2 mass + 1 pulley → pulley.single_fixed_v0
-    - 1 mass + 1 ramp → ramp.block_v0
-    - 1 mass + 1 pendulum_pivot → pendulum.single_v0
-    - 1 mass + 1 spring → spring_mass.single_v0
+    v0.4 Philosophy:
+    - Any entity combination is potentially valid
+    - No rigid scene-kind classification
+    - Universal builder handles composition dynamically
+    
+    Validation rules:
+    - At least 1 dynamic body (mass) required
+    - Constraints inferred from entity relationships
+    - Suggestions based on common patterns
     
     Args:
         input_data: Entity list to validate
         
     Returns:
-        Validation result with scene_kind and suggestions
+        Validation result with entity summary and suggestions
         
     Example:
         >>> result = await validate_scene_entities(ValidateEntitiesInput(
@@ -72,115 +73,89 @@ async def validate_scene_entities(
         ...         {"type": "pulley", "segment_id": "3"}
         ...     ]
         ... ))
-        >>> assert result.scene_kind == "pulley.single_fixed_v0"
+        >>> assert result.valid == True
+        >>> assert result.entity_summary["mass"] == 2
     """
     # Count entity types
     type_counts = Counter(e.get("type") for e in input_data.entities)
     
     warnings = []
-    missing_required = []
     suggestions = []
-    scene_kind = None
     valid = False
     
-    # Apply resolver rules
+    # v0.4: Minimal validation - just need at least 1 entity
     mass_count = type_counts.get("mass", 0)
-    has_pulley = type_counts.get("pulley", 0) > 0
-    has_ramp = type_counts.get("ramp", 0) > 0
-    has_pendulum_pivot = type_counts.get("pendulum_pivot", 0) > 0
-    has_spring = type_counts.get("spring", 0) > 0
-    has_surface = type_counts.get("surface", 0) > 0
+    pulley_count = type_counts.get("pulley", 0)
+    ramp_count = type_counts.get("ramp", 0)
+    spring_count = type_counts.get("spring", 0)
+    surface_count = type_counts.get("surface", 0)
     
-    # Rule 1: Pulley system
-    if mass_count >= 2 and has_pulley:
-        scene_kind = "pulley.single_fixed_v0"
+    # Validation: need at least 1 dynamic body
+    if mass_count > 0:
         valid = True
-        if has_surface:
-            warnings.append(
-                "Surface detected but not required for pulley scene"
-            )
-        if mass_count > 2:
-            warnings.append(
-                f"Found {mass_count} masses, only first 2 will be used in pulley system"
-            )
-    
-    # Rule 2: Ramp/incline
-    elif mass_count >= 1 and has_ramp:
-        scene_kind = "ramp.block_v0"
-        valid = True
-        if mass_count > 1:
-            warnings.append(
-                f"Found {mass_count} masses, only first will be used on ramp"
-            )
-    
-    # Rule 3: Pendulum
-    elif mass_count >= 1 and has_pendulum_pivot:
-        scene_kind = "pendulum.single_v0"
-        valid = True
-        if mass_count > 1:
-            warnings.append(
-                f"Found {mass_count} masses, only first will be used as pendulum bob"
-            )
-    
-    # Rule 4: Spring-mass
-    elif mass_count >= 1 and has_spring:
-        scene_kind = "spring_mass.single_v0"
-        valid = True
-        if mass_count > 1:
-            warnings.append(
-                f"Found {mass_count} masses, only first will be used in spring system"
-            )
-    
-    # No match - provide hints
     else:
-        if mass_count == 0:
-            missing_required.append("At least 1 mass required")
-        
-        if mass_count == 1:
-            missing_required.append(
-                "Need either: pulley (for 2nd mass), ramp, pendulum_pivot, or spring"
-            )
-            suggestions.append(
-                "For pulley system: add another mass + pulley"
-            )
-            suggestions.append(
-                "For ramp: add ramp entity"
-            )
-            suggestions.append(
-                "For pendulum: add pendulum_pivot entity"
-            )
-            suggestions.append(
-                "For spring-mass: add spring entity"
-            )
-        
-        elif mass_count >= 2:
-            missing_required.append(
-                "Need pulley for multi-mass system"
-            )
-            suggestions.append(
-                "Add pulley entity to create pulley.single_fixed_v0 scene"
-            )
-        
+        warnings.append("No masses detected - need at least 1 dynamic body")
         if input_data.allow_incomplete:
-            warnings.append(
-                "Incomplete entity set, but allow_incomplete=True"
-            )
-            valid = True
+            valid = True  # Allow for iterative building
     
-    # Additional suggestions
-    if valid and scene_kind == "pulley.single_fixed_v0":
+    # Provide helpful suggestions based on entity combination
+    if mass_count >= 2 and pulley_count > 0:
+        suggestions.append(
+            f"Detected {mass_count} masses + {pulley_count} pulley(s) - "
+            "universal builder will create pulley system with rope constraints"
+        )
+    
+    if mass_count >= 1 and ramp_count > 0:
+        suggestions.append(
+            f"Detected {mass_count} mass(es) + {ramp_count} ramp(s) - "
+            "universal builder will create ramp scenario with friction"
+        )
+    
+    if mass_count >= 1 and spring_count > 0:
+        suggestions.append(
+            f"Detected {mass_count} mass(es) + {spring_count} spring(s) - "
+            "universal builder will create spring-mass system"
+        )
+    
+    if surface_count > 0:
+        suggestions.append(
+            f"Detected {surface_count} surface(s) - "
+            "will be used for contact constraints and friction"
+        )
+    
+    # Warn about unusual combinations
+    if mass_count > 5:
+        warnings.append(
+            f"Large number of masses ({mass_count}) - simulation may be complex"
+        )
+    
+    if pulley_count > 2:
+        warnings.append(
+            f"Multiple pulleys ({pulley_count}) - constraint inference may need manual review"
+        )
+    
+    # Missing property warnings
+    if pulley_count > 0:
         pulley_entities = [e for e in input_data.entities if e.get("type") == "pulley"]
-        if pulley_entities:
-            pulley = pulley_entities[0]
+        for pulley in pulley_entities:
             if not pulley.get("props", {}).get("wheel_radius_m"):
                 suggestions.append(
-                    "Add wheel_radius_m to pulley props for better accuracy"
+                    f"Pulley {pulley.get('segment_id')} missing wheel_radius_m - "
+                    "will use default 0.1m"
+                )
+    
+    if mass_count > 0:
+        mass_entities = [e for e in input_data.entities if e.get("type") == "mass"]
+        for mass in mass_entities:
+            if not mass.get("props", {}).get("mass_guess_kg"):
+                warnings.append(
+                    f"Mass {mass.get('segment_id')} missing mass_guess_kg - "
+                    "will estimate from bbox area"
                 )
     
     return ValidateEntitiesOutput(
         valid=valid,
-        scene_kind=scene_kind,
+        entity_summary=dict(type_counts),
         warnings=warnings,
-        missing_required=missing_required,
         suggestions=suggestions
     )

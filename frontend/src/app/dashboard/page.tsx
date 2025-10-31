@@ -7,18 +7,20 @@ import ChatPanel from '@/components/chat/chat-panel';
 import ControlPane from '@/components/simulation/control-pane';
 import SimulationWrapper from '@/components/simulation/simulation-wrapper';
 import { Button } from '@/components/ui/button';
-import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
+import { Sheet, SheetContent, SheetTrigger, SheetTitle } from '@/components/ui/sheet';
+import { GlobalChatProvider } from '@/contexts/global-chat-context';
 
 export default function DashboardPage() {
     const [isChatOpen, setIsChatOpen] = useState(false);
     const [isControlsOpen, setIsControlsOpen] = useState(false);
 
     return (
-        <div className="relative h-full min-h-0 overflow-hidden">
-            <SimulationWrapper />
+        <GlobalChatProvider>
+            <div className="relative h-full min-h-0 overflow-hidden">
+                <SimulationWrapper />
 
-            <div className="pointer-events-none absolute inset-0 z-30">
-                <div className="pointer-events-auto absolute bottom-4 right-4 flex flex-col gap-2">
+                <div className="pointer-events-none absolute inset-0 z-30">
+                    <div className="pointer-events-auto absolute bottom-4 right-4 flex flex-col gap-2">
                     <Sheet
                         open={isChatOpen}
                         onOpenChange={(open) => {
@@ -43,9 +45,9 @@ export default function DashboardPage() {
                             className="flex w-full max-w-2xl flex-col overflow-hidden p-0"
                         >
                             <div className="flex items-center justify-between border-b px-4 py-3 pr-12">
-                                <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+                                <SheetTitle className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
                                     Assistant Chat
-                                </h2>
+                                </SheetTitle>
                             </div>
                             <div className="flex-1 min-h-0">
                                 <ChatPanel />
@@ -78,9 +80,9 @@ export default function DashboardPage() {
                             className="flex h-[70vh] w-full flex-col overflow-hidden p-0 sm:h-[60vh]"
                         >
                             <div className="flex items-center justify-between border-b px-4 py-3 pr-12">
-                                <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+                                <SheetTitle className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
                                     Simulation Controls
-                                </h2>
+                                </SheetTitle>
                             </div>
                             <div className="flex-1 min-h-0 overflow-y-auto">
                                 <ControlPane />
@@ -90,5 +92,6 @@ export default function DashboardPage() {
                 </div>
             </div>
         </div>
+        </GlobalChatProvider>
     );
 }

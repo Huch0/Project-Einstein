@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import logging
 from typing import List, Dict, Any
 
 from fastapi import FastAPI, Request, HTTPException
@@ -13,33 +14,77 @@ from segment_anything import sam_model_registry, SamPredictor
 import torch
 import numpy as np
 
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
 MODEL_VARIANT = "vit_b"  # vit_b, vit_l, vit_h
 CHECKPOINT_PATH = "weights/sam_vit_b.pth"  # update if using another variant
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 app = FastAPI(title="SAM HTTP Server", version="0.1.0")
 
+# Global predictor (initialized at startup)
+predictor = None
+
 
 @app.on_event("startup")
 async def load_model():
+    """Load SAM model at startup."""
     global predictor
     try:
+        logger.info(f"Loading SAM model: {MODEL_VARIANT} from {CHECKPOINT_PATH}")
+        logger.info(f"Using device: {DEVICE}")
+        
         sam = sam_model_registry[MODEL_VARIANT](checkpoint=CHECKPOINT_PATH)
         sam.to(device=DEVICE)
         predictor = SamPredictor(sam)
+        
+        logger.info("✅ SAM model loaded successfully!")
+    except FileNotFoundError as e:
+        logger.error(f"❌ Model checkpoint not found: {CHECKPOINT_PATH}")
+        logger.error(f"Please download SAM weights: https://github.com/facebookresearch/segment-anything#model-checkpoints")
+        raise RuntimeError(f"Model checkpoint not found: {e}")
     except Exception as e:
+        logger.error(f"❌ Failed to load SAM model: {e}")
         raise RuntimeError(f"Failed to load SAM model: {e}")
+
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint."""
+    return {
+        "status": "healthy" if predictor is not None else "model_not_loaded",
+        "model_variant": MODEL_VARIANT,
+        "device": DEVICE,
+        "model_loaded": predictor is not None
+    }
 
 
 @app.post("/segment")
 async def segment(request: Request):
+    """Segment image using SAM model."""
+    global predictor
+    
+    # Check if model is loaded
+    if predictor is None:
+        logger.error("SAM model not loaded! Check startup logs.")
+        raise HTTPException(
+            status_code=503, 
+            detail="SAM model not loaded. Server may have failed to initialize."
+        )
+    
     try:
         body = await request.body()
         if not body:
             raise HTTPException(status_code=400, detail="Empty body")
+        
+        logger.info(f"Received image data: {len(body)} bytes")
+        
         # Open image from bytes
         image = Image.open(io.BytesIO(body)).convert("RGB")
         image_np = np.array(image)
+        logger.info(f"Image size: {image_np.shape}")
 
         # Predict using SAM
         predictor.set_image(image_np)
@@ -85,12 +130,14 @@ async def segment(request: Request):
 
         # Optionally, deduplicate overlapping boxes (simple IoU threshold)
         segments = dedup_segments(segments)
-
+        
+        logger.info(f"✅ Segmentation complete: {len(segments)} segments found")
         return JSONResponse({"segments": segments})
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"❌ Segmentation failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Segmentation error: {str(e)}")
 
 
 def dedup_segments(segments: List[Dict[str, Any]], iou_thresh: float = 0.5) -> List[Dict[str, Any]]:

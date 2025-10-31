@@ -128,32 +128,50 @@ class OpenAILabeler(BaseLabeler):
         system_prompt = get_labeler_system_prompt()
         user_prompt = get_labeler_user_prompt(segments_json)
         
-        # Prepare input for GPT-5 Responses API
-        input_payload = {
-            "instruction": system_prompt,
-            "user_request": user_prompt,
-            "segments": segments_compact,
-        }
-        
         try:
-            # Use Responses API for GPT-5
-            resp = self.client.responses.create(
-                model=self.model,
-                input=json.dumps(input_payload),
-                reasoning={"effort": "minimal"},
-                text={"verbosity": "low"},
-            )
-            # Prefer the convenience accessor if available
-            content = getattr(resp, "output_text", None)
-            if not content:
-                # Fallback to first text item
-                try:
-                    content = resp.output[0].content[0].text
-                except Exception:
-                    content = "{}"
+            # Check if model is GPT-5 or o1
+            is_gpt5 = self.model.startswith("gpt-5") or self.model.startswith("o1")
+            
+            print(f"[OpenAILabeler] Model: {self.model}, is_gpt5: {is_gpt5}")
+            
+            if is_gpt5:
+                # Use Responses API for GPT-5 / o1 models
+                input_payload = {
+                    "instruction": system_prompt,
+                    "user_request": user_prompt,
+                    "segments": segments_compact,
+                }
+                
+                resp = self.client.responses.create(
+                    model=self.model,
+                    input=json.dumps(input_payload),
+                    reasoning={"effort": "minimal"},
+                    text={"verbosity": "low"},
+                )
+                
+                # Get response content
+                content = getattr(resp, "output_text", None)
+                if not content:
+                    try:
+                        content = resp.output[0].content[0].text
+                    except Exception:
+                        content = "{}"
+            else:
+                # Use Chat Completions API for GPT-4 / GPT-3.5
+                resp = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    temperature=0.1,  # Low temperature for consistent parsing
+                    response_format={"type": "json_object"}  # Request JSON output
+                )
+                
+                content = resp.choices[0].message.content or "{}"
+                
         except Exception as e:
-            print(f"[OpenAILabeler] GPT-5 API call failed: {e}, falling back to stub")
-            print(f"[OpenAILabeler] GPT-5 API call failed: {e}, falling back to stub")
+            print(f"[OpenAILabeler] API call failed: {e}, falling back to stub")
             return StubLabeler().label(segments)
 
         def _clean_json_text(t: str) -> str:
@@ -166,12 +184,18 @@ class OpenAILabeler(BaseLabeler):
                     t = t[5:]
             return t.strip()
 
+        print(f"[OpenAILabeler] Raw response: {content[:200]}...")  # Log first 200 chars
         content = _clean_json_text(content)
+        print(f"[OpenAILabeler] Cleaned response: {content[:200]}...")
+        
         try:
             data: Dict[str, Any] = json.loads(content)
             items = data.get("entities") or data.get("labels") or []
+            print(f"[OpenAILabeler] Parsed {len(items)} entities from response")
         except Exception as e:
-            print(f"[OpenAILabeler] JSON parse failed: {e}, falling back to stub")
+            print(f"[OpenAILabeler] JSON parse failed: {e}")
+            print(f"[OpenAILabeler] Full content: {content}")
+            print(f"[OpenAILabeler] Falling back to stub")
             return StubLabeler().label(segments)
             
         out: List[LabeledEntity] = []

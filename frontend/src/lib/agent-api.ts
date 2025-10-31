@@ -64,12 +64,18 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 export async function sendAgentMessage(
   message: AgentChatMessage
 ): Promise<AgentChatResponse> {
-  const response = await fetch(`${API_BASE}/agent/chat`, {
+  const response = await fetch(`${API_BASE}/chat`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify(message),
+    body: JSON.stringify({
+      message: message.message,
+      conversation_id: message.conversation_id,
+      mode: 'agent',
+      attachments: message.attachments || [],
+      stream: false,
+    }),
   });
 
   if (!response.ok) {
@@ -86,7 +92,7 @@ export async function sendAgentMessage(
 export async function getAgentContext(
   conversationId: string
 ): Promise<AgentContext> {
-  const response = await fetch(`${API_BASE}/agent/context/${conversationId}`);
+  const response = await fetch(`${API_BASE}/chat/context/${conversationId}`);
 
   if (!response.ok) {
     throw new Error(`Failed to get context: ${response.statusText}`);
@@ -99,7 +105,7 @@ export async function getAgentContext(
  * Delete conversation context.
  */
 export async function deleteAgentContext(conversationId: string): Promise<void> {
-  const response = await fetch(`${API_BASE}/agent/context/${conversationId}`, {
+  const response = await fetch(`${API_BASE}/chat/context/${conversationId}`, {
     method: 'DELETE',
   });
 
@@ -115,13 +121,20 @@ export async function startAgentSimulation(
   imageFile: File,
   conversationId?: string
 ): Promise<AgentChatResponse> {
-  // Convert image to base64
-  const imageDataUrl = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = (e) => resolve(e.target?.result as string);
-    reader.onerror = reject;
-    reader.readAsDataURL(imageFile);
+  // Upload image to backend first
+  const formData = new FormData();
+  formData.append('file', imageFile);
+  
+  const uploadResponse = await fetch(`${API_BASE}/diagram/upload`, {
+    method: 'POST',
+    body: formData,
   });
+  
+  if (!uploadResponse.ok) {
+    throw new Error(`Image upload failed: ${uploadResponse.statusText}`);
+  }
+  
+  const { image_id } = await uploadResponse.json();
 
   return sendAgentMessage({
     message: 'Analyze this physics diagram and create a simulation.',
@@ -129,8 +142,7 @@ export async function startAgentSimulation(
     attachments: [
       {
         type: 'image',
-        data: imageDataUrl,
-        id: imageFile.name,
+        id: image_id,
       },
     ],
   });

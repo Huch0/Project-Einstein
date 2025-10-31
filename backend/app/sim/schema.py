@@ -1,18 +1,20 @@
-"""Simulation scene schema (v0.1.0) for Project Einstein.
+"""Simulation scene schema (v0.4.0) for Project Einstein.
 
-Defines a minimal set of types required to model an idealized single fixed pulley
-system with two masses connected by a massless, inextensible rope over a frictionless
-pulley. This establishes the baseline contract shared between backend validation and
-frontend execution.
+Flexible schema supporting any combination of bodies and constraints.
+No rigid scene-kind restrictions - universal physics builder approach.
 
-Roadmap: expand to multiple bodies, arbitrary constraints, springs, compound shapes.
+v0.4 Changes:
+- Removed scene_kind field (composition over classification)
+- Bodies list can have any count (not limited to 2)
+- Constraints support multiple types (rope, spring, hinge, fixed, distance)
+- Dynamic constraint inference by GPT-5 Agent
 """
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Literal, Optional, Union
 from pydantic import BaseModel, Field, field_validator
 
-SCENE_SCHEMA_VERSION = "0.1.0"
+SCENE_SCHEMA_VERSION = "0.4.0"
 
 
 class WorldSettings(BaseModel):
@@ -30,10 +32,13 @@ class Material(BaseModel):
 
 class Body(BaseModel):
   id: str
-  type: Literal["dynamic"] = "dynamic"  # future: static, kinematic
+  type: Literal["dynamic", "static", "kinematic"] = "dynamic"
   mass_kg: float = Field(..., gt=0.0)
   position_m: tuple[float, float] = Field(..., description="(x,y) position in meters.")
   velocity_m_s: tuple[float, float] = (0.0, 0.0)
+  angle_rad: float = Field(0.0, description="Rotation angle in radians.")
+  angular_velocity_rad_s: float = Field(0.0, description="Angular velocity in rad/s.")
+  collider: dict = Field(default_factory=lambda: {"type": "rectangle", "width_m": 0.1, "height_m": 0.1})
   material: Material = Field(default_factory=Material)
 
   @field_validator("position_m")
@@ -52,6 +57,7 @@ class Body(BaseModel):
 
 
 class PulleyConstraint(BaseModel):
+  """Ideal fixed pulley constraint (legacy, kept for backward compatibility)."""
   id: str = "pulley_1"
   type: Literal["ideal_fixed_pulley"] = "ideal_fixed_pulley"
   body_a: str = Field(..., description="ID of first mass (left side).")
@@ -69,55 +75,85 @@ class PulleyConstraint(BaseModel):
     return v
 
 
+class RopeConstraint(BaseModel):
+  """Rope constraint - connects two bodies with inextensible rope."""
+  type: Literal["rope"] = "rope"
+  body_a: Optional[str] = Field(None, description="First body ID (null for world anchor)")
+  body_b: Optional[str] = Field(None, description="Second body ID")
+  point_a_m: Optional[tuple[float, float]] = Field(None, description="Attachment point on body A (local coords)")
+  point_b_m: Optional[tuple[float, float]] = Field(None, description="Attachment point on body B (local coords)")
+  length_m: float = Field(..., gt=0.0, description="Rope length in meters")
+  stiffness: float = Field(1.0, ge=0.0, le=1.0, description="Stiffness (1.0 = ideal inextensible)")
+
+
+class SpringConstraint(BaseModel):
+  """Spring constraint - elastic connection between bodies."""
+  type: Literal["spring"] = "spring"
+  body_a: Optional[str] = Field(None, description="First body ID (null for world anchor)")
+  body_b: Optional[str] = Field(None, description="Second body ID")
+  point_a_m: Optional[tuple[float, float]] = Field(None, description="Attachment point on body A")
+  point_b_m: Optional[tuple[float, float]] = Field(None, description="Attachment point on body B")
+  length_m: float = Field(0.5, gt=0.0, description="Rest length in meters")
+  stiffness: float = Field(100.0, gt=0.0, description="Spring constant (N/m)")
+  damping: float = Field(0.0, ge=0.0, description="Damping coefficient")
+
+
+class HingeConstraint(BaseModel):
+  """Hinge constraint - rotational joint."""
+  type: Literal["hinge"] = "hinge"
+  body_a: Optional[str] = Field(None, description="First body ID")
+  body_b: Optional[str] = Field(None, description="Second body ID")
+  point_a_m: tuple[float, float] = Field(..., description="Hinge point on body A")
+  point_b_m: tuple[float, float] = Field(..., description="Hinge point on body B")
+  angle_limits: Optional[tuple[float, float]] = Field(None, description="(min, max) angle limits in radians")
+
+
+class DistanceConstraint(BaseModel):
+  """Distance constraint - maintains fixed distance between bodies."""
+  type: Literal["distance"] = "distance"
+  body_a: Optional[str] = Field(None, description="First body ID")
+  body_b: Optional[str] = Field(None, description="Second body ID")
+  point_a_m: Optional[tuple[float, float]] = Field(None, description="Attachment point on body A")
+  point_b_m: Optional[tuple[float, float]] = Field(None, description="Attachment point on body B")
+  length_m: float = Field(..., gt=0.0, description="Distance in meters")
+
+
+# Union type for all constraint types
+Constraint = Union[PulleyConstraint, RopeConstraint, SpringConstraint, HingeConstraint, DistanceConstraint]
+
+
 class Scene(BaseModel):
+  """Flexible physics scene schema (v0.4).
+  
+  Supports any combination of bodies and constraints.
+  No scene_kind restrictions - universal builder approach.
+  """
   version: str = Field(SCENE_SCHEMA_VERSION, description="Schema version.")
-  kind: Literal["pulley.single_fixed_v0"] = "pulley.single_fixed_v0"
   world: WorldSettings = Field(default_factory=WorldSettings)
-  bodies: list[Body]
-  constraints: list[PulleyConstraint]
+  bodies: list[Body] = Field(..., description="List of physics bodies (any count)")
+  constraints: list[dict] = Field(default_factory=list, description="List of constraints (any type)")
   notes: Optional[str] = Field(None, description="Free-form description or source of problem statement.")
-
-  @field_validator("bodies")
-  @classmethod
-  def _require_two_bodies(cls, v: list[Body]):  # type: ignore[override]
-    if len(v) != 2:
-      raise ValueError("Pulley scene requires exactly two bodies.")
-    return v
-
-  @field_validator("constraints")
-  @classmethod
-  def _one_constraint(cls, v: list[PulleyConstraint]):  # type: ignore[override]
-    if len(v) != 1:
-      raise ValueError("Pulley scene requires exactly one pulley constraint.")
-    return v
 
   def body_ids(self) -> set[str]:
     return {b.id for b in self.bodies}
 
   def validate_references(self) -> None:
+    """Validate that constraint body references exist."""
     ids = self.body_ids()
-    pulley = self.constraints[0]
-    missing = [bid for bid in (pulley.body_a, pulley.body_b) if bid not in ids]
-    if missing:
-      raise ValueError(f"Pulley references unknown body ids: {missing}")
-
-  def compute_rope_length_if_needed(self) -> None:
-    pulley = self.constraints[0]
-    if pulley.rope_length_m is not None:
-      return
-    # Compute simple length: distance from body A to anchor plus anchor to body B (piecewise, ignoring wrap)
-    import math
-    a = next(b for b in self.bodies if b.id == pulley.body_a)
-    b = next(b for b in self.bodies if b.id == pulley.body_b)
-    ax, ay = a.position_m
-    bx, by = b.position_m
-    cx, cy = pulley.pulley_anchor_m
-    length = math.dist((ax, ay), (cx, cy)) + math.dist((bx, by), (cx, cy))
-    pulley.rope_length_m = length
+    for constraint in self.constraints:
+      body_a = constraint.get("body_a")
+      body_b = constraint.get("body_b")
+      missing = []
+      if body_a and body_a not in ids:
+        missing.append(body_a)
+      if body_b and body_b not in ids:
+        missing.append(body_b)
+      if missing:
+        raise ValueError(f"Constraint references unknown body ids: {missing}")
 
   def normalize(self) -> "Scene":
+    """Validate and normalize scene data."""
     self.validate_references()
-    self.compute_rope_length_if_needed()
     return self
 
 
@@ -152,6 +188,11 @@ __all__ = [
   "Material",
   "Body",
   "PulleyConstraint",
+  "RopeConstraint",
+  "SpringConstraint",
+  "HingeConstraint",
+  "DistanceConstraint",
+  "Constraint",
   "Scene",
   "example_pulley_scene",
 ]
