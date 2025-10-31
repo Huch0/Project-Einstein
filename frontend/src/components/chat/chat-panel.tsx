@@ -3,6 +3,7 @@
 
 import { useState, useRef, useEffect, type FormEvent } from 'react';
 import { useToast } from '@/hooks/use-toast';
+import { useGlobalChat } from '@/contexts/global-chat-context';
 
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
@@ -26,20 +27,13 @@ export type SimulationData = {
 
 export default function ChatPanel() {
     const { toast } = useToast();
-    const [mode, setMode] = useState<ChatMode>('ask');
-    const [messages, setMessages] = useState<Message[]>([
-        {
-            role: 'assistant',
-            content: mode === 'ask'
-                ? "Hello! I'm your physics tutor. Ask me anything about physics concepts, laws, or problem-solving strategies."
-                : "Welcome to the Physics Lab Assistant! I can help you analyze diagrams and create simulations. Upload an image or describe what you want to simulate.",
-        },
-    ]);
+    const globalChat = useGlobalChat();
+    
+    const [mode, setMode] = useState<ChatMode>('agent'); // Default to agent mode
     const [input, setInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
-    const [conversationId, setConversationId] = useState<string | null>(null);
     const [progressMessages, setProgressMessages] = useState<string[]>([]);
-    const [simulationData, setSimulationData] = useState<SimulationData | null>(null);
+    const [selectedImage, setSelectedImage] = useState<File | null>(null);
     const eventSourceRef = useRef<EventSource | null>(null);
 
     const scrollAreaRef = useRef<HTMLDivElement>(null);
@@ -55,19 +49,18 @@ export default function ChatPanel() {
 
     useEffect(() => {
         scrollToBottom();
-    }, [messages]);
+    }, [globalChat.messages]);
 
     // Update welcome message when mode changes
     useEffect(() => {
-        setMessages([
-            {
+        if (globalChat.messages.length === 0) {
+            globalChat.addMessage({
                 role: 'assistant',
                 content: mode === 'ask'
                     ? "Hello! I'm your physics tutor. Ask me anything about physics concepts, laws, or problem-solving strategies."
                     : "Welcome to the Physics Lab Assistant! I can help you analyze diagrams and create simulations. Upload an image or describe what you want to simulate.",
-            },
-        ]);
-        setConversationId(null); // Reset conversation on mode change
+            });
+        }
     }, [mode]);
 
     // Cleanup EventSource on unmount
@@ -87,32 +80,91 @@ export default function ChatPanel() {
                 eventSourceRef.current = null;
             }
             setMode(newMode);
+            setSelectedImage(null); // Clear image when switching modes
         }
+    };
+
+    const uploadImageToBackend = async (file: File): Promise<string> => {
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/diagram/upload`, {
+            method: 'POST',
+            body: formData,
+        });
+
+        if (!response.ok) {
+            throw new Error(`Image upload failed: ${response.statusText}`);
+        }
+
+        const data = await response.json();
+        return data.image_id || data.id;
     };
 
     const onFormSubmit = async (e: FormEvent<HTMLFormElement>) => {
         e.preventDefault();
-        if (!input.trim()) return;
+        if (!input.trim() && !selectedImage) return;
 
-        const userInput: Message = { role: 'user', content: input };
-        setMessages((prev) => [...prev, userInput]);
+        // Build user message with simulation box context in agent mode
+        let messageContent = input || 'Analyze this image';
+        
+        if (mode === 'agent' && globalChat.simulationBoxes.size > 0) {
+            const boxContexts: string[] = [];
+            globalChat.simulationBoxes.forEach((box) => {
+                const details: string[] = [`"${box.name}"`];
+                if (box.hasImage) details.push('has uploaded image');
+                if (box.hasSimulation) details.push('has running simulation');
+                if (box.conversationId) details.push(`conversation: ${box.conversationId.slice(0, 8)}`);
+                boxContexts.push(`- Box ${details.join(', ')}`);
+            });
+            
+            if (boxContexts.length > 0) {
+                messageContent = `[Context: Current simulation boxes on canvas:\n${boxContexts.join('\n')}]\n\n${messageContent}`;
+            }
+        }
+
+        const userInput: Message = { role: 'user', content: messageContent };
+        globalChat.addMessage(userInput);
         setInput('');
         setIsLoading(true);
         setProgressMessages([]);
 
         try {
+            // Upload image if selected
+            let imageId: string | undefined;
+            let attachments: Array<{ type: string; id: string }> = [];
+            
+            if (selectedImage) {
+                try {
+                    setProgressMessages(['📤 Uploading image...']);
+                    imageId = await uploadImageToBackend(selectedImage);
+                    attachments = [{ type: 'image', id: imageId }];
+                    setProgressMessages(['✓ Image uploaded']);
+                    setSelectedImage(null); // Clear after upload
+                } catch (uploadError) {
+                    toast({
+                        variant: 'destructive',
+                        title: 'Upload Failed',
+                        description: uploadError instanceof Error ? uploadError.message : 'Failed to upload image',
+                    });
+                    setIsLoading(false);
+                    setProgressMessages([]);
+                    return;
+                }
+            }
+
             if (mode === 'agent') {
                 // Agent mode: Use streaming for real-time progress
                 const eventSource = streamAgentChat(
                     {
                         message: userInput.content,
-                        conversation_id: conversationId,
+                        conversation_id: globalChat.conversationId,
                         mode: 'agent',
-                        attachments: [], // TODO: Add image upload support
+                        attachments: attachments,
                     },
                     {
                         onInit: ({ conversation_id }) => {
-                            setConversationId(conversation_id);
+                            globalChat.setConversationId(conversation_id);
                         },
                         onThinking: ({ status }) => {
                             setProgressMessages((prev) => [...prev, `🤔 ${status}...`]);
@@ -146,7 +198,7 @@ export default function ChatPanel() {
                             
                             // Capture simulation data when frames are available
                             if ((state as any).frames && (state as any).scene) {
-                                setSimulationData({
+                                globalChat.setSimulationData({
                                     scene: (state as any).scene,
                                     frames: (state as any).frames,
                                     imageWidth: (state as any).image?.width_px || 800,
@@ -155,14 +207,11 @@ export default function ChatPanel() {
                             }
                         },
                         onMessage: ({ content }) => {
-                            setMessages((prev) => [
-                                ...prev,
-                                { role: 'assistant', content },
-                            ]);
+                            globalChat.addMessage({ role: 'assistant', content });
                             setProgressMessages([]);
                         },
                         onDone: ({ conversation_id }) => {
-                            setConversationId(conversation_id);
+                            globalChat.setConversationId(conversation_id);
                             setIsLoading(false);
                             if (eventSourceRef.current) {
                                 eventSourceRef.current.close();
@@ -186,15 +235,12 @@ export default function ChatPanel() {
                 // Ask mode: Simple request/response
                 const response = await sendUnifiedChat({
                     message: userInput.content,
-                    conversation_id: conversationId,
+                    conversation_id: globalChat.conversationId,
                     mode: 'ask',
                 });
 
-                setConversationId(response.conversation_id);
-                setMessages((prev) => [
-                    ...prev,
-                    { role: 'assistant', content: response.message },
-                ]);
+                globalChat.setConversationId(response.conversation_id);
+                globalChat.addMessage({ role: 'assistant', content: response.message });
                 setIsLoading(false);
             }
         } catch (error) {
@@ -203,7 +249,6 @@ export default function ChatPanel() {
                 title: 'Error',
                 description: error instanceof Error ? error.message : 'An unexpected error occurred.',
             });
-            setMessages((prev) => prev.slice(0, -1));
             setIsLoading(false);
             setProgressMessages([]);
         }
@@ -236,21 +281,41 @@ export default function ChatPanel() {
                         {mode === 'ask' ? 'Chat mode' : 'Tool-enabled mode'}
                     </div>
                 </div>
+                
+                {/* Simulation Box Context Display */}
+                {mode === 'agent' && globalChat.simulationBoxes.size > 0 && (
+                    <div className="mt-2 rounded-md bg-muted/50 p-2 text-xs">
+                        <div className="font-medium text-muted-foreground mb-1">
+                            Active Simulation Boxes ({globalChat.simulationBoxes.size}):
+                        </div>
+                        <div className="space-y-1">
+                            {Array.from(globalChat.simulationBoxes.values()).map((box) => (
+                                <div key={box.id} className="flex items-center gap-2 text-muted-foreground">
+                                    <span className="font-mono text-[10px] bg-background px-1 rounded">
+                                        {box.name}
+                                    </span>
+                                    {box.hasImage && <span className="text-[10px]">📸</span>}
+                                    {box.hasSimulation && <span className="text-[10px]">⚡</span>}
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
             </div>
 
             {/* Chat Messages */}
             <div className="flex flex-1 min-h-0 flex-col p-4 md:p-6">
                 <ScrollArea className="flex-1" ref={scrollAreaRef}>
-                    <ChatMessages messages={messages} />
+                    <ChatMessages messages={globalChat.messages} />
                     
                     {/* Simulation Visualization */}
-                    {simulationData && simulationData.frames.length > 0 && (
+                    {globalChat.simulationData && globalChat.simulationData.frames.length > 0 && (
                         <div className="mt-6">
                             <SimulationViewer
-                                scene={simulationData.scene}
-                                frames={simulationData.frames}
-                                imageWidth={simulationData.imageWidth}
-                                imageHeight={simulationData.imageHeight}
+                                scene={globalChat.simulationData.scene}
+                                frames={globalChat.simulationData.frames}
+                                imageWidth={globalChat.simulationData.imageWidth}
+                                imageHeight={globalChat.simulationData.imageHeight}
                             />
                         </div>
                     )}
@@ -282,6 +347,8 @@ export default function ChatPanel() {
                     onInputChange={(e) => setInput(e.target.value)}
                     onFormSubmit={onFormSubmit}
                     isLoading={isLoading}
+                    selectedImage={selectedImage}
+                    onImageSelect={setSelectedImage}
                     placeholder={
                         mode === 'ask'
                             ? 'Ask about physics concepts...'
