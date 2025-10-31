@@ -21,6 +21,7 @@ import { SimulationControls } from '@/components/simulation/simulation-controls'
 import { useSimulation } from '@/simulation/SimulationContext';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { useGlobalChat } from '@/contexts/global-chat-context';
 
 interface SimulationBoxNodeProps {
     node: SimulationBoxNodeType;
@@ -65,7 +66,9 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
         setSelection,
         state: { selection, nodes, orderedNodeIds },
     } = useWhiteboardStore();
+    const globalChat = useGlobalChat();
     const [objectPosition, setObjectPosition] = useState<SimulationObjectPosition>({ x: 0, y: 0 });
+    const [backgroundImage, setBackgroundImage] = useState<string | null>(null);
     
     // Get all simulation boxes for context insertion
     const availableBoxes = orderedNodeIds
@@ -356,6 +359,39 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
         };
     }, []);
 
+    // Register/unregister simulation box with GlobalChat (only on mount/unmount)
+    useEffect(() => {
+        const currentNode = nodes[node.id];
+        if (currentNode?.type === 'simulation-box') {
+            globalChat.registerSimulationBox({
+                id: node.id,
+                name: currentNode.name || `Box ${node.id.slice(0, 8)}`,
+                conversationId,
+                hasImage: !!backgroundImage,
+                hasSimulation: frames.length > 0,
+            });
+        }
+
+        return () => {
+            globalChat.unregisterSimulationBox(node.id);
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [node.id]);
+
+    // Update simulation box info when state changes
+    useEffect(() => {
+        const currentNode = nodes[node.id];
+        if (currentNode?.type === 'simulation-box') {
+            globalChat.updateSimulationBox(node.id, {
+                name: currentNode.name || `Box ${node.id.slice(0, 8)}`,
+                conversationId,
+                hasImage: !!backgroundImage,
+                hasSimulation: frames.length > 0,
+            });
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [node.id, conversationId, backgroundImage, frames.length]);
+
     const handleResizePointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
         event.stopPropagation();
         if (resizeState.current.pointerId !== event.pointerId) return;
@@ -467,6 +503,14 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
                             onChange={async (e) => {
                                 const file = e.target.files?.[0];
                                 if (file) {
+                                    // Create preview URL for background
+                                    const reader = new FileReader();
+                                    reader.onloadend = () => {
+                                        setBackgroundImage(reader.result as string);
+                                    };
+                                    reader.readAsDataURL(file);
+                                    
+                                    // Upload to agent
                                     await uploadImage(file);
                                 }
                             }}
@@ -523,9 +567,23 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
                 )}
                 style={{ height: Math.max(MIN_BOUNDS.height - HEADER_HEIGHT, node.bounds.height - HEADER_HEIGHT) }}
             >
+                {/* Background Image - Only show when not in simulation mode */}
+                {backgroundImage && !frames.length && (
+                    <div 
+                        className="absolute inset-0 z-20 flex items-center justify-center p-4 bg-background"
+                    >
+                        <img 
+                            src={backgroundImage} 
+                            alt="Uploaded diagram"
+                            className="max-w-full max-h-full object-contain"
+                            style={{ opacity: 0.9 }}
+                        />
+                    </div>
+                )}
+                
                 {/* Agent Error Display */}
                 {agentError && (
-                    <div className="absolute top-2 left-2 right-2 z-10 bg-destructive/90 text-destructive-foreground text-xs px-2 py-1 rounded">
+                    <div className="absolute top-2 left-2 right-2 z-20 bg-destructive/90 text-destructive-foreground text-xs px-2 py-1 rounded">
                         {agentError}
                     </div>
                 )}
@@ -551,7 +609,7 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
                 )}
                 
                 {/* Simulation Viewport */}
-                <div className="flex flex-col h-full">
+                <div className="flex flex-col h-full relative z-10">
                     <div className="flex-1 overflow-hidden">
                         <SimulationLayer
                             enabled={mode === 'simulation'}
