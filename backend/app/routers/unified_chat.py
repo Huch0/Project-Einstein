@@ -164,6 +164,9 @@ async def _handle_agent_mode(
     
     Returns: (assistant_message, tool_calls_made, state_snapshot)
     """
+    import logging
+    logger = logging.getLogger("unified_chat")
+    
     registry = get_registry()
     
     # Get or create context
@@ -171,50 +174,208 @@ async def _handle_agent_mode(
     if not context:
         context = context_store.create_context()
         context.conversation_id = conversation_id
+        logger.info(f"[Agent] Created new conversation: {conversation_id}")
     
     # Add user message
     context.add_message("user", message)
     
+    # Enhance message with explicit tool call hints for GPT-5
+    enhanced_message = message
+    message_lower = message.lower()
+    
+    # Detect intent and add explicit tool call instructions
+    if any(keyword in message_lower for keyword in ["세그먼트", "segment", "분석", "analyze", "시뮬레이션", "simulate", "진행", "proceed"]):
+        if context.image_id and not context.segments:
+            # Has image but no segments - need to segment first
+            enhanced_message += f"\n\n[INSTRUCTION: Call segment_image tool NOW with image_id='{context.image_id}' to extract object boundaries from the uploaded diagram.]"
+        elif context.segments and not context.entities:
+            # Has segments but no entities - need to label
+            enhanced_message += f"\n\n[INSTRUCTION: Call label_segments tool NOW to identify the {len(context.segments)} detected objects (masses, pulleys, etc.)]"
+        elif context.entities and not context.scene:
+            # Has entities but no scene - need to build
+            enhanced_message += f"\n\n[INSTRUCTION: Call build_physics_scene tool NOW to construct the simulation scene from {len(context.entities)} entities.]"
+        elif context.scene and not context.frames:
+            # Has scene but no simulation - need to simulate
+            enhanced_message += "\n\n[INSTRUCTION: Call simulate_physics tool NOW to run the Matter.js simulation.]"
+        elif context.frames:
+            # Has simulation - analyze
+            enhanced_message += "\n\n[INSTRUCTION: Call analyze_simulation tool NOW to evaluate the simulation results.]"
+    
+    # Update the message if enhanced
+    if enhanced_message != message:
+        context.messages[-1]["content"] = enhanced_message
+        logger.info(f"[Agent] Enhanced message with tool call hint: {enhanced_message[:100]}...")
+    
     # Process attachments
     for attachment in attachments:
         if attachment.get("type") == "image":
+            image_id = attachment.get("id", "uploaded_image")
             context.update_pipeline_state(
-                image_id=attachment.get("id", "uploaded_image"),
+                image_id=image_id,
                 image_metadata={"uploaded": True}
             )
+            logger.info(f"[Agent] Attached image: {image_id}")
+            
+            # Add explicit image context to the message for GPT-5
+            image_context = f"\n[System: User has uploaded an image with ID: {image_id}. Use the segment_image tool to analyze it.]"
+            context.messages[-1]["content"] += image_context
     
     # Prepare OpenAI request
     system_prompt = get_agent_system_prompt()
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(context.messages)
     
-    tools = registry.get_openai_function_schemas()
+    # Detect if we're using GPT-5 (or o1 models) - use Responses API
+    is_gpt5 = settings.OPENAI_MODEL.startswith("gpt-5") or settings.OPENAI_MODEL.startswith("o1")
+    
+    # Get appropriate tool schemas
+    if is_gpt5:
+        tools = registry.get_gpt5_function_schemas()
+    else:
+        tools = registry.get_openai_function_schemas()
+    
+    logger.info(f"[Agent] Available tools: {[t.get('name') or t.get('function', {}).get('name') for t in tools]}")
+    
+    # Log user messages for debugging
+    user_messages = [m for m in messages if m["role"] == "user"]
+    logger.info(f"[Agent] User messages: {[m['content'][:100] for m in user_messages]}")
+    logger.info(f"[Agent] Context state: image_id={context.image_id}, segments={len(context.segments)}, entities={len(context.entities)}")
     
     client = openai.AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
     
-    # Call OpenAI with tool support
-    response = await client.chat.completions.create(
-        model=settings.OPENAI_MODEL,
-        messages=messages,
-        tools=tools,
-        tool_choice="auto"
-    )
+    # Detect if we're using GPT-5 (or o1 models) - use Responses API
+    is_gpt5 = settings.OPENAI_MODEL.startswith("gpt-5") or settings.OPENAI_MODEL.startswith("o1")
     
-    assistant_message_obj = response.choices[0].message
+    # Convert messages to conversational format (for GPT-5)
+    # GPT-5 Responses API needs clear instruction format
+    if is_gpt5:
+        # Extract system message and format it as instructions
+        system_msg = next((msg["content"] for msg in messages if msg["role"] == "system"), "")
+        user_assistant_msgs = [msg for msg in messages if msg["role"] != "system"]
+        
+        # Format: Instructions first, then conversation
+        conversation_parts = []
+        if system_msg:
+            conversation_parts.append(f"<instructions>\n{system_msg}\n</instructions>\n")
+        
+        conversation_parts.extend([
+            f"{msg['role']}: {msg['content']}" for msg in user_assistant_msgs
+        ])
+        conversation_text = "\n".join(conversation_parts)
+    else:
+        conversation_text = "\n".join([
+            f"{msg['role']}: {msg['content']}" for msg in messages
+        ])
+    
+    # Log conversation for debugging
+    logger.info(f"[Agent] Conversation text (first 500 chars): {conversation_text[:500]}")
+    
+    # Call OpenAI with tool support
+    logger.info(f"[Agent] Calling {settings.OPENAI_MODEL} ({'Responses API' if is_gpt5 else 'Chat Completions API'}) with {len(messages)} messages and {len(tools)} tools")
+    
+    if is_gpt5:
+        # GPT-5 uses Responses API with 'input' parameter
+        # Include system prompt explicitly in conversation
+        first_response = await client.responses.create(
+            model=settings.OPENAI_MODEL,
+            input=conversation_text,  # Already includes system message
+            tools=tools,
+            reasoning={"effort": "medium"},
+            text={"verbosity": "medium"}
+        )
+        
+        # GPT-5 Responses API has different structure
+        # Debug: Log full response structure (non-streaming)
+        logger.info(f"[Agent] 🔍 GPT-5 Raw Response:")
+        logger.info(f"  - Type: {type(first_response)}")
+        logger.info(f"  - Response object: {first_response}")
+        
+        # GPT-5 uses response.output array with type filtering
+        assistant_text = ""
+        tool_calls_raw = []
+        
+        if hasattr(first_response, 'output'):
+            logger.info(f"  - Found 'output' field: {type(first_response.output)}")
+            for item in first_response.output:
+                item_type = getattr(item, 'type', None)
+                logger.info(f"    - Item type: {item_type}")
+                
+                if item_type == "function_call":
+                    tool_calls_raw.append(item)
+                elif item_type == "text":
+                    # Text content in output
+                    if hasattr(item, 'text'):
+                        assistant_text += item.text
+        elif hasattr(first_response, 'output_text'):
+            assistant_text = first_response.output_text
+        elif hasattr(first_response, 'choices'):
+            assistant_text = first_response.choices[0].message.content or ""
+        
+        logger.info(f"  - Output text: {assistant_text[:200] if assistant_text else 'EMPTY'}")
+        logger.info(f"  - Tool calls count: {len(tool_calls_raw)}")
+        if tool_calls_raw:
+            logger.info(f"  - Tool calls: {tool_calls_raw}")
+        
+        # Create a mock message object for compatibility
+        class MockMessage:
+            def __init__(self, content, tool_calls):
+                self.content = content
+                self.tool_calls = tool_calls
+        
+        assistant_message_obj = MockMessage(assistant_text, tool_calls_raw)
+    else:
+        # GPT-4 models use Chat Completions API
+        response = await client.chat.completions.create(
+            model=settings.OPENAI_MODEL,
+            messages=messages,
+            tools=tools,
+            tool_choice="auto"
+        )
+        
+        assistant_message_obj = response.choices[0].message
     tool_calls_raw = assistant_message_obj.tool_calls or []
     assistant_text = assistant_message_obj.content or ""
+    
+    logger.info(f"[Agent] GPT-5 response: {len(tool_calls_raw)} tool calls, message: {assistant_text[:100] if assistant_text else 'None'}")
     
     tool_calls_made = []
     
     # Execute tool calls
     if tool_calls_raw:
+        logger.info(f"[Agent] Executing {len(tool_calls_raw)} tool calls")
         for tool_call in tool_calls_raw:
-            tool_name = tool_call.function.name
-            tool_args = json.loads(tool_call.function.arguments)
-            tool_id = tool_call.id
+            # Handle different tool call structures (GPT-5 vs GPT-4)
+            if hasattr(tool_call, 'function'):
+                # GPT-4 Chat Completions format
+                tool_name = tool_call.function.name
+                tool_args = json.loads(tool_call.function.arguments)
+                tool_id = tool_call.id
+            else:
+                # GPT-5 Responses API format (direct attributes)
+                tool_name = tool_call.name
+                tool_args = json.loads(tool_call.arguments) if isinstance(tool_call.arguments, str) else tool_call.arguments
+                tool_id = getattr(tool_call, 'call_id', f"tool_{tool_name}")  # GPT-5 uses 'call_id', not 'id'
+            
+            logger.info(f"[Agent] Tool: {tool_name}, Args: {list(tool_args.keys())}, ID: {tool_id}")
+            
+            # Inject image_id for segment_image if not provided
+            if tool_name == "segment_image" and "image_data" not in tool_args:
+                if context.image_id:
+                    tool_args["image_data"] = context.image_id
+                    logger.info(f"[Agent] Injected image_id: {context.image_id}")
+            
+            # Inject frames/scene for analyze_simulation if not provided
+            if tool_name == "analyze_simulation":
+                if "frames" not in tool_args and context.frames:
+                    tool_args["frames"] = context.frames
+                    logger.info(f"[Agent] Injected frames: {len(context.frames)} frames")
+                if "scene" not in tool_args and context.scene:
+                    tool_args["scene"] = context.scene
+                    logger.info(f"[Agent] Injected scene")
             
             try:
                 result = await registry.invoke_tool(tool_name, tool_args)
+                logger.info(f"[Agent] ✓ {tool_name} succeeded")
                 
                 context.add_tool_call(
                     tool_name=tool_name,
@@ -225,13 +386,15 @@ async def _handle_agent_mode(
                 tool_calls_made.append({
                     "name": tool_name,
                     "arguments": tool_args,
-                    "result": result
+                    "result": result,
+                    "call_id": tool_id  # Store call_id for GPT-5
                 })
                 
                 # Update context state
                 _update_context_state(context, tool_name, result)
                 
             except Exception as e:
+                logger.error(f"[Agent] ✗ {tool_name} failed: {str(e)}")
                 context.add_tool_call(
                     tool_name=tool_name,
                     arguments=tool_args,
@@ -240,38 +403,105 @@ async def _handle_agent_mode(
                 tool_calls_made.append({
                     "name": tool_name,
                     "arguments": tool_args,
-                    "error": str(e)
+                    "error": str(e),
+                    "call_id": tool_id  # Store call_id for GPT-5
                 })
-        
-        # Get final response with tool results
-        messages.append({
-            "role": "assistant",
-            "content": assistant_text or "",
-            "tool_calls": [
-                {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments
-                    }
-                }
-                for tc in tool_calls_raw
-            ]
-        })
-        
-        for i, tool_call in enumerate(tool_calls_raw):
+    else:
+        logger.warning("[Agent] ⚠️ No tool calls from GPT-5!")
+    
+    # Get final response with tool results
+    if tool_calls_raw:
+        if is_gpt5:
+            # GPT-5: Build input array with original response output + function_call_output items
+            # Use only the required fields for each item type
+            input_items = []
+            
+            # Add original user message(s)
+            for msg in context.messages:
+                if msg["role"] == "user":
+                    input_items.append({
+                        "role": msg["role"],
+                        "content": msg["content"]
+                    })
+            
+            # Add the first response output items with ONLY required fields
+            if hasattr(first_response, 'output'):
+                for item in first_response.output:
+                    item_type = getattr(item, 'type', None)
+                    
+                    if item_type == "function_call":
+                        # Function call items: type, call_id, name, arguments
+                        input_items.append({
+                            "type": "function_call",
+                            "call_id": getattr(item, 'call_id', ''),
+                            "name": getattr(item, 'name', ''),
+                            "arguments": getattr(item, 'arguments', {})
+                        })
+                    elif item_type == "text":
+                        # Text items: type, text
+                        input_items.append({
+                            "type": "text",
+                            "text": getattr(item, 'text', '')
+                        })
+                    # Add other types as needed
+            
+            # Now add tool results as function_call_output
+            for tc_made in tool_calls_made:
+                call_id = tc_made.get('call_id', 'unknown_call')
+                
+                input_items.append({
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": json.dumps(tc_made.get("result", tc_made.get("error", "No result")))
+                })
+            
+            logger.info(f"[Agent] Sending {len(input_items)} items to GPT-5 for final response")
+            
+            final_response = await client.responses.create(
+                model=settings.OPENAI_MODEL,
+                input=input_items,
+                reasoning={"effort": "low"},
+                text={"verbosity": "medium"}
+            )
+            
+            # Extract text from output
+            final_message = ""
+            if hasattr(final_response, 'output'):
+                for item in final_response.output:
+                    if getattr(item, 'type', None) == 'text' and hasattr(item, 'text'):
+                        final_message += item.text
+            elif hasattr(final_response, 'output_text'):
+                final_message = final_response.output_text
+        else:
+            # GPT-4: Use standard chat completions with tool messages
             messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call.id,
-                "content": json.dumps(tool_calls_made[i].get("result", {}))
+                "role": "assistant",
+                "content": assistant_text or "",
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments
+                        }
+                    }
+                    for tc in tool_calls_raw
+                ]
             })
-        
-        final_response = await client.chat.completions.create(
-            model=settings.OPENAI_MODEL,
-            messages=messages
-        )
-        final_message = final_response.choices[0].message.content or ""
+            
+            for i, tool_call in enumerate(tool_calls_raw):
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": json.dumps(tool_calls_made[i].get("result", {}))
+                })
+            
+            final_response = await client.chat.completions.create(
+                model=settings.OPENAI_MODEL,
+                messages=messages
+            )
+            final_message = final_response.choices[0].message.content or ""
     else:
         final_message = assistant_text
     
@@ -279,12 +509,11 @@ async def _handle_agent_mode(
     context.add_message("assistant", final_message)
     context_store.update_context(context)
     
-    # Build state snapshot
+    # Build state snapshot (v0.4 - no scene_kind)
     state_snapshot = {
         "image_id": context.image_id,
         "segments_count": len(context.segments),
         "entities_count": len(context.entities),
-        "scene_kind": context.scene_kind,
         "has_scene": context.scene is not None,
         "frames_count": len(context.frames)
     }
@@ -303,11 +532,14 @@ def _update_context_state(context, tool_name: str, result: Any):
         context.update_pipeline_state(
             entities=result["entities"]
         )
-    elif tool_name == "validate_scene_entities":
-        context.update_pipeline_state(
-            scene_kind=result.get("scene_kind")
-        )
     elif tool_name == "build_physics_scene":
+        context.update_pipeline_state(
+            scene=result["scene"]
+        )
+    elif tool_name == "simulate_physics":
+        context.update_pipeline_state(
+            frames=result["frames"]
+        )
         context.update_pipeline_state(
             scene=result["scene"]
         )
@@ -349,6 +581,32 @@ async def _stream_agent_mode(
     # Add user message
     context.add_message("user", message)
     
+    # Enhance message with explicit tool call hints for GPT-5
+    enhanced_message = message
+    message_lower = message.lower()
+    
+    # Detect intent and add explicit tool call instructions
+    if any(keyword in message_lower for keyword in ["세그먼트", "segment", "분석", "analyze", "시뮬레이션", "simulate", "진행", "proceed"]):
+        if context.image_id and not context.segments:
+            # Has image but no segments - need to segment first
+            enhanced_message += f"\n\n[INSTRUCTION: Call segment_image tool NOW with image_id='{context.image_id}' to extract object boundaries from the uploaded diagram.]"
+        elif context.segments and not context.entities:
+            # Has segments but no entities - need to label
+            enhanced_message += f"\n\n[INSTRUCTION: Call label_segments tool NOW to identify the {len(context.segments)} detected objects (masses, pulleys, etc.)]"
+        elif context.entities and not context.scene:
+            # Has entities but no scene - need to build
+            enhanced_message += f"\n\n[INSTRUCTION: Call build_physics_scene tool NOW to construct the simulation scene from {len(context.entities)} entities.]"
+        elif context.scene and not context.frames:
+            # Has scene but no simulation - need to simulate
+            enhanced_message += "\n\n[INSTRUCTION: Call simulate_physics tool NOW to run the Matter.js simulation.]"
+        elif context.frames:
+            # Has simulation - analyze
+            enhanced_message += "\n\n[INSTRUCTION: Call analyze_simulation tool NOW to evaluate the simulation results.]"
+    
+    # Update the message if enhanced
+    if enhanced_message != message:
+        context.messages[-1]["content"] = enhanced_message
+    
     # Process attachments
     for attachment in attachments:
         if attachment.get("type") == "image":
@@ -356,27 +614,86 @@ async def _stream_agent_mode(
                 image_id=attachment.get("id", "uploaded_image"),
                 image_metadata={"uploaded": True}
             )
+            
+            # Add explicit image context to the message for GPT-5
+            image_id = attachment.get("id", "uploaded_image")
+            image_context = f"\n[System: User has uploaded an image with ID: {image_id}. Use the segment_image tool to analyze it.]"
+            context.messages[-1]["content"] += image_context
     
     # Prepare OpenAI request
     system_prompt = get_agent_system_prompt()
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(context.messages)
     
-    tools = registry.get_openai_function_schemas()
+    # Detect if we're using GPT-5 (or o1 models) - use Responses API
+    is_gpt5 = settings.OPENAI_MODEL.startswith("gpt-5") or settings.OPENAI_MODEL.startswith("o1")
+    
+    # Get appropriate tool schemas
+    if is_gpt5:
+        tools = registry.get_gpt5_function_schemas()
+    else:
+        tools = registry.get_openai_function_schemas()
     
     client = openai.AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+    
+    # Detect if we're using GPT-5 (or o1 models) - use Responses API
+    is_gpt5 = settings.OPENAI_MODEL.startswith("gpt-5") or settings.OPENAI_MODEL.startswith("o1")
+    
+    # Convert messages to conversational format (for GPT-5)
+    # GPT-5 Responses API needs clear instruction format
+    if is_gpt5:
+        # Extract system message and format it as instructions
+        system_msg = next((msg["content"] for msg in messages if msg["role"] == "system"), "")
+        user_assistant_msgs = [msg for msg in messages if msg["role"] != "system"]
+        
+        # Format: Instructions first, then conversation
+        conversation_parts = []
+        if system_msg:
+            conversation_parts.append(f"<instructions>\n{system_msg}\n</instructions>\n")
+        
+        conversation_parts.extend([
+            f"{msg['role']}: {msg['content']}" for msg in user_assistant_msgs
+        ])
+        conversation_text = "\n".join(conversation_parts)
+    else:
+        conversation_text = "\n".join([
+            f"{msg['role']}: {msg['content']}" for msg in messages
+        ])
     
     yield f"event: thinking\ndata: {json.dumps({'status': 'calling_gpt'})}\n\n"
     
     # Call OpenAI
-    response = await client.chat.completions.create(
-        model=settings.OPENAI_MODEL,
-        messages=messages,
-        tools=tools,
-        tool_choice="auto"
-    )
-    
-    assistant_message_obj = response.choices[0].message
+    if is_gpt5:
+        # GPT-5 uses Responses API with 'input' parameter
+        response = await client.responses.create(
+            model=settings.OPENAI_MODEL,
+            input=conversation_text,
+            tools=tools,
+            reasoning={"effort": "medium"},
+            text={"verbosity": "medium"}
+        )
+        
+        # GPT-5 Responses API has different structure
+        assistant_text = response.output_text if hasattr(response, 'output_text') else ""
+        tool_calls_raw = getattr(response, 'tool_calls', [])
+        
+        # Create a mock message object for compatibility
+        class MockMessage:
+            def __init__(self, content, tool_calls):
+                self.content = content
+                self.tool_calls = tool_calls
+        
+        assistant_message_obj = MockMessage(assistant_text, tool_calls_raw)
+    else:
+        # GPT-4 models use Chat Completions API
+        response = await client.chat.completions.create(
+            model=settings.OPENAI_MODEL,
+            messages=messages,
+            tools=tools,
+            tool_choice="auto"
+        )
+        
+        assistant_message_obj = response.choices[0].message
     tool_calls_raw = assistant_message_obj.tool_calls or []
     assistant_text = assistant_message_obj.content or ""
     
@@ -385,9 +702,29 @@ async def _stream_agent_mode(
     # Execute tool calls with streaming
     if tool_calls_raw:
         for idx, tool_call in enumerate(tool_calls_raw):
-            tool_name = tool_call.function.name
-            tool_args = json.loads(tool_call.function.arguments)
-            tool_id = tool_call.id
+            # Handle different tool call structures (GPT-5 vs GPT-4)
+            if hasattr(tool_call, 'function'):
+                # GPT-4 Chat Completions format
+                tool_name = tool_call.function.name
+                tool_args = json.loads(tool_call.function.arguments)
+                tool_id = tool_call.id
+            else:
+                # GPT-5 Responses API format (direct attributes)
+                tool_name = tool_call.name
+                tool_args = json.loads(tool_call.arguments) if isinstance(tool_call.arguments, str) else tool_call.arguments
+                tool_id = getattr(tool_call, 'call_id', f"tool_{tool_name}")  # GPT-5 uses 'call_id', not 'id'
+            
+            # Inject image_id for segment_image if not provided
+            if tool_name == "segment_image" and "image_data" not in tool_args:
+                if context.image_id:
+                    tool_args["image_data"] = context.image_id
+            
+            # Inject frames/scene for analyze_simulation if not provided
+            if tool_name == "analyze_simulation":
+                if "frames" not in tool_args and context.frames:
+                    tool_args["frames"] = context.frames
+                if "scene" not in tool_args and context.scene:
+                    tool_args["scene"] = context.scene
             
             # Tool start event
             yield f"event: tool_start\ndata: {json.dumps({'tool': tool_name, 'index': idx, 'total': len(tool_calls_raw)})}\n\n"
@@ -449,34 +786,52 @@ async def _stream_agent_mode(
         # Get final response
         yield f"event: thinking\ndata: {json.dumps({'status': 'generating_final_message'})}\n\n"
         
-        messages.append({
-            "role": "assistant",
-            "content": assistant_text or "",
-            "tool_calls": [
-                {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments
-                    }
-                }
-                for tc in tool_calls_raw
-            ]
-        })
-        
-        for i, tool_call in enumerate(tool_calls_raw):
+        if is_gpt5:
+            # GPT-5: Build tool results summary and request final response
+            tool_results_text = "\n".join([
+                f"Tool {tc['name']} returned: {json.dumps(tc.get('result', tc.get('error', 'No result')))}"
+                for tc in tool_calls_made
+            ])
+            
+            final_input = f"{conversation_text}\n\nTool results:\n{tool_results_text}\n\nPlease provide a final response to the user based on these tool results."
+            
+            final_response = await client.responses.create(
+                model=settings.OPENAI_MODEL,
+                input=final_input,
+                reasoning={"effort": "low"},
+                text={"verbosity": "medium"}
+            )
+            final_message = final_response.output_text if hasattr(final_response, 'output_text') else ""
+        else:
+            # GPT-4: Use standard chat completions with tool messages
             messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call.id,
-                "content": json.dumps(tool_calls_made[i].get("result", {}))
+                "role": "assistant",
+                "content": assistant_text or "",
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments
+                        }
+                    }
+                    for tc in tool_calls_raw
+                ]
             })
-        
-        final_response = await client.chat.completions.create(
-            model=settings.OPENAI_MODEL,
-            messages=messages
-        )
-        final_message = final_response.choices[0].message.content or ""
+            
+            for i, tool_call in enumerate(tool_calls_raw):
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": json.dumps(tool_calls_made[i].get("result", {}))
+                })
+            
+            final_response = await client.chat.completions.create(
+                model=settings.OPENAI_MODEL,
+                messages=messages
+            )
+            final_message = final_response.choices[0].message.content or ""
     else:
         final_message = assistant_text
     
