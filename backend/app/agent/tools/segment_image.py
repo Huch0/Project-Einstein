@@ -87,22 +87,15 @@ def _segment_via_http(image_bytes: bytes, sam_server_url: str) -> list[dict]:
     port = parsed.port or 9001
     path = parsed.path or "/segment"
     
-    # Prepare multipart body
-    boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW"
-    body = (
-        f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="image"; filename="diagram.jpg"\r\n'
-        f"Content-Type: image/jpeg\r\n\r\n"
-    ).encode() + image_bytes + f"\r\n--{boundary}--\r\n".encode()
-    
+    # Send raw image bytes (SAM server expects raw bytes, not multipart)
     headers = {
-        "Content-Type": f"multipart/form-data; boundary={boundary}",
-        "Content-Length": str(len(body))
+        "Content-Type": "application/octet-stream",
+        "Content-Length": str(len(image_bytes))
     }
     
     try:
         conn = http.client.HTTPConnection(host, port, timeout=30)
-        conn.request("POST", path, body, headers)
+        conn.request("POST", path, image_bytes, headers)
         response = conn.getresponse()
         
         if response.status != 200:
@@ -200,8 +193,12 @@ async def segment_image(input_data: SegmentImageInput) -> SegmentImageOutput:
         ... ))
         >>> print(f"Found {len(result.segments)} segments")
     """
-    # Handle base64 encoded images
-    if input_data.image_data.startswith("data:image"):
+    # Handle different image_data formats
+    if input_data.image_data.startswith("img_"):
+        # Image ID from upload endpoint
+        from app.routers.diagram import get_uploaded_image_bytes
+        image_bytes = get_uploaded_image_bytes(input_data.image_data)
+    elif input_data.image_data.startswith("data:image"):
         # Extract base64 data from data URL
         image_bytes = base64.b64decode(
             input_data.image_data.split(",", 1)[1]
