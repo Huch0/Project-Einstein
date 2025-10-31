@@ -6,12 +6,15 @@ Orchestrates SAM segmentation → GPT labeling → Universal Builder → Matter.
 from __future__ import annotations
 
 from fastapi import APIRouter, File, UploadFile, HTTPException, Query
+from fastapi.responses import Response
 import logging
 import json
 import http.client
 from urllib.parse import urlparse
 from PIL import Image
 import io
+from uuid import uuid4
+from pathlib import Path
 from pydantic import BaseModel, Field
 
 from app.sim.schema import example_pulley_scene
@@ -346,3 +349,118 @@ async def parse_diagram(
     segments=segments_payload,
     labels=gpt_labels,
   )
+
+
+# ===========================
+# Image Upload Endpoint
+# ===========================
+
+# In-memory storage for uploaded images (replace with S3/database in production)
+_uploaded_images: dict[str, bytes] = {}
+
+
+class ImageUploadResponse(BaseModel):
+    """Response for image upload."""
+    image_id: str = Field(description="Unique image ID")
+    width_px: int = Field(description="Image width in pixels")
+    height_px: int = Field(description="Image height in pixels")
+    content_type: str = Field(description="Image MIME type")
+    size_bytes: int = Field(description="Image file size")
+
+
+@router.post("/upload", response_model=ImageUploadResponse)
+async def upload_image(
+    file: UploadFile = File(..., description="Image file to upload")
+) -> ImageUploadResponse:
+    """
+    Upload an image for later use in Agent mode.
+    
+    The image is stored temporarily with a unique ID that can be used
+    in chat attachments.
+    
+    Example:
+        POST /diagram/upload
+        Content-Type: multipart/form-data
+        file: <image file>
+        
+        Response:
+        {
+            "image_id": "img_abc123",
+            "width_px": 800,
+            "height_px": 600,
+            "content_type": "image/jpeg",
+            "size_bytes": 52341
+        }
+    """
+    if file.content_type not in {"image/png", "image/jpeg", "image/jpg"}:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type: {file.content_type}. Use PNG or JPEG."
+        )
+    
+    # Read image bytes
+    contents = await file.read()
+    
+    # Validate image
+    try:
+        img = Image.open(io.BytesIO(contents))
+        width, height = img.size
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid image file: {str(e)}"
+        )
+    
+    # Generate unique ID
+    image_id = f"img_{uuid4().hex[:12]}"
+    
+    # Store image in memory (TODO: replace with S3/database)
+    _uploaded_images[image_id] = contents
+    
+    logger.info(f"Uploaded image {image_id}: {width}x{height}px, {len(contents)} bytes")
+    
+    return ImageUploadResponse(
+        image_id=image_id,
+        width_px=width,
+        height_px=height,
+        content_type=file.content_type or "image/jpeg",
+        size_bytes=len(contents)
+    )
+
+
+@router.get("/image/{image_id}")
+async def get_uploaded_image(image_id: str):
+    """
+    Retrieve an uploaded image by ID.
+    
+    Returns the raw image bytes with appropriate Content-Type header.
+    """
+    if image_id not in _uploaded_images:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Image {image_id} not found"
+        )
+    
+    image_bytes = _uploaded_images[image_id]
+    
+    # Detect content type
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+        content_type = f"image/{img.format.lower()}" if img.format else "image/jpeg"
+    except Exception:
+        content_type = "image/jpeg"
+    
+    return Response(content=image_bytes, media_type=content_type)
+
+
+def get_uploaded_image_bytes(image_id: str) -> bytes:
+    """
+    Get image bytes by ID (for internal use by tools).
+    
+    Raises:
+        ValueError: If image_id not found
+    """
+    if image_id not in _uploaded_images:
+        raise ValueError(f"Image {image_id} not found in uploaded images")
+    
+    return _uploaded_images[image_id]
