@@ -197,6 +197,33 @@ class ToolRegistry:
         
         return functions
     
+    def get_gpt5_function_schemas(self) -> list[dict[str, Any]]:
+        """
+        Get tool schemas in GPT-5 Responses API format.
+        
+        GPT-5 Responses API expects a slightly different format than Chat Completions.
+        """
+        functions = []
+        
+        for tool in self._tools.values():
+            # Convert Pydantic schema to GPT-5 Responses API format
+            schema = tool.input_schema.model_json_schema()
+            
+            function_def = {
+                "type": "function",
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": schema.get("properties", {}),
+                    "required": schema.get("required", [])
+                }
+            }
+            
+            functions.append(function_def)
+        
+        return functions
+    
     async def invoke_tool(
         self,
         tool_name: str,
