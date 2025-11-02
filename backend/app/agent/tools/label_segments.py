@@ -330,6 +330,7 @@ async def label_segments(input_data: LabelSegmentsInput) -> LabelSegmentsOutput:
     
     return LabelSegmentsOutput(
         version="v0.4",
+        segments=input_data.segments,
         entities=entities,
         confidence={
             "overall": round(avg_conf, 2),

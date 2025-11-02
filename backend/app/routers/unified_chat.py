@@ -13,6 +13,7 @@ Features:
 
 from __future__ import annotations
 
+from asyncio.log import logger
 import json
 import asyncio
 from typing import Any, AsyncGenerator, Literal
@@ -725,7 +726,30 @@ async def _stream_agent_mode(
                     tool_args["frames"] = context.frames
                 if "scene" not in tool_args and context.scene:
                     tool_args["scene"] = context.scene
+                    
+            if tool_name == "label_segments" and "segments" not in tool_args:
+                if context.segments:
+                    tool_args["segments"] = context.segments
+                    logger.info(f"[Agent] Injected segments: {len(context.segments)} segments")
+
+            if tool_name == "validate_scene_entities" and "entities" not in tool_args:
+                if context.entities:
+                    tool_args["entities"] = context.entities
+                    logger.info(f"[Agent] Injected entities: {len(context.entities)} entities")
             
+            if tool_name == "build_physics_scene":
+                if "entities" not in tool_args and context.entities:
+                    tool_args["entities"] = context.entities
+                    logger.info(f"[Agent] Injected entities: {len(context.entities)} entities")
+                if "segments" not in tool_args and context.segments:
+                    tool_args["segments"] = context.segments
+                    logger.info(f"[Agent] Injected segments: {len(context.segments)} segments")
+                if "image" not in tool_args and context.image_metadata:
+                    tool_args["image"] = context.image_metadata
+                    logger.info(f"[Agent] Injected image metadata")
+                # print(f"context: {context}")
+                # print(f"tool_args: {tool_args}")
+
             # Tool start event
             yield f"event: tool_start\ndata: {json.dumps({'tool': tool_name, 'index': idx, 'total': len(tool_calls_raw)})}\n\n"
             

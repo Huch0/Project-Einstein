@@ -4,7 +4,7 @@ Agent Tool Registry (v0.4)
 Registers all agent tools with OpenAI function calling format and validation.
 Updated for Universal Physics Builder architecture.
 """
-
+import traceback
 from typing import Any, Callable
 
 from pydantic import BaseModel
@@ -250,8 +250,13 @@ class ToolRegistry:
         # Validate input
         try:
             validated_input = tool.input_schema(**arguments)
+        # print out the whole traceback for debugging
         except Exception as e:
-            raise ValueError(f"Invalid input for tool '{tool_name}': {str(e)}")
+            traceback.print_exc()
+            raise ValueError(
+                f"Input validation failed for tool '{tool_name}': {str(e)}"
+            ) from e
+
         
         # Invoke tool function
         try:
