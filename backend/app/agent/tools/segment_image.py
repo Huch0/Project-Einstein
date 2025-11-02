@@ -2,15 +2,17 @@
 Tool 1: segment_image - SAM/SAM2 Segmentation
 
 Extracts object boundaries from physics diagram images using SAM.
+Standalone implementation - no dependency on pipeline/sam_detector.py.
 """
 
 import base64
+import json
 import uuid
+import http.client
 from typing import Literal
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
-
-from app.pipeline.sam_detector import SamClient
 
 
 class SegmentImageInput(BaseModel):
@@ -61,9 +63,122 @@ class SegmentImageOutput(BaseModel):
     image: ImageMetadata
 
 
+# ===========================
+# SAM Segmentation Helpers
+# ===========================
+
+def _segment_via_http(image_bytes: bytes, sam_server_url: str) -> list[dict]:
+    """
+    Call external SAM server via HTTP POST.
+    
+    Args:
+        image_bytes: Raw image data
+        sam_server_url: Full URL to SAM endpoint
+        
+    Returns:
+        List of raw segment dictionaries with id, bbox, polygon_px
+        
+    Raises:
+        ConnectionError: If SAM server unreachable
+        ValueError: If server returns invalid response
+    """
+    parsed = urlparse(sam_server_url)
+    host = parsed.hostname or "localhost"
+    port = parsed.port or 9001
+    path = parsed.path or "/segment"
+    
+    # Send raw image bytes (SAM server expects raw bytes, not multipart)
+    headers = {
+        "Content-Type": "application/octet-stream",
+        "Content-Length": str(len(image_bytes))
+    }
+    
+    try:
+        conn = http.client.HTTPConnection(host, port, timeout=30)
+        conn.request("POST", path, image_bytes, headers)
+        response = conn.getresponse()
+        
+        if response.status != 200:
+            raise ValueError(f"SAM server error: {response.status} {response.reason}")
+        
+        data = json.loads(response.read().decode())
+        conn.close()
+        
+        # Expected format: {"segments": [{id, bbox, polygon_px}, ...]}
+        return data.get("segments", [])
+        
+    except (ConnectionRefusedError, TimeoutError) as e:
+        raise ConnectionError(f"SAM server unreachable at {host}:{port}") from e
+
+
+def _segment_stub(image_bytes: bytes) -> list[dict]:
+    """
+    Generate deterministic test segments without SAM server.
+    
+    Simulates typical pulley system layout:
+    - 2 masses (left and right)
+    - 1 pulley (top center)
+    - 1 surface (bottom)
+    
+    Args:
+        image_bytes: Ignored (for signature compatibility)
+        
+    Returns:
+        List of 4 segments with realistic physics diagram layout
+    """
+    # Assume 800x600 image for consistent test data
+    W, H = 800, 600
+    
+    segments = [
+        {
+            "id": 1,
+            "bbox": [100, 350, 80, 80],  # Mass A (left, suspended)
+            "polygon_px": [
+                [100, 350], [180, 350], [180, 430], [100, 430]
+            ],
+            "mask_path": None
+        },
+        {
+            "id": 2,
+            "bbox": [620, 350, 80, 80],  # Mass B (right, suspended)
+            "polygon_px": [
+                [620, 350], [700, 350], [700, 430], [620, 430]
+            ],
+            "mask_path": None
+        },
+        {
+            "id": 3,
+            "bbox": [360, 80, 80, 80],  # Pulley (top center)
+            "polygon_px": [
+                [400, 90],   # Top
+                [430, 110],  # Right
+                [430, 140],
+                [400, 160],  # Bottom
+                [370, 140],  # Left
+                [370, 110]
+            ],
+            "mask_path": None
+        },
+        {
+            "id": 4,
+            "bbox": [0, 550, W, 50],  # Ground surface (bottom)
+            "polygon_px": [
+                [0, 550], [W, 550], [W, 600], [0, 600]
+            ],
+            "mask_path": None
+        }
+    ]
+    
+    return segments
+
+
 async def segment_image(input_data: SegmentImageInput) -> SegmentImageOutput:
     """
     Extract object boundaries from physics diagram using SAM.
+    
+    Supports two modes:
+    - http: Calls external SAM server via HTTP
+    - stub: Returns deterministic test segments
     
     Args:
         input_data: Segmentation configuration
@@ -78,8 +193,12 @@ async def segment_image(input_data: SegmentImageInput) -> SegmentImageOutput:
         ... ))
         >>> print(f"Found {len(result.segments)} segments")
     """
-    # Handle base64 encoded images
-    if input_data.image_data.startswith("data:image"):
+    # Handle different image_data formats
+    if input_data.image_data.startswith("img_"):
+        # Image ID from upload endpoint
+        from app.routers.diagram import get_uploaded_image_bytes
+        image_bytes = get_uploaded_image_bytes(input_data.image_data)
+    elif input_data.image_data.startswith("data:image"):
         # Extract base64 data from data URL
         image_bytes = base64.b64decode(
             input_data.image_data.split(",", 1)[1]
@@ -92,28 +211,32 @@ async def segment_image(input_data: SegmentImageInput) -> SegmentImageOutput:
         # Assume raw base64
         image_bytes = base64.b64decode(input_data.image_data)
     
-    # Call SAM detector
-    sam_client = SamClient(
-        mode="http" if "localhost" in input_data.sam_server_url or "127.0.0.1" in input_data.sam_server_url else "stub",
-        http_url=input_data.sam_server_url
+    # Determine mode based on URL
+    use_http = (
+        "localhost" in input_data.sam_server_url 
+        or "127.0.0.1" in input_data.sam_server_url
     )
-    detections = sam_client.segment(image_bytes)
+    
+    # Call SAM (HTTP or stub)
+    if use_http:
+        raw_segments = _segment_via_http(image_bytes, input_data.sam_server_url)
+    else:
+        raw_segments = _segment_stub(image_bytes)
     
     # Convert to tool output format
     segments = []
-    for det in detections:
+    for seg in raw_segments:
         segment = Segment(
-            id=det.id,
-            bbox=det.bbox,
-            polygon_px=[[p[0], p[1]] for p in det.polygon_px] if det.polygon_px else None,
-            mask_path=det.mask_path
+            id=seg["id"],
+            bbox=tuple(seg["bbox"]),
+            polygon_px=seg.get("polygon_px"),
+            mask_path=seg.get("mask_path")
         )
         segments.append(segment)
     
-    # Get image dimensions from first detection or decode image
-    if detections:
-        # SAM detector should include image size in metadata
-        # For now, estimate from bbox bounds
+    # Get image dimensions
+    if segments:
+        # Estimate from bbox bounds
         max_x = max(seg.bbox[0] + seg.bbox[2] for seg in segments)
         max_y = max(seg.bbox[1] + seg.bbox[3] for seg in segments)
         width_px = int(max_x)

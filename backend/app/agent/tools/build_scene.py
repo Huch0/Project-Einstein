@@ -1,14 +1,14 @@
 """
-Tool 4: build_physics_scene - Scene JSON Construction
+Tool 4: build_physics_scene - Scene JSON Construction (v0.4)
 
-Converts entities + geometry → simulator-ready Scene JSON.
+Converts entities + geometry → simulator-ready Scene JSON using Universal Builder.
 """
 
 from typing import Any
 
 from pydantic import BaseModel, Field
 
-from app.sim.registry import build_scene_v2
+from app.sim.universal_builder import build_scene_universal
 from app.sim.schema import Scene
 
 
@@ -60,7 +60,7 @@ async def build_physics_scene(input_data: BuildSceneInput) -> BuildSceneOutput:
     """
     Build simulator-ready Scene JSON from entities and geometry.
     
-    Uses the v2 builder registry with automatic scene kind resolution.
+    Uses the Universal Builder (v0.4) - no scene-kind restrictions.
     
     Args:
         input_data: Segments, entities, and mapping configuration
@@ -74,19 +74,19 @@ async def build_physics_scene(input_data: BuildSceneInput) -> BuildSceneOutput:
         ...     segments=[...],
         ...     entities=[...]
         ... ))
-        >>> assert result.scene["kind"] == "pulley.single_fixed_v0"
+        >>> assert "bodies" in result.scene
     """
-    # Convert to dict format for build_scene_v2
+    # Convert to dict format for universal builder
     request_dict = {
         "image": input_data.image,
         "segments": input_data.segments,
-        "labels": {"version": "v0.2", "entities": input_data.entities},
+        "labels": {"version": "v0.4", "entities": input_data.entities},
         "mapping": input_data.mapping,
         "defaults": input_data.defaults
     }
     
-    # Call v2 builder registry
-    response = build_scene_v2(request_dict)
+    # Call universal builder (v0.4)
+    response = build_scene_universal(request_dict)
     
     # Extract scene, warnings, and meta from response
     scene_dict = response.get("scene", {})

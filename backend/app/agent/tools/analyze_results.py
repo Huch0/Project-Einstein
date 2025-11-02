@@ -137,7 +137,6 @@ async def analyze_simulation(
             return result
         
         # Compute acceleration from position changes
-        scene_kind = input_data.scene.get("kind", "unknown")
         
         # Get body IDs from first frame
         if len(input_data.frames) > 1:
@@ -186,18 +185,31 @@ async def analyze_simulation(
                             speed = ((dx**2 + dy**2)**0.5) / dt
                             max_velocity = max(max_velocity, speed)
             
-            # Generate behavior description
-            if "pulley" in scene_kind:
+            # Generate behavior description based on entity types
+            entity_types = set(
+                body.get("type", "dynamic") 
+                for body in input_data.scene.get("bodies", [])
+            )
+            has_constraints = len(input_data.scene.get("constraints", [])) > 0
+            
+            if has_constraints and "static" in entity_types:
                 behavior = (
-                    f"Pulley system: heavier mass descends, lighter mass ascends. "
-                    f"System accelerates at approximately {acceleration:.2f} m/s²."
+                    f"Constrained system: bodies connected via constraints. "
+                    f"System accelerates at approximately {acceleration:.2f} m/s². "
+                    f"Maximum velocity reached: {max_velocity:.2f} m/s."
                 )
-            elif "ramp" in scene_kind:
+            elif has_constraints:
                 behavior = (
-                    f"Block on ramp: slides down with acceleration {acceleration:.2f} m/s²."
+                    f"Multi-body system with constraints. "
+                    f"Average acceleration: {acceleration:.2f} m/s². "
+                    f"Peak velocity: {max_velocity:.2f} m/s."
                 )
             else:
-                behavior = f"System moves with acceleration {acceleration:.2f} m/s²"
+                behavior = (
+                    f"Free-body motion. "
+                    f"Acceleration: {acceleration:.2f} m/s². "
+                    f"Maximum velocity: {max_velocity:.2f} m/s."
+                )
             
             result.motion_summary = MotionSummary(
                 acceleration_m_s2=acceleration,

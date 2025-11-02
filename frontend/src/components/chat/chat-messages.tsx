@@ -1,6 +1,6 @@
 import { cn } from '@/lib/utils';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import { Bot, User } from 'lucide-react';
+import { Bot, User, Info } from 'lucide-react';
 import type { Message } from './chat-panel';
 
 export function ChatMessages({ messages }: { messages: Message[] }) {
@@ -17,13 +17,24 @@ export function ChatMessages({ messages }: { messages: Message[] }) {
                 <AvatarFallback>
                     <Bot className="h-5 w-5"/>
                 </AvatarFallback>
+            ) : message.role === 'system' ? (
+                <AvatarFallback>
+                    <Info className="h-5 w-5"/>
+                </AvatarFallback>
             ) : (
                 <AvatarFallback>
                     <User className="h-5 w-5"/>
                 </AvatarFallback>
             )}
           </Avatar>
-          <div className={cn('flex-1 rounded-lg p-3', message.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-card border')}>
+          <div className={cn(
+            'flex-1 rounded-lg p-3',
+            message.role === 'user' 
+              ? 'bg-primary text-primary-foreground' 
+              : message.role === 'system'
+              ? 'bg-muted border'
+              : 'bg-card border'
+          )}>
             <p className="whitespace-pre-wrap">{message.content}</p>
           </div>
         </div>
