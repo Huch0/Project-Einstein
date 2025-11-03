@@ -283,6 +283,7 @@ export function streamAgentChat(
       try {
         const data = JSON.parse(e.data);
         callbacks.onToolError!(data);
+        console.log(data);
       } catch (err) {
         console.error('Failed to parse tool_error event:', err);
       }
@@ -294,6 +295,7 @@ export function streamAgentChat(
       try {
         const data = JSON.parse(e.data);
         callbacks.onStateUpdate!(data);
+        console.log("state_update data:", data);
       } catch (err) {
         console.error('Failed to parse state_update event:', err);
       }

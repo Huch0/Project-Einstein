@@ -6,6 +6,7 @@ Analytic solver removed - all simulations use realistic 2D rigid body dynamics.
 """
 
 from typing import Any, Literal
+import traceback
 
 from pydantic import BaseModel, Field
 
@@ -141,19 +142,24 @@ async def simulate_physics(
         ... ))
         >>> print(f"Generated {len(result.frames)} frames")
     """
-    # Parse scene dict to Scene object
-    scene = Scene(**input_data.scene)
     
     # Run Matter.js simulation
     try:
+        # Parse scene dict to Scene object
+        print(f"scene: {input_data.scene}")
+        scene = Scene(**input_data.scene)
+
         matter_frames = simulate_scene(scene)
+        print(f"matter_frames: {matter_frames}")
         
         if not matter_frames or len(matter_frames) == 0:
             raise ValueError("Matter.js returned empty frames")
         
         # Convert Matter.js frames to output format
         frames_list = []
-        for frame in matter_frames:
+        
+        # matter_frames is a dict with 'frames' key
+        for frame in matter_frames.get("frames", []):
             frames_list.append(SimulationFrame(
                 t=frame.get("t", 0.0),
                 positions=frame.get("positions", {}),
@@ -169,8 +175,9 @@ async def simulate_physics(
                 "simulation_time_s": frames_list[-1].t if frames_list else 0.0
             }
         )
-    
+        
     except Exception as e:
+        traceback.print_exc()
         # v0.4: No fallback to analytic solver
         # Return empty frames with error in meta
         return SimulatePhysicsOutput(

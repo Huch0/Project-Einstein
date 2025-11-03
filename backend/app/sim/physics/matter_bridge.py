@@ -5,34 +5,58 @@ Spawns the worker process, sends Scene JSON on stdin, collects result JSON.
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any, Dict
 
 from app.models.settings import settings
+from app.sim.schema import Scene
 
 
-def _default_worker_path() -> str:
-  base = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))  # backend/
-  return os.path.join(base, "sim_worker", "matter_worker.js")
+_REPO_ROOT = Path(__file__).resolve().parents[4]
+_BACKEND_DIR = _REPO_ROOT / "backend"
 
 
-def simulate_scene(scene: Dict[str, Any]) -> Dict[str, Any]:
+def _default_worker_path() -> Path:
+  return _BACKEND_DIR / "sim_worker" / "matter_worker.js"
+
+
+def _resolve_worker_path(raw_path: str | None) -> Path:
+  if not raw_path:
+    return _default_worker_path()
+
+  path = Path(raw_path).expanduser()
+  if path.is_absolute():
+    return path
+  return (_REPO_ROOT / path).resolve()
+
+
+def _to_payload(scene: Any) -> Dict[str, Any]:
+  if isinstance(scene, Scene):
+    return scene.model_dump(mode="json")
+  if isinstance(scene, dict):
+    return scene
+  raise TypeError(f"Unsupported scene payload type: {type(scene)!r}")
+
+
+def simulate_scene(scene: Dict[str, Any] | Scene) -> Dict[str, Any]:
   """Simulate a Scene via the Node Matter.js worker.
 
   Returns result dict with keys: frames, energy. Raises RuntimeError on failure.
   """
-  worker = settings.MATTER_WORKER_PATH or _default_worker_path()
-  if not os.path.exists(worker):
-    raise RuntimeError(f"Matter worker not found at: {worker}")
+  worker_path = _resolve_worker_path(settings.MATTER_WORKER_PATH)
+  if not worker_path.exists():
+    raise RuntimeError(f"Matter worker not found at: {worker_path}")
+
+  payload = _to_payload(scene)
 
   # Use `node` from PATH
-  cmd = ["node", worker]
+  cmd = ["node", str(worker_path)]
   try:
     proc = subprocess.run(
       cmd,
-      input=json.dumps(scene).encode("utf-8"),
+      input=json.dumps(payload).encode("utf-8"),
       stdout=subprocess.PIPE,
       stderr=subprocess.PIPE,
       timeout=float(settings.MATTER_WORKER_TIMEOUT_S),

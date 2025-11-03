@@ -16,6 +16,7 @@ from __future__ import annotations
 from asyncio.log import logger
 import json
 import asyncio
+import traceback
 from typing import Any, AsyncGenerator, Literal
 from uuid import UUID, uuid4
 
@@ -541,13 +542,6 @@ def _update_context_state(context, tool_name: str, result: Any):
         context.update_pipeline_state(
             frames=result["frames"]
         )
-        context.update_pipeline_state(
-            scene=result["scene"]
-        )
-    elif tool_name == "simulate_physics":
-        context.update_pipeline_state(
-            frames=result["frames"]
-        )
 
 
 # ===========================
@@ -749,6 +743,11 @@ async def _stream_agent_mode(
                     logger.info(f"[Agent] Injected image metadata")
                 # print(f"context: {context}")
                 # print(f"tool_args: {tool_args}")
+                
+            if tool_name == "simulate_physics":
+                if "scene" not in tool_args and context.scene:
+                    tool_args["scene"] = context.scene
+                    logger.info(f"[Agent] Injected scene for simulation")
 
             # Tool start event
             yield f"event: tool_start\ndata: {json.dumps({'tool': tool_name, 'index': idx, 'total': len(tool_calls_raw)})}\n\n"
@@ -793,6 +792,7 @@ async def _stream_agent_mode(
                 yield f"event: state_update\ndata: {json.dumps(state_snapshot)}\n\n"
                 
             except Exception as e:
+                traceback.print_exc()
                 # Tool error event
                 yield f"event: tool_error\ndata: {json.dumps({'tool': tool_name, 'error': str(e)})}\n\n"
                 

@@ -5,7 +5,9 @@ Dynamically generates Matter.js-ready Scene JSON from any combination of entitie
 No rigid scene-kind schemas - supports flexible composition of bodies and constraints.
 """
 
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
+import math
+
 from app.sim.schema import Scene, Body, WorldSettings
 
 
@@ -28,6 +30,30 @@ def estimate_mass_from_area(bbox: List[int], base_mass_kg: float = 3.0) -> float
     # Normalize to base area of 50x50 pixels
     base_area = 2500
     return base_mass_kg * (area / base_area)
+
+
+def _coerce_number(value: Any) -> Optional[float]:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(result) or math.isinf(result):
+        return None
+    return result
+
+
+def _coerce_positive(value: Any, default: float) -> float:
+    number = _coerce_number(value)
+    if number is not None and number > 0.0:
+        return number
+    return default
+
+
+def _coerce_non_negative(value: Any) -> Optional[float]:
+    number = _coerce_number(value)
+    if number is None or number < 0.0:
+        return None
+    return number
 
 
 def create_body_from_entity(
@@ -60,17 +86,18 @@ def create_body_from_entity(
     # Determine body type and mass
     if entity_type == "mass":
         body_type = "dynamic"
-        mass_kg = props.get("mass_guess_kg") or estimate_mass_from_area(bbox)
+        estimated_mass = estimate_mass_from_area(bbox)
+        mass_kg = _coerce_positive(props.get("mass_guess_kg"), estimated_mass)
     elif entity_type == "surface":
         body_type = "static"
-        mass_kg = 1000.0  # Large mass for static bodies
+        mass_kg = _coerce_positive(props.get("mass_guess_kg"), 1000.0)
     elif entity_type == "pulley":
         body_type = "static"  # Pulley wheel is fixed
-        mass_kg = 0.1
+        mass_kg = _coerce_positive(props.get("mass_guess_kg"), 0.1)
     else:
         # Default dynamic
         body_type = "dynamic"
-        mass_kg = props.get("mass_guess_kg", 1.0)
+        mass_kg = _coerce_positive(props.get("mass_guess_kg"), 1.0)
     
     # Create collider from polygon or bbox
     polygon_px = segment.get("polygon_px")
@@ -96,22 +123,29 @@ def create_body_from_entity(
     
     # Material properties
     material = {}
-    if "mu_k" in props:
-        material["friction"] = props["mu_k"]
-    if "restitution" in props:
-        material["restitution"] = props["restitution"]
+    friction = _coerce_non_negative(props.get("mu_k"))
+    if friction is not None:
+        material["friction"] = friction
+
+    restitution = _coerce_non_negative(props.get("restitution"))
+    if restitution is not None:
+        material["restitution"] = restitution
     
     body_id = f"{entity_type}_{entity.get('segment_id', 'unknown')}"
     
-    return {
+    body_dict: Dict[str, Any] = {
         "id": body_id,
         "type": body_type,
         "mass_kg": mass_kg,
         "position_m": list(pos_m),
         "velocity_m_s": [0.0, 0.0],
         "collider": collider,
-        "material": material if material else None
     }
+
+    if material:
+        body_dict["material"] = material
+
+    return body_dict
 
 
 def infer_rope_constraint(

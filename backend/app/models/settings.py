@@ -81,7 +81,7 @@ class Settings(BaseSettings):
     LABELER_SYSTEM_PROMPT_PATH: str = "app/agent/prompts/labeler_system.yaml"
     
     # Tool: simulate_physics
-    MATTER_WORKER_PATH: str | None = None  # If None, defaults to backend/sim_worker/matter_worker.js
+    MATTER_WORKER_PATH: str | None = "backend/sim_worker/matter_worker.js"  # If None, defaults to backend/sim_worker/matter_worker.js
     MATTER_WORKER_TIMEOUT_S: float = 10.0
     
     # ===== Frontend & CORS =====
