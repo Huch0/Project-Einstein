@@ -20,18 +20,23 @@ import { Label } from '@/components/ui/label';
 import { WhiteboardProvider, useWhiteboardStore } from '@/whiteboard/context';
 import WhiteboardCanvas from '@/whiteboard/WhiteboardCanvas';
 import type { InteractionMode } from '@/whiteboard/types';
+import { cn } from '@/lib/utils';
 
 const INITIAL_MODE: InteractionMode = 'simulation';
 
-export default function SimulationCanvasStack() {
+interface SimulationCanvasStackProps {
+    className?: string;
+}
+
+export default function SimulationCanvasStack({ className }: SimulationCanvasStackProps = {}) {
     return (
         <WhiteboardProvider>
-            <SimulationCanvasInner />
+            <SimulationCanvasInner className={className} />
         </WhiteboardProvider>
     );
 }
 
-function SimulationCanvasInner() {
+function SimulationCanvasInner({ className }: SimulationCanvasStackProps) {
     const wrapperRef = useRef<HTMLDivElement>(null);
     const contentRef = useRef<HTMLDivElement>(null);
     const { setBackgroundImage, parseAndBind } = useSimulation();
@@ -66,9 +71,12 @@ function SimulationCanvasInner() {
     };
 
     return (
-        <div ref={wrapperRef} className="flex h-full w-full flex-col p-2 md:p-4 gap-2">
+        <div
+            ref={wrapperRef}
+            className={cn('flex h-full w-full flex-col', className)}
+        >
             {/* Top bezel toolbar */}
-            <div className="flex items-center justify-between rounded-md border bg-background/80 px-2 py-2 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-background/60">
+            <div className="flex items-center justify-between rounded-none border-b bg-background/80 px-2 py-2 shadow-none backdrop-blur supports-[backdrop-filter]:bg-background/60 shrink-0">
                 <div className="flex gap-1">
                     <Button
                         type="button"

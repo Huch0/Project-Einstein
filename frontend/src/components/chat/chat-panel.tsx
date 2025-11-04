@@ -12,6 +12,7 @@ import { sendUnifiedChat, streamAgentChat, type ChatMode } from '@/lib/unified-c
 import { ChatMessages } from './chat-messages';
 import { ChatInput } from './chat-input';
 import { SimulationViewer } from '@/components/simulation/simulation-viewer';
+import { cn } from '@/lib/utils';
 
 export type Message = {
     role: 'user' | 'assistant' | 'system';
@@ -25,7 +26,11 @@ export type SimulationData = {
     imageHeight?: number;
 };
 
-export default function ChatPanel() {
+type ChatPanelProps = {
+    padding?: 'default' | 'compact' | 'flush';
+};
+
+export default function ChatPanel({ padding = 'default' }: ChatPanelProps = {}) {
     const { toast } = useToast();
     const globalChat = useGlobalChat();
     
@@ -254,10 +259,24 @@ export default function ChatPanel() {
         }
     };
 
+    const bodyPaddingClass =
+        padding === 'flush'
+            ? 'px-0 py-2 sm:px-1 md:px-2'
+            : padding === 'compact'
+                ? 'px-3 py-3 sm:px-4 md:px-5 md:py-4'
+                : 'p-4 md:p-6';
+
+    const inputPaddingClass =
+        padding === 'flush'
+            ? 'px-0 py-2 sm:px-1 sm:py-3 md:px-2 md:py-3'
+            : padding === 'compact'
+                ? 'px-3 py-3 md:px-5 md:py-4'
+                : 'p-4 md:p-6';
+
     return (
         <div className="flex h-full min-h-0 flex-col">
             {/* Mode Toggle Header */}
-            <div className="border-b bg-background/95 p-3 backdrop-blur-sm supports-[backdrop-filter]:bg-background/60">
+            <div className="border-b bg-background/95 px-3 py-3 backdrop-blur-sm supports-[backdrop-filter]:bg-background/60">
                 <div className="flex items-center gap-2">
                     <Button
                         variant={mode === 'ask' ? 'default' : 'outline'}
@@ -304,7 +323,7 @@ export default function ChatPanel() {
             </div>
 
             {/* Chat Messages */}
-            <div className="flex flex-1 min-h-0 flex-col p-4 md:p-6">
+            <div className={cn('flex flex-1 min-h-0 flex-col', bodyPaddingClass)}>
                 <ScrollArea className="flex-1" ref={scrollAreaRef}>
                     <ChatMessages messages={globalChat.messages} />
                     
@@ -341,7 +360,12 @@ export default function ChatPanel() {
             </div>
 
             {/* Input Area */}
-            <div className="border-t bg-background/95 p-4 backdrop-blur-sm supports-[backdrop-filter]:bg-background/60 md:p-6">
+            <div
+                className={cn(
+                    'border-t bg-background/95 backdrop-blur-sm supports-[backdrop-filter]:bg-background/60',
+                    inputPaddingClass
+                )}
+            >
                 <ChatInput
                     input={input}
                     onInputChange={(e) => setInput(e.target.value)}

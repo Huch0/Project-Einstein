@@ -348,7 +348,7 @@ export function CanvasLayer({ mode, dimensions, camera, onCameraChange }: Canvas
         mode === 'simulation' ? 'pointer-events-none' : 'pointer-events-auto';
 
     return (
-    <div className="absolute inset-4 z-10">
+    <div className="absolute inset-0 z-10">
             {(isDrawingEnabled || isToolbarRendered) && (
                 <div
                     className={cn(

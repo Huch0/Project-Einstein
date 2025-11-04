@@ -18,7 +18,7 @@ export default function WhiteboardScene({ mode }: WhiteboardSceneProps) {
     }
 
     return (
-        <div className="pointer-events-none absolute inset-4 z-20">
+        <div className="pointer-events-none absolute inset-0 z-20">
             <div
                 className="relative h-full w-full"
                 style={{
