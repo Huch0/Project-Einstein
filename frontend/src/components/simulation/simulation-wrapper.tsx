@@ -119,62 +119,6 @@ function SimulationCanvasInner({ className }: SimulationCanvasStackProps) {
                         <SquarePlus className="mr-2 h-4 w-4" />
                         New Simulation Box
                     </Button>
-                    <Button
-                        type="button"
-                        variant="outline"
-                        size="icon"
-                        onClick={handleClear}
-                        disabled={!hasCanvasContent}
-                        aria-label="Clear drawing"
-                    >
-                        <Trash2 className="h-4 w-4" />
-                    </Button>
-                    <Dialog open={open} onOpenChange={setOpen}>
-                        <DialogTrigger asChild>
-                            <Button type="button" onClick={() => setOpen(true)}>
-                                <UploadCloud className="mr-2 h-4 w-4" />
-                                Upload Diagram
-                            </Button>
-                        </DialogTrigger>
-                        <DialogContent className="sm:max-w-md">
-                            <DialogHeader>
-                                <DialogTitle>Upload Physics Diagram</DialogTitle>
-                                <DialogDescription>
-                                    Upload an image or PDF of a physics diagram to convert it into a simulation.
-                                </DialogDescription>
-                            </DialogHeader>
-                            <div className="grid flex-1 gap-2">
-                                <Label htmlFor="diagram-file" className="sr-only">
-                                    Diagram File
-                                </Label>
-                                <Input id="diagram-file" type="file" accept="image/*" onChange={async (e) => {
-                                    const file = e.target.files?.[0];
-                                    if (!file) return;
-                                    
-                                    // Load image as data URL first (ensure it's loaded before parse)
-                                    const dataUrl = await new Promise<string>((resolve, reject) => {
-                                        const reader = new FileReader();
-                                        reader.onload = ev => resolve(ev.target?.result as string);
-                                        reader.onerror = reject;
-                                        reader.readAsDataURL(file);
-                                    });
-                                    
-                                    setBackgroundImage(dataUrl);
-                                    
-                                    // Now trigger backend parse (+simulate=1 via SimulationContext)
-                                    try {
-                                        await parseAndBind(file);
-                                    } catch (err) {
-                                        // eslint-disable-next-line no-console
-                                        console.error('Parse failed', err);
-                                    }
-                                }} />
-                            </div>
-                            <Button type="button" className="w-full" onClick={() => setOpen(false)}>
-                                Set As Background
-                            </Button>
-                        </DialogContent>
-                    </Dialog>
                 </div>
             </div>
             {/* Content area (no overlap with toolbar) */}
