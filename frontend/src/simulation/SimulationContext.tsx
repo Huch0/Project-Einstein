@@ -3,7 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, ReactNode } from 'react';
 import { simulatePulleyAnalytic } from '@/simulation/pulleyAnalytic';
 import type { SimulationFrame } from '@/simulation/types';
-import { parseDiagram, type DiagramParseDetection } from '@/lib/api';
+import { parseDiagram, type DiagramParseDetection, type DiagramParseResponse } from '@/lib/api';
 
 export interface SimulationConfig {
   massA: number;
@@ -33,7 +33,7 @@ interface SimulationState extends SimulationConfig {
   scale_m_per_px: number | null;
   scene: any | null;
   labels: { entities: Array<{ segment_id: string; label: string; props?: Record<string, unknown> }> } | null;
-  parseAndBind: (file: File) => Promise<void>;
+  parseAndBind: (file: File) => Promise<DiagramParseResponse>;
 }
 
 const SimulationContext = createContext<SimulationState | null>(null);
@@ -93,7 +93,7 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     setConfig(prev => ({ ...prev, ...partial }));
   }, []);
 
-  const parseAndBind = useCallback(async (file: File) => {
+  const parseAndBind = useCallback(async (file: File): Promise<DiagramParseResponse> => {
     // Reset state before parsing
     setPlaying(false);
     setCurrentIndex(0);
@@ -139,7 +139,7 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
       lastTimestamp.current = null;
       // eslint-disable-next-line no-console
       console.log('Rapier simulation summary', sim);
-      return;
+      return res;
     }
     // Bind parameters to current config
     setConfig(prev => ({
@@ -151,6 +151,7 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     }));
     // Optional: rerun analytic with new params
     runAnalytic();
+    return res;
   }, [runAnalytic]);
 
   // Playback loop

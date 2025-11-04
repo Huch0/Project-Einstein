@@ -1,5 +1,6 @@
 "use client";
 
+import ImageNode from '@/whiteboard/components/image-node';
 import SimulationBoxNode from '@/whiteboard/components/simulation-box-node';
 import { useWhiteboardStore } from '@/whiteboard/context';
 import type { InteractionMode } from '@/whiteboard/types';
@@ -31,6 +32,9 @@ export default function WhiteboardScene({ mode }: WhiteboardSceneProps) {
                     if (!node) return null;
                     if (node.type === 'simulation-box') {
                         return <SimulationBoxNode key={id} node={node} mode={mode} camera={camera} />;
+                    }
+                    if (node.type === 'image') {
+                        return <ImageNode key={id} node={node} mode={mode} camera={camera} />;
                     }
                     return null;
                 })}

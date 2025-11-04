@@ -69,6 +69,13 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
     const globalChat = useGlobalChat();
     const [objectPosition, setObjectPosition] = useState<SimulationObjectPosition>({ x: 0, y: 0 });
     const [backgroundImage, setBackgroundImage] = useState<string | null>(null);
+    useEffect(() => {
+        const metadata = node.metadata as { backgroundImage?: unknown } | undefined;
+        const storedImage = typeof metadata?.backgroundImage === 'string' ? metadata.backgroundImage : null;
+        if (storedImage && storedImage !== backgroundImage) {
+            setBackgroundImage(storedImage);
+        }
+    }, [node.metadata, backgroundImage]);
     
     // Get all simulation boxes for context insertion
     const availableBoxes = orderedNodeIds
@@ -506,7 +513,18 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
                                     // Create preview URL for background
                                     const reader = new FileReader();
                                     reader.onloadend = () => {
-                                        setBackgroundImage(reader.result as string);
+                                        const dataUrl = reader.result as string;
+                                        setBackgroundImage(dataUrl);
+                                        updateNode(node.id, (current) => {
+                                            if (current.type !== 'simulation-box') return current;
+                                            return {
+                                                ...current,
+                                                metadata: {
+                                                    ...(current.metadata ?? {}),
+                                                    backgroundImage: dataUrl,
+                                                },
+                                            };
+                                        });
                                     };
                                     reader.readAsDataURL(file);
                                     
