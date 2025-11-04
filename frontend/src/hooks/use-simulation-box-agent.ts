@@ -11,8 +11,12 @@ import {
   sendAgentMessage, 
   getAgentContext, 
   startAgentSimulation,
+  sendInitSimulation,
+  runSimulation,
   type AgentChatResponse,
-  type AgentContext 
+  type AgentContext,
+  type InitSimResponse,
+  type RunSimResponse 
 } from '@/lib/agent-api';
 
 export interface UseSimulationBoxAgentProps {
@@ -29,11 +33,19 @@ export interface UseSimulationBoxAgentReturn {
   loading: boolean;
   error?: string;
   
+  // v0.5 New state
+  isInitialized: boolean;
+  readyForSimulation: boolean;
+  initResult?: InitSimResponse;
+  
   // Actions
   uploadImage: (file: File) => Promise<void>;
   sendMessage: (message: string) => Promise<void>;
   inspectSimulation: () => Promise<void>;
   resetConversation: () => void;
+  
+  // v0.5 New actions
+  runSimulation: () => Promise<void>;
 }
 
 export function useSimulationBoxAgent({
@@ -48,6 +60,11 @@ export function useSimulationBoxAgent({
   const [context, setContext] = useState<AgentContext>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
+  
+  // v0.5 New state
+  const [isInitialized, setIsInitialized] = useState(false);
+  const [readyForSimulation, setReadyForSimulation] = useState(false);
+  const [initResult, setInitResult] = useState<InitSimResponse>();
 
   // Load context when conversation ID changes
   useEffect(() => {
@@ -77,71 +94,87 @@ export function useSimulationBoxAgent({
     setError(undefined);
 
     try {
-      console.log('[SimulationBoxAgent] Starting image upload:', {
+      console.log('[SimulationBoxAgent] Starting image upload and initialization (v0.5):', {
         boxId,
         fileName: file.name,
         fileSize: file.size,
       });
       
-      const response = await startAgentSimulation(file, conversationId);
+      // Step 1: Upload image to get image_id
+      const formData = new FormData();
+      formData.append('file', file);
       
-      console.log('[SimulationBoxAgent] Image uploaded:', {
-        boxId,
-        conversationId: response.conversation_id,
-        state: response.state,
-        toolCallsCount: response.tool_calls?.length || 0,
-        message: response.assistant_message,
+      const uploadResponse = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/diagram/upload`, {
+        method: 'POST',
+        body: formData,
       });
       
-      // Log tool calls if any
-      if (response.tool_calls && response.tool_calls.length > 0) {
-        console.log('[SimulationBoxAgent] Tool calls executed:', 
-          response.tool_calls.map(tc => ({
-            tool: tc.name,
-            hasResult: !!tc.result,
-            hasError: !!tc.error
-          }))
-        );
-      } else {
-        console.warn('[SimulationBoxAgent] ⚠️ No tool calls were executed!');
+      if (!uploadResponse.ok) {
+        throw new Error(`Image upload failed: ${uploadResponse.statusText}`);
       }
       
-      setConversationId(response.conversation_id);
-      setAgentState(response.state);
+      const { image_id } = await uploadResponse.json();
+      console.log('[SimulationBoxAgent] ✅ Image uploaded:', image_id);
       
-      // Sync with GlobalChat
-      globalChat.setActiveBoxId(boxId);
-      globalChat.setConversationId(response.conversation_id);
-      globalChat.addMessage({
-        role: 'user',
-        content: `[Uploaded image to "${boxName || boxId}"]`,
-        boxId,
+      // Step 2: Call /init_sim for automated initialization
+      const initResponse = await sendInitSimulation({
+        image_id,
+        conversation_id: conversationId,
       });
-      if (response.assistant_message) {
+      
+      console.log('[SimulationBoxAgent] Initialization result:', {
+        status: initResponse.status,
+        segments: initResponse.initialization.segments_count,
+        entities: initResponse.initialization.entities_count,
+        ready: initResponse.ready_for_simulation,
+        warnings: initResponse.initialization.warnings,
+      });
+      
+      setConversationId(initResponse.conversation_id);
+      setInitResult(initResponse);
+      
+      if (initResponse.status === 'initialized') {
+        setIsInitialized(true);
+        setReadyForSimulation(initResponse.ready_for_simulation);
+        
+        // Sync with GlobalChat
+        globalChat.setActiveBoxId(boxId);
+        globalChat.setConversationId(initResponse.conversation_id);
         globalChat.addMessage({
           role: 'assistant',
-          content: response.assistant_message,
+          content: `✅ Initialization complete: ${initResponse.initialization.entities_count} entities detected. Ready for simulation.`,
           boxId,
         });
+        
+        // Show warnings if any
+        if (initResponse.initialization.warnings.length > 0) {
+          globalChat.addMessage({
+            role: 'assistant',
+            content: `⚠️ Warnings: ${initResponse.initialization.warnings.join(', ')}`,
+            boxId,
+          });
+        }
+      } else {
+        throw new Error(`Initialization failed: ${initResponse.initialization.errors.join(', ')}`);
       }
       
-      // Update simulation data if available
-      const stateAny = response.state as any;
-      if (stateAny?.frames && stateAny?.scene) {
-        globalChat.setSimulationData({
-          scene: stateAny.scene,
-          frames: stateAny.frames,
-          imageWidth: stateAny.image?.width_px || 800,
-          imageHeight: stateAny.image?.height_px || 600,
-          boxId,
-        });
-      }
-      
-      onConversationUpdate?.(response.conversation_id, response.state);
+      onConversationUpdate?.(initResponse.conversation_id, {
+        image_id: initResponse.image_id,
+        segments_count: initResponse.initialization.segments_count,
+        entities_count: initResponse.initialization.entities_count,
+        has_scene: !!initResponse.initialization.scene,
+        frames_count: 0,
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Upload failed';
       setError(message);
       console.error('[SimulationBoxAgent] Upload error:', err);
+      
+      globalChat.addMessage({
+        role: 'assistant',
+        content: `❌ Initialization failed: ${message}`,
+        boxId,
+      });
     } finally {
       setLoading(false);
     }
@@ -236,7 +269,90 @@ export function useSimulationBoxAgent({
     setAgentState(undefined);
     setContext(undefined);
     setError(undefined);
+    setIsInitialized(false);
+    setReadyForSimulation(false);
+    setInitResult(undefined);
   }, []);
+  
+  // v0.5 New action: Run simulation
+  const handleRunSimulation = useCallback(async () => {
+    if (!conversationId) {
+      setError('No active conversation. Upload an image first.');
+      return;
+    }
+    
+    if (!readyForSimulation) {
+      setError('Scene not initialized. Complete initialization first.');
+      return;
+    }
+    
+    setLoading(true);
+    setError(undefined);
+    
+    try {
+      console.log('[SimulationBoxAgent] Starting simulation for conversation:', conversationId);
+      
+      const simResponse = await runSimulation({
+        conversation_id: conversationId,
+        duration_s: 5.0,
+        frame_rate: 60,
+        analyze: true,
+      });
+      
+      console.log('[SimulationBoxAgent] Simulation complete:', {
+        status: simResponse.status,
+        frames: simResponse.simulation.frames.length,
+        hasAnalysis: !!simResponse.analysis,
+      });
+      
+      if (simResponse.status === 'simulated') {
+        // Update simulation data in GlobalChat
+        globalChat.setSimulationData({
+          scene: initResult?.initialization.scene || {},
+          frames: simResponse.simulation.frames,
+          imageWidth: 800,  // TODO: Get from init result
+          imageHeight: 600,
+          boxId,
+        });
+        
+        // Add success message
+        globalChat.addMessage({
+          role: 'assistant',
+          content: `✅ Simulation complete: ${simResponse.simulation.frames.length} frames generated.`,
+          boxId,
+        });
+        
+        // Add analysis insights if available
+        if (simResponse.analysis?.pedagogical_insights) {
+          const insights = simResponse.analysis.pedagogical_insights.join('\n• ');
+          globalChat.addMessage({
+            role: 'assistant',
+            content: `📊 Analysis:\n• ${insights}`,
+            boxId,
+          });
+        }
+        
+        // Update agent state
+        setAgentState({
+          ...agentState,
+          frames_count: simResponse.simulation.frames.length,
+          has_scene: true,
+        } as any);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Simulation failed';
+      setError(message);
+      console.error('[SimulationBoxAgent] Simulation error:', err);
+      
+      globalChat.addMessage({
+        role: 'assistant',
+        content: `❌ Simulation failed: ${message}`,
+        boxId,
+      });
+    } finally {
+      setLoading(false);
+    }
+  }, [conversationId, readyForSimulation, initResult, boxId, globalChat, agentState]);
 
   return {
     conversationId,
@@ -244,9 +360,18 @@ export function useSimulationBoxAgent({
     context,
     loading,
     error,
+    
+    // v0.5 New state
+    isInitialized,
+    readyForSimulation,
+    initResult,
+    
     uploadImage,
     sendMessage,
     inspectSimulation,
     resetConversation,
+    
+    // v0.5 New action
+    runSimulation: handleRunSimulation,
   };
 }
