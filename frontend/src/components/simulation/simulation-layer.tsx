@@ -18,7 +18,7 @@ export function SimulationLayer({
 }: SimulationLayerProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const isDragging = useRef(false);
-    const { frames, currentIndex, backgroundImage, detections, imageSizePx, scale_m_per_px, scene, playing } = useSimulation();
+    const { frames, currentIndex, detections, imageSizePx, scale_m_per_px, scene, playing } = useSimulation();
     const currentFrame = frames[currentIndex];
 
     const clamp = (value: number, min: number, max: number) =>
@@ -144,205 +144,81 @@ export function SimulationLayer({
         }
     }
 
-        return (
-                    <div
-                        ref={containerRef}
-                        className="absolute inset-4 rounded-md bg-primary/5 overflow-hidden"
-                        style={{ pointerEvents: enabled ? 'auto' : 'none' }}
-                    >
-                        {/* Background diagram rendering */}
-                        {backgroundImage ? (
-                            <img src={backgroundImage} alt="diagram" className="absolute inset-0 w-full h-full object-contain select-none pointer-events-none" />
-                        ) : (
-                            <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground font-mono pointer-events-none select-none">
-                                Upload a diagram to use it as a background
-                            </div>
-                        )}
+    const bodyPoints = useMemo<Array<{ id: string; x: number; y: number }>>(() => {
+        const frame = currentFrame as any;
+        if (!frame) return [];
 
-                        {/* Detection overlay (show only when not playing to avoid conflicting visuals) */}
-                        {backgroundImage && imageSizePx && detections.length > 0 && !playing && (
-                            <DetectionOverlay
-                                containerRef={containerRef}
-                                imageSize={imageSizePx}
-                                boxes={detections.map(d => ({ 
-                                    id: d.id, 
-                                    label: d.label, 
-                                    bbox: d.bbox_px,
-                                    polygon_px: d.polygon_px  // pass polygon from SAM
-                                }))}
-                                containerSize={dimensions}
-                            />
-                        )}
-                {/* Bodies rendering (debug) - hide when background + detections are present to avoid confusion */}
-                {backgroundImage && detections.length > 0 ? null : currentFrame && (currentFrame as any).bodies && (currentFrame as any).bodies.map((b: any) => {
-                    // Convert (x_m,y_m) meters (y down positive) → pixels in render box
-                    const x_m = b.position_m[0];
-                    const y_m = b.position_m[1];
-                    const x = originPxX + x_m * containerPxPerMeter;
-                    const y = originPxY + y_m * containerPxPerMeter;
-                    return (
-                        <div
-                            key={b.id}
-                            className="absolute flex items-center justify-center rounded-md bg-blue-500/80 text-white text-xs font-mono"
-                            style={{ width: 24, height: 24, transform: `translate(${x - 12}px, ${y - 12}px)` }}
-                        >
-                            {b.id}
-                        </div>
-                    );
-                })}
-                {/* If frames come straight from backend meta.simulation.frames with positions dict, render simple dots (debug) */}
-                                {backgroundImage && detections.length > 0 ? null : currentFrame && !(currentFrame as any).bodies && (currentFrame as any).positions && Object.entries((currentFrame as any).positions).map(([id, pos]) => {
-                    const [x_m, y_m] = pos as [number, number];
-                                        const x = originPxX + x_m * containerPxPerMeter;
-                                        const y = originPxY + y_m * containerPxPerMeter;
-                    return (
-                        <div key={id} className="absolute rounded-full bg-amber-500/80" style={{ width: 12, height: 12, transform: `translate(${x - 6}px, ${y - 6}px)` }} />
-                    );
-                })}
+        if (Array.isArray(frame.bodies) && frame.bodies.length > 0) {
+            return frame.bodies
+                .filter((body: any) => Array.isArray(body?.position_m))
+                .map((body: any) => {
+                    const [x_m, y_m] = body.position_m as [number, number];
+                    return {
+                        id: body.id ?? 'body',
+                        x: originPxX + x_m * containerPxPerMeter,
+                        y: originPxY + y_m * containerPxPerMeter,
+                    };
+                });
+        }
 
-                                {/* Moving SAM boxes for masses (align detection rectangles to body motion) */}
-                                {scene && currentFrame && backgroundImage && imageSizePx && detections.length > 0 && (
-                                    (() => {
-                                        // Build lookup for initial scene positions
-                                        const initialPos: Record<string, [number, number]> = {};
-                                        for (const b of (scene as any).bodies || []) {
-                                            initialPos[b.id] = b.position_m as [number, number];
-                                        }
-                                        const frameBodies: Record<string, [number, number]> = {};
-                                        // Check positions first (Rapier format), then bodies (legacy format)
-                                        if ((currentFrame as any).positions) {
-                                            Object.assign(frameBodies, (currentFrame as any).positions);
-                                        } else if ((currentFrame as any).bodies) {
-                                            for (const b of (currentFrame as any).bodies) {
-                                                frameBodies[b.id] = b.position_m as [number, number];
-                                            }
-                                        }
-                                         const elems: JSX.Element[] = [];
-                                         const dims = { s, offsetX, offsetY };
+        if (frame.positions && typeof frame.positions === 'object') {
+            return Object.entries(frame.positions).map(([id, pos]) => {
+                const [x_m, y_m] = pos as [number, number];
+                return {
+                    id,
+                    x: originPxX + x_m * containerPxPerMeter,
+                    y: originPxY + y_m * containerPxPerMeter,
+                };
+            });
+        }
 
-                                         // Compute dynamic mapping from detection ids to body ids by nearest initial x
-                                         const detCentersPx: Record<string, number> = {};
-                                         const getDet = (id: string) => detections.find(d => d.id === id);
-                                         const detA = getDet('massA');
-                                         const detB = getDet('massB');
-                                         if (detA) detCentersPx['massA'] = offsetX + (detA.bbox_px[0] + detA.bbox_px[2] / 2) * s;
-                                         if (detB) detCentersPx['massB'] = offsetX + (detB.bbox_px[0] + detB.bbox_px[2] / 2) * s;
-                                         const bodyInitPxX: Record<string, number> = {};
-                                         for (const id of Object.keys(initialPos)) {
-                                             const [ix, iy] = initialPos[id];
-                                             bodyInitPxX[id] = originPxX + ix * containerPxPerMeter;
-                                         }
-                                         const bodyForDet = (detId: 'massA' | 'massB'): string | null => {
-                                             const cx = detCentersPx[detId];
-                                             if (cx == null) return null;
-                                             // among known bodies, pick closest in x
-                                             const ids = Object.keys(bodyInitPxX);
-                                             if (ids.length === 0) return null;
-                                             let best: string | null = null;
-                                             let bestDx = Infinity;
-                                             for (const bid of ids) {
-                                                 const dx = Math.abs(bodyInitPxX[bid] - cx);
-                                                 if (dx < bestDx) { bestDx = dx; best = bid; }
-                                             }
-                                             return best;
-                                         };
+        return [];
+    }, [currentFrame, containerPxPerMeter, originPxX, originPxY]);
 
-                                         const mapA = bodyForDet('massA') || 'm1';
-                                         const mapB = bodyForDet('massB') || (mapA === 'm1' ? 'm2' : 'm1');
-                                         console.log('[Frame render] detections→body mapping:', { massA: mapA, massB: mapB });
-                                         console.log('[Frame render] initialPos:', initialPos, 'frameBodies:', frameBodies);
-                                         console.log('[Frame render] currentIndex:', currentIndex, 'frames.length:', frames.length);
-                                         if (currentIndex < frames.length) {
-                                             const frame = frames[currentIndex];
-                                             console.log('[Frame render] frames[currentIndex]:', frame);
-                                             console.log('[Frame render] frame.positions:', (frame as any).positions);
-                                             console.log('[Frame render] frame.bodies:', (frame as any).bodies);
-                                             if ((frame as any).bodies && (frame as any).bodies.length > 0) {
-                                                 console.log('[Frame render] frame.bodies[0]:', (frame as any).bodies[0]);
-                                                 console.log('[Frame render] frame.bodies[1]:', (frame as any).bodies[1]);
-                                             }
-                                         }
+    return (
+        <div
+            ref={containerRef}
+            className="absolute inset-4 rounded-md bg-primary/5 overflow-hidden relative"
+            style={{ pointerEvents: enabled ? 'auto' : 'none' }}
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+            onPointerCancel={handlePointerUp}
+        >
+            <div className="absolute inset-0 bg-gradient-to-br from-background via-background to-muted/40 pointer-events-none" />
 
-                                                      const moveRect = (detId: string, bodyId: string) => {
-                                            const det = detections.find(d => d.id === detId);
-                                            if (!det) return;
-                                            const init = initialPos[bodyId];
-                                            const cur = frameBodies[bodyId];
-                                            if (!init || !cur) {
-                                                console.warn(`[moveRect] missing data for ${detId}→${bodyId}, init:`, init, 'cur:', cur);
-                                                return;
-                                            }
-                                                        const [bx, by, bw, bh] = det.bbox_px;
-                                                        // Delta-based movement: start exactly at detection bbox and apply world delta (calibrated scale)
-                                                        const dx_m = cur[0] - init[0];
-                                                        const dy_m = cur[1] - init[1];
-                                                        const dx = dx_m * containerPxPerMeter;
-                                                        const dy = dy_m * containerPxPerMeter;
-                                                        
-                                                        console.log(`[moveRect] ${detId}→${bodyId}: bbox=[${bx},${by},${bw},${bh}], init_m=[${init}], cur_m=[${cur}], Δm=[${dx_m.toFixed(3)},${dy_m.toFixed(3)}], Δpx=[${dx.toFixed(1)},${dy.toFixed(1)}]`);
-                                                        
-                                                        // Render moving polygon if available, otherwise fallback to bbox
-                                                        if (det.polygon_px && det.polygon_px.length > 0) {
-                                                            // SVG polygon rendering with transform for movement
-                                                            const points = det.polygon_px.map(([px, py]) => {
-                                                                const sx = dims.offsetX + px * s + dx;
-                                                                const sy = dims.offsetY + py * s + dy;
-                                                                return `${sx},${sy}`;
-                                                            }).join(' ');
-                                                            
-                                                            elems.push(
-                                                                <svg
-                                                                    key={`mov-${detId}`}
-                                                                    className="absolute inset-0 pointer-events-none"
-                                                                    style={{ zIndex: 2 }}
-                                                                >
-                                                                    <polygon
-                                                                        points={points}
-                                                                        fill="rgba(34, 211, 238, 0.3)"
-                                                                        stroke="rgb(34, 211, 238)"
-                                                                        strokeWidth="2"
-                                                                    />
-                                                                </svg>
-                                                            );
-                                                        } else {
-                                                            // Fallback to bbox rendering with background sprite
-                                                            const patchW = bw * s;
-                                                            const patchH = bh * s;
-                                                            const left = dims.offsetX + bx * s + dx;
-                                                            const top = dims.offsetY + by * s + dy;
-                                                            const width = patchW;
-                                                            const height = patchH;
-                                                            const bgSize = `${renderW}px ${renderH}px`;
-                                                            const bgPos = `${-(offsetX + bx * s)}px ${-(offsetY + by * s)}px`;
-                                                            elems.push(
-                                                                <div
-                                                                    key={`mov-${detId}`}
-                                                                    style={{
-                                                                        position: 'absolute',
-                                                                        left,
-                                                                        top,
-                                                                        width,
-                                                                        height,
-                                                                        backgroundImage: `url(${backgroundImage})`,
-                                                                        backgroundSize: bgSize,
-                                                                        backgroundPosition: bgPos,
-                                                                        backgroundRepeat: 'no-repeat',
-                                                                        border: '2px solid rgba(34,211,238,0.9)',
-                                                                        borderRadius: 4,
-                                                                        pointerEvents: 'none',
-                                                                        zIndex: 2,
-                                                                    }}
-                                                                />
-                                                            );
-                                                        }
-                                        };
-                                        moveRect('massA', mapA);
-                                        moveRect('massB', mapB);
-                                        return <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 2 }}>{elems}</div>;
-                                    })()
-                                )}
-            </div>
-        );
+            {imageSizePx && detections.length > 0 && !playing && (
+                <DetectionOverlay
+                    containerRef={containerRef}
+                    imageSize={imageSizePx}
+                    boxes={detections.map((d) => ({
+                        id: d.id,
+                        label: d.label,
+                        bbox: d.bbox_px,
+                        polygon_px: d.polygon_px,
+                    }))}
+                    containerSize={dimensions}
+                />
+            )}
+
+            {bodyPoints.length === 0 && !playing ? (
+                <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground pointer-events-none">
+                    Simulation frames will appear here once available.
+                </div>
+            ) : null}
+
+            {bodyPoints.map(({ id, x, y }) => (
+                <div
+                    key={`${id}-${x}-${y}`}
+                    className="absolute flex flex-col items-center gap-1 text-[10px] font-semibold text-muted-foreground pointer-events-none"
+                    style={{ transform: `translate(${x - 8}px, ${y - 8}px)` }}
+                >
+                    <div className="h-4 w-4 rounded-full bg-primary shadow-md shadow-primary/40" />
+                    <span className="px-1 py-0.5 rounded bg-background/80 backdrop-blur-sm">{id}</span>
+                </div>
+            ))}
+        </div>
+    );
 }
 
 type OverlayBox = { 

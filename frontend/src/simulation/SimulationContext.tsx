@@ -26,8 +26,6 @@ interface SimulationState extends SimulationConfig {
   resetSimulation: () => void;
   setPlaying: (p: boolean) => void;
   updateConfig: (partial: Partial<SimulationConfig>) => void;
-  backgroundImage: string | null;
-  setBackgroundImage: (dataUrl: string | null) => void;
   detections: DiagramParseDetection[];
   imageSizePx: { width: number; height: number } | null;
   scale_m_per_px: number | null;
@@ -55,7 +53,6 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
   const [tension, setTension] = useState<number | undefined>();
   const [staticCondition, setStaticCondition] = useState<boolean | undefined>();
   const lastTimestamp = useRef<number | null>(null);
-  const [backgroundImage, setBackgroundImage] = useState<string | null>(null);
   const [detections, setDetections] = useState<DiagramParseDetection[]>([]);
   const [imageSizePx, setImageSizePx] = useState<{ width: number; height: number } | null>(null);
   const [scale_m_per_px, setScale] = useState<number | null>(null);
@@ -188,8 +185,6 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     resetSimulation,
     setPlaying,
     updateConfig,
-    backgroundImage,
-    setBackgroundImage,
     detections,
     imageSizePx,
     scale_m_per_px,
