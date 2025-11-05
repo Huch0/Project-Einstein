@@ -4,17 +4,22 @@ applyTo: '**'
 
 ------
 
-# Project Einstein – Universal Physics Builder (v0.4)
+# Project Einstein – Automated Initialization Workflow (v0.5)
 
 ## Goal
 
-Build a **schema-less, universal physics simulation system** where GPT-5 Agent dynamically generates physics scenes from any combination of entities. The system eliminates rigid scene-kind schemas in favor of a flexible, composition-based approach powered by Matter.js.
+Build a **two-phase simulation workflow** that separates initialization from execution:
+1. **Initialization Phase** (`/init_sim`): Automatic preprocessing (segment → label → validate → build)
+2. **Execution Phase** (user-triggered): Manual simulation start via "Convert Simulation" button
 
-**Key Changes from v0.3:**
-- ❌ **REMOVED:** Analytic solver (all simulations use Matter.js)
-- ❌ **REMOVED:** Static scene-kind schemas (`pulley.single_fixed_v0`, etc.)
-- ✅ **NEW:** Universal Physics Builder (handles any entity combination)
-- ✅ **NEW:** Dynamic constraint resolution (GPT-5 infers physical relationships)
+This eliminates GPT-5 Agent dependency for initialization while maintaining deterministic, transparent setup.
+
+**Key Changes from v0.4:**
+- ❌ **REMOVED:** GPT-5 Agent auto-chaining for initialization (unreliable tool calling)
+- ❌ **REMOVED:** `/chat` endpoint for image upload workflow
+- ✅ **NEW:** `/init_sim` endpoint with sequential initialization pipeline
+- ✅ **NEW:** "Convert Simulation" button for manual simulation trigger
+- ✅ **NEW:** Explicit initialization state tracking in UI
 
 
 
@@ -22,68 +27,282 @@ Build a **schema-less, universal physics simulation system** where GPT-5 Agent d
 
 ### Core Principles
 
-1. **Composition over Classification**
-   - No predefined scene types (pulley, ramp, pendulum)
-   - Build scenes by composing entities: mass + mass + pulley → pulley system
-   - Any combination is valid if physically meaningful
+1. **Two-Phase Workflow**
+   - **Phase 1 (Automated)**: Image upload → `/init_sim` → segments + entities + scene (no simulation yet)
+   - **Phase 2 (Manual)**: User clicks "Convert Simulation" → run Matter.js simulation
+   - Clear separation: Setup vs Execution
 
-2. **Matter.js Only**
-   - Single physics engine eliminates complexity
-   - All simulations use realistic 2D rigid body dynamics
-   - Constraints implemented via Matter.js constraint library
+2. **Deterministic Initialization**
+   - No GPT-5 Agent uncertainty during setup
+   - Sequential tool execution: `segment` → `label_segments` → `validate_entities` → `builder`
+   - All steps complete before simulation starts
+   - Frontend receives initialization status updates
 
-3. **Dynamic Constraint Resolution**
-   - GPT-5 infers relationships: "mass A connects to pulley via rope"
-   - Universal Builder translates to Matter.js constraints
-   - No hardcoded scene templates
+3. **User Control**
+   - Users see initialization progress in real-time
+   - Users explicitly trigger simulation (not auto-run)
+   - "Convert Simulation" button appears only after successful initialization
+   - Clear feedback at each stage
 
-4. **Zero Schema Rigidity**
-   - Scene JSON structure is flexible
+4. **Universal Builder (v0.4 retained)**
+   - Scene JSON structure remains flexible
    - `bodies: []` can have 1, 2, 10, or 100 bodies
    - `constraints: []` supports any combination of constraint types
+   - No scene-kind restrictions
 
 
 
-## Pipeline Overview
+## Pipeline Overview (v0.5)
 
 ```
+┌──────────────────────────────────────────────────────────────┐
+│                    PHASE 1: INITIALIZATION                    │
+│                  (Automatic via /init_sim)                    │
+└──────────────────────────────────────────────────────────────┘
+
 ┌──────────────┐
 │ User uploads │
 │    image     │
 └──────┬───────┘
        │
        ▼
-┌──────────────────────┐
-│  SAM Segmentation    │ ← Detects object boundaries
-│  Tool: segment_image │
-└──────┬───────────────┘
-       │ segments: [{id, bbox, polygon_px}, ...]
+┌──────────────────────────────────────────────────────────────┐
+│  Frontend: sendInitSimulation(image_id)                      │
+│  → POST /init_sim { image_id, conversation_id }             │
+└──────┬───────────────────────────────────────────────────────┘
+       │
        ▼
-┌──────────────────────────┐
-│  GPT-5 Entity Labeling   │ ← "This is a mass, pulley, etc."
-│  Tool: label_segments    │
-└──────┬───────────────────┘
-       │ entities: [{type: "mass", props: {...}}, ...]
+┌──────────────────────────────────────────────────────────────┐
+│  Backend: /init_sim endpoint                                 │
+│  1. segment_image_tool(image_id)                            │
+│     → segments: [{id, bbox, polygon_px}, ...]               │
+│  2. label_segments_tool(image_id, segments)                 │
+│     → entities: [{type, props, confidence}, ...]            │
+│  3. validate_entities_tool(entities)                        │
+│     → validation: {valid, warnings, errors}                 │
+│  4. build_physics_scene_tool(segments, entities)            │
+│     → scene: {bodies, constraints, world}                   │
+└──────┬───────────────────────────────────────────────────────┘
+       │
        ▼
-┌──────────────────────────────┐
-│  Universal Physics Builder   │ ← Composes Matter.js scene
-│  Tool: build_physics_scene   │ ← NO SCHEMA RESTRICTIONS
-└──────┬───────────────────────┘
-       │ scene: {bodies, constraints, world}
+┌──────────────────────────────────────────────────────────────┐
+│  Response to Frontend:                                       │
+│  {                                                           │
+│    status: "initialized",                                    │
+│    conversation_id: "uuid",                                  │
+│    segments_count: 4,                                        │
+│    entities_count: 3,                                        │
+│    scene: {...},                                             │
+│    warnings: [...]                                           │
+│  }                                                           │
+└──────┬───────────────────────────────────────────────────────┘
+       │
        ▼
-┌──────────────────────┐
-│  Matter.js Simulator │ ← Runs 2D rigid body physics
-│  Tool: simulate      │
-└──────┬───────────────┘
-       │ frames: [{t, positions, velocities}, ...]
+┌──────────────────────────────────────────────────────────────┐
+│  Frontend: Update UI                                         │
+│  - Show initialization success message                       │
+│  - Display "Convert Simulation" button                       │
+│  - Show detected entities (3 masses, 1 pulley, etc.)        │
+└──────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────┐
+│                    PHASE 2: EXECUTION                         │
+│              (Manual via "Convert Simulation")                │
+└──────────────────────────────────────────────────────────────┘
+
+┌──────────────┐
+│ User clicks  │
+│ "Convert     │
+│ Simulation"  │
+└──────┬───────┘
+       │
        ▼
-┌──────────────────────┐
-│  Physics Analysis    │ ← Energy, forces, pedagogical insights
-│  Tool: analyze       │
-└──────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│  Frontend: runSimulation(conversation_id)                    │
+│  → POST /run_sim { conversation_id }                        │
+└──────┬───────────────────────────────────────────────────────┘
+       │
+       ▼
+┌──────────────────────────────────────────────────────────────┐
+│  Backend: /run_sim endpoint                                  │
+│  1. Load scene from context (already built in Phase 1)      │
+│  2. simulate_physics_tool(scene, duration_s, frame_rate)    │
+│     → frames: [{t, positions, velocities, forces}, ...]     │
+│  3. analyze_simulation_tool(frames, scene)                  │
+│     → analysis: {energy, forces, motion_summary}            │
+└──────┬───────────────────────────────────────────────────────┘
+       │
+       ▼
+┌──────────────────────────────────────────────────────────────┐
+│  Response to Frontend:                                       │
+│  {                                                           │
+│    status: "simulated",                                      │
+│    frames: [...],                                            │
+│    analysis: {...},                                          │
+│    meta: {frames_count: 312, simulation_time_s: 5.0}       │
+│  }                                                           │
+└──────┬───────────────────────────────────────────────────────┘
+       │
+       ▼
+┌──────────────────────────────────────────────────────────────┐
+│  Frontend: Visualize Simulation                              │
+│  - Render animation with frames data                         │
+│  - Display physics analysis                                  │
+│  - Show energy conservation graph                            │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-## Tool Catalog (v0.4)
+## API Endpoints (v0.5)
+
+### 1. `POST /init_sim` - Initialization Pipeline ⭐ NEW
+
+**Purpose:** Execute sequential initialization without GPT-5 Agent chaining.
+
+**Input:**
+```json
+{
+  "image_id": "uuid",
+  "conversation_id": "uuid (optional, generated if not provided)",
+  "options": {
+    "auto_validate": true,
+    "scale_m_per_px": 0.01
+  }
+}
+```
+
+**Process (Sequential):**
+1. Call `segment_image_tool(image_id)`
+2. Call `label_segments_tool(image_id, segments)`
+3. Call `validate_entities_tool(entities)` (optional)
+4. Call `build_physics_scene_tool(segments, entities)`
+
+**Output:**
+```json
+{
+  "status": "initialized",
+  "conversation_id": "uuid",
+  "image_id": "uuid",
+  "initialization": {
+    "segments_count": 4,
+    "entities_count": 3,
+    "entities": [
+      {"type": "mass", "segment_id": "1", "props": {...}},
+      {"type": "pulley", "segment_id": "2", "props": {...}}
+    ],
+    "scene": {
+      "bodies": [...],
+      "constraints": [...]
+    },
+    "warnings": ["Mass inferred from area"],
+    "errors": []
+  },
+  "ready_for_simulation": true
+}
+```
+
+**Error Handling:**
+- Segmentation fails → return `{"status": "failed", "step": "segment", "error": "..."}`
+- Labeling fails → return `{"status": "failed", "step": "label", "error": "..."}`
+- Validation fails → return `{"status": "failed", "step": "validate", "errors": [...]}`
+- Builder fails → return `{"status": "failed", "step": "build", "error": "..."}`
+
+---
+
+### 2. `POST /run_sim` - Simulation Execution ⭐ NEW
+
+**Purpose:** Run Matter.js simulation on pre-initialized scene.
+
+**Input:**
+```json
+{
+  "conversation_id": "uuid",
+  "duration_s": 5.0,
+  "frame_rate": 60,
+  "analyze": true
+}
+```
+
+**Process:**
+1. Load scene from context (must be initialized first)
+2. Call `simulate_physics_tool(scene, duration_s, frame_rate)`
+3. Optionally call `analyze_simulation_tool(frames, scene)`
+
+**Output:**
+```json
+{
+  "status": "simulated",
+  "conversation_id": "uuid",
+  "simulation": {
+    "frames": [
+      {"t": 0.0, "positions": {...}, "velocities": {...}},
+      {"t": 0.016, "positions": {...}, "velocities": {...}}
+    ],
+    "meta": {
+      "frames_count": 312,
+      "simulation_time_s": 5.0,
+      "engine": "matter-js v0.19"
+    }
+  },
+  "analysis": {
+    "energy_conservation": {"error_percent": 0.2},
+    "motion_summary": {...},
+    "pedagogical_insights": [...]
+  }
+}
+```
+
+**Error Handling:**
+- No scene found → return `{"status": "not_initialized", "error": "Call /init_sim first"}`
+- Simulation fails → return `{"status": "failed", "error": "..."}`
+
+---
+
+### 3. `GET /init_sim/status/{conversation_id}` - Status Check ⭐ NEW
+
+**Purpose:** Check initialization progress (for long-running operations).
+
+**Output:**
+```json
+{
+  "conversation_id": "uuid",
+  "status": "in_progress | initialized | failed",
+  "current_step": "segment | label | validate | build",
+  "progress": {
+    "segments_count": 4,
+    "entities_count": 0,  // Not yet labeled
+    "has_scene": false
+  }
+}
+```
+
+---
+
+### 4. `POST /chat` - Conversational Chat (Legacy, kept for Q&A)
+
+**Purpose:** Ask questions about simulation, modify parameters, etc.
+
+**Input:**
+```json
+{
+  "message": "What happens if I increase mass A to 5kg?",
+  "conversation_id": "uuid",
+  "mode": "ask"  // NOT "agent"
+}
+```
+
+**Output:**
+```json
+{
+  "assistant_message": "Increasing mass A would...",
+  "conversation_id": "uuid"
+}
+```
+
+**Note:** `/chat` is NO LONGER used for initialization workflow in v0.5.
+
+---
+
+## Tool Catalog (v0.4, used by /init_sim)
 
 ### 1. `segment_image` - SAM/SAM2 Segmentation
 
@@ -478,79 +697,263 @@ def infer_constraints(entities, bodies, segments):
 
 ## Implementation Requirements
 
-### Backend Structure (v0.4)
+### Backend Structure (v0.5)
 ```
 backend/app/
+├── routers/
+│   ├── unified_chat.py          # Legacy /chat endpoint (Q&A only)
+│   ├── init_sim.py              # NEW: /init_sim endpoint ⭐
+│   ├── run_sim.py               # NEW: /run_sim endpoint ⭐
+│   └── diagram.py               # Image upload
 ├── agent/
 │   ├── tools/
 │   │   ├── segment_image.py
 │   │   ├── label_segments.py
+│   │   ├── validate_entities.py # NEW: Entity validation ⭐
 │   │   ├── build_scene.py       # Universal Builder
-│   │   ├── simulate_physics.py  # Matter.js only
+│   │   ├── simulate_physics.py
 │   │   └── analyze_results.py
-│   ├── prompts/
-│   │   ├── agent_system.yaml
-│   │   └── labeler_system.yaml
-│   └── tool_registry.py
-├── sim/
-│   ├── schema.py                # Flexible Scene schema
-│   ├── universal_builder.py     # NEW: Dynamic scene construction
-│   ├── constraint_resolver.py   # NEW: Infer physical relationships
-│   └── matter_engine.py         # Matter.js wrapper
-└── routers/
-    ├── diagram.py               # Legacy endpoint
-    └── agent.py                 # Agent chat endpoint
+│   └── context_store.py         # Conversation state management
+└── sim/
+    ├── universal_builder.py     # Dynamic scene construction
+    ├── constraint_resolver.py   # Infer physical relationships
+    └── matter_engine.py         # Matter.js wrapper
 ```
 
-### Key Files to Modify
+### Frontend Structure (v0.5)
+```
+frontend/src/
+├── lib/
+│   ├── agent-api.ts             # MODIFY: Add init_sim, run_sim calls ⭐
+│   └── unified-chat-api.ts      # Legacy chat
+├── components/
+│   └── simulation/
+│       └── simulation-box-node.tsx  # MODIFY: Add "Convert Simulation" button ⭐
+└── hooks/
+    └── use-simulation-box-agent.ts  # MODIFY: Use /init_sim instead of /chat ⭐
+```
 
-1. **`sim/universal_builder.py`** (NEW)
-   - `build_scene_universal(entities, segments, mapping)` → Scene JSON
-   - No scene-kind branching
-   - Dynamic constraint inference
+### Key Files to Create/Modify
 
-2. **`sim/constraint_resolver.py`** (NEW)
-   - `infer_rope_constraints(pulleys, masses, segments)`
-   - `infer_spring_constraints(springs, masses)`
-   - `infer_contact_surfaces(surfaces, masses)`
+#### **NEW Files (Backend)**
 
-3. **`sim/schema.py`** (MODIFY)
-   - Remove `Literal["pulley.single_fixed_v0"]`
-   - Make `bodies` flexible length
-   - Add all constraint types
+1. **`routers/init_sim.py`** ⭐
+   - `POST /init_sim` endpoint
+   - Sequential execution: segment → label → validate → build
+   - Return initialization result with scene data
+   ```python
+   @router.post("/init_sim")
+   async def initialize_simulation(
+       image_id: str,
+       conversation_id: Optional[str] = None,
+       options: Optional[dict] = None
+   ):
+       # 1. Segment image
+       segments = await segment_image_tool(image_id)
+       
+       # 2. Label segments
+       entities = await label_segments_tool(image_id, segments)
+       
+       # 3. Validate entities (optional)
+       validation = validate_entities_tool(entities)
+       
+       # 4. Build scene
+       scene = build_physics_scene_tool(segments, entities)
+       
+       return {
+           "status": "initialized",
+           "conversation_id": conversation_id,
+           "initialization": {
+               "segments_count": len(segments),
+               "entities_count": len(entities),
+               "scene": scene,
+               "warnings": validation.get("warnings", [])
+           },
+           "ready_for_simulation": True
+       }
+   ```
 
-4. **`sim/matter_engine.py`** (KEEP, remove analytic)
-   - Remove `simulatePulleyAnalytic`
-   - Keep only Matter.js simulation
-   - Add support for all constraint types
+2. **`routers/run_sim.py`** ⭐
+   - `POST /run_sim` endpoint
+   - Load pre-built scene from context
+   - Run simulation + analysis
+   ```python
+   @router.post("/run_sim")
+   async def run_simulation(
+       conversation_id: str,
+       duration_s: float = 5.0,
+       frame_rate: int = 60,
+       analyze: bool = True
+   ):
+       # Load scene from context
+       context = context_store.get_context(conversation_id)
+       if not context or not context.scene:
+           raise HTTPException(400, "Scene not initialized. Call /init_sim first.")
+       
+       # Simulate
+       frames = await simulate_physics_tool(context.scene, duration_s, frame_rate)
+       
+       # Analyze (optional)
+       analysis = None
+       if analyze:
+           analysis = analyze_simulation_tool(frames, context.scene)
+       
+       return {
+           "status": "simulated",
+           "frames": frames,
+           "analysis": analysis
+       }
+   ```
+
+3. **`agent/tools/validate_entities.py`** ⭐
+   - Check entity consistency
+   - Warn about missing properties
+   - Detect impossible configurations
+   ```python
+   def validate_entities_tool(entities: List[dict]) -> dict:
+       warnings = []
+       errors = []
+       
+       # Check for at least one dynamic body
+       dynamic_entities = [e for e in entities if e["type"] == "mass"]
+       if not dynamic_entities:
+           warnings.append("No dynamic bodies found")
+       
+       # Check for unrealistic masses
+       for entity in entities:
+           if entity["type"] == "mass":
+               mass = entity["props"].get("mass_guess_kg", 0)
+               if mass < 0.1 or mass > 1000:
+                   warnings.append(f"Unusual mass: {mass}kg")
+       
+       return {
+           "valid": len(errors) == 0,
+           "warnings": warnings,
+           "errors": errors
+       }
+   ```
+
+#### **MODIFY Files (Frontend)**
+
+1. **`lib/agent-api.ts`** ⭐
+   - Add `sendInitSimulation()` function
+   - Add `runSimulation()` function
+   ```typescript
+   export async function sendInitSimulation(
+     imageId: string,
+     conversationId?: string
+   ): Promise<InitSimResponse> {
+     const response = await fetch(`${API_BASE}/init_sim`, {
+       method: 'POST',
+       headers: { 'Content-Type': 'application/json' },
+       body: JSON.stringify({
+         image_id: imageId,
+         conversation_id: conversationId,
+       }),
+     });
+     return response.json();
+   }
+   
+   export async function runSimulation(
+     conversationId: string,
+     duration_s: number = 5.0
+   ): Promise<SimulationResponse> {
+     const response = await fetch(`${API_BASE}/run_sim`, {
+       method: 'POST',
+       headers: { 'Content-Type': 'application/json' },
+       body: JSON.stringify({
+         conversation_id: conversationId,
+         duration_s,
+         frame_rate: 60,
+         analyze: true,
+       }),
+     });
+     return response.json();
+   }
+   ```
+
+2. **`hooks/use-simulation-box-agent.ts`** ⭐
+   - Replace `/chat` call with `/init_sim` on image upload
+   - Add state: `isInitialized`, `readyForSimulation`
+   ```typescript
+   useEffect(() => {
+     if (backgroundImage && !hasRunInitialization) {
+       console.log('[Agent] 🖼️ Image uploaded, running initialization...');
+       
+       // Call /init_sim instead of /chat
+       sendInitSimulation(imageId, conversationId)
+         .then((result) => {
+           if (result.status === 'initialized') {
+             setIsInitialized(true);
+             setReadyForSimulation(true);
+             // Store scene data
+             setSceneData(result.initialization.scene);
+           }
+         });
+       
+       setHasRunInitialization(true);
+     }
+   }, [backgroundImage]);
+   ```
+
+3. **`components/simulation/simulation-box-node.tsx`** ⭐
+   - Add "Convert Simulation" button
+   - Show button only when `readyForSimulation === true`
+   - Button click triggers `runSimulation()`
+   ```tsx
+   {readyForSimulation && !hasSimulation && (
+     <Button
+       onClick={handleConvertSimulation}
+       className="..."
+     >
+       ▶️ Convert Simulation
+     </Button>
+   )}
+   
+   const handleConvertSimulation = async () => {
+     try {
+       const result = await runSimulation(conversationId);
+       if (result.status === 'simulated') {
+         setFrames(result.frames);
+         setHasSimulation(true);
+       }
+     } catch (error) {
+       console.error('Simulation failed:', error);
+     }
+   };
+   ```
 
 ---
 
-## Migration Strategy
+## Migration Strategy (v0.4 → v0.5)
 
-### Phase 1: Remove Analytic Solver ✅
-- Delete `backend/app/sim/pulleyAnalytic.py`
-- Remove `engine: "matter-js | analytic"` parameter
-- Update all `simulate_physics` calls to use Matter.js only
-- Remove analytic fallback logic in frontend
+### Phase 1: Create /init_sim Endpoint 🔄
+- Create `backend/app/routers/init_sim.py`
+- Implement sequential tool execution (no GPT-5 Agent)
+- Add error handling for each step
+- Test with sample images
 
-### Phase 2: Implement Universal Builder ✅
-- Create `universal_builder.py` with flexible scene construction
-- Implement `constraint_resolver.py` for dynamic constraint inference
-- Update `schema.py` to allow any body/constraint count
-- Add tests for various entity combinations
+### Phase 2: Create /run_sim Endpoint 🔄
+- Create `backend/app/routers/run_sim.py`
+- Load scene from context store
+- Execute simulation + analysis
+- Return structured results
 
-### Phase 3: Remove Static Builders 🔄
-- Keep old builders in `sim/builders/legacy/` for reference
-- Redirect all build requests to Universal Builder
-- Verify backward compatibility with existing scenes
-- Update documentation
+### Phase 3: Update Frontend API Client 🔄
+- Modify `agent-api.ts`: Add `sendInitSimulation()`, `runSimulation()`
+- Update `use-simulation-box-agent.ts`: Call `/init_sim` on image upload
+- Remove old `/chat` initialization logic
 
-### Phase 4: Frontend Integration ✅
-- Remove analytic-specific UI code
-- Update SimulationContext to expect only Matter.js frames
-- Add support for N-body visualization (not just 2 masses)
-- Test with complex scenarios (3+ bodies, multiple constraints)
+### Phase 4: Add "Convert Simulation" Button 🔄
+- Modify `simulation-box-node.tsx`
+- Add button component (appears after initialization)
+- Connect to `runSimulation()` API call
+- Handle loading/error states
+
+### Phase 5: Deprecate /chat for Initialization ✅
+- Keep `/chat` endpoint for Q&A only
+- Update system prompt: Remove auto-initialization instructions
+- Frontend no longer sends `mode: "agent"` for image uploads
 
 ---
 
@@ -558,82 +961,112 @@ backend/app/
 
 ### Unit Tests
 ```python
-def test_universal_builder_pulley():
-    """2 masses + 1 pulley → valid scene"""
-    entities = [mass_a, mass_b, pulley]
-    scene = build_scene_universal(entities, segments, mapping)
-    assert len(scene["bodies"]) == 2
-    assert len(scene["constraints"]) == 1
-    assert scene["constraints"][0]["type"] == "rope"
+def test_init_sim_sequential_execution():
+    """Test /init_sim executes all steps in order"""
+    response = await init_sim(image_id="test_pulley.png")
+    assert response["status"] == "initialized"
+    assert response["initialization"]["segments_count"] > 0
+    assert response["initialization"]["entities_count"] > 0
+    assert response["initialization"]["scene"] is not None
 
-def test_universal_builder_triple_mass():
-    """3 masses + 2 pulleys → valid scene"""
-    entities = [mass_a, mass_b, mass_c, pulley_1, pulley_2]
-    scene = build_scene_universal(entities, segments, mapping)
-    assert len(scene["bodies"]) == 3
-    assert len(scene["constraints"]) == 2
+def test_run_sim_requires_initialization():
+    """Test /run_sim fails without /init_sim"""
+    with pytest.raises(HTTPException) as exc:
+        await run_sim(conversation_id="uninitialized")
+    assert exc.value.status_code == 400
+    assert "not initialized" in exc.value.detail
 
-def test_universal_builder_spring_mass():
-    """1 mass + 1 spring → valid scene"""
-    entities = [mass, spring]
-    scene = build_scene_universal(entities, segments, mapping)
-    assert scene["constraints"][0]["type"] == "spring"
+def test_validate_entities_warnings():
+    """Test entity validation detects issues"""
+    entities = [{"type": "mass", "props": {"mass_guess_kg": 0.01}}]  # Too light
+    validation = validate_entities_tool(entities)
+    assert len(validation["warnings"]) > 0
+    assert "Unusual mass" in validation["warnings"][0]
 ```
 
 ### Integration Tests
-- Upload various diagrams (pulley, ramp, pendulum, spring, hybrid)
-- Verify Universal Builder handles all cases
-- Check Matter.js simulation runs without errors
-- Validate energy conservation in all scenarios
+- Upload image → Call `/init_sim` → Verify all 4 steps complete
+- Call `/run_sim` without `/init_sim` → Verify error response
+- Upload various diagrams → Check initialization adapts correctly
+- Click "Convert Simulation" button → Verify simulation runs
+
+### Frontend Tests
+```typescript
+describe('Simulation Workflow', () => {
+  it('should show "Convert Simulation" button after initialization', async () => {
+    // Upload image
+    await uploadImage(testImage);
+    
+    // Wait for initialization
+    await waitFor(() => {
+      expect(screen.getByText('Convert Simulation')).toBeInTheDocument();
+    });
+  });
+  
+  it('should run simulation when button clicked', async () => {
+    // Setup: Already initialized
+    render(<SimulationBox initialized={true} />);
+    
+    // Click button
+    fireEvent.click(screen.getByText('Convert Simulation'));
+    
+    // Verify API call
+    await waitFor(() => {
+      expect(mockRunSimulation).toHaveBeenCalled();
+    });
+  });
+});
+```
 
 ---
 
 ## Acceptance Criteria
 
-### v0.4 Requirements
-- ✅ Analytic solver completely removed
-- ✅ All simulations use Matter.js
-- ✅ Universal Builder handles any entity combination
-- ✅ No `scene_kind` field in Scene JSON
-- ✅ Dynamic constraint inference working
-- ✅ 3+ body simulations supported
-- ✅ Multiple constraint types (rope, spring, hinge, etc.)
-- ✅ Backward compatible with v0.3 scenes
+### v0.5 Requirements
+- ✅ `/init_sim` endpoint created and working
+- ✅ Sequential execution: segment → label → validate → build
+- ✅ `/run_sim` endpoint created and working
+- ✅ Frontend calls `/init_sim` on image upload (not `/chat`)
+- ✅ "Convert Simulation" button appears after initialization
+- ✅ Button triggers `/run_sim` API call
+- ✅ Simulation only runs when user explicitly clicks button
+- ✅ Initialization state tracked in UI
+- ✅ Error handling for each pipeline step
 - ✅ All tests pass (unit + integration)
-- ✅ Documentation updated
 
 ### Success Metrics
-- Can simulate pulley, ramp, pendulum, spring-mass with same builder
-- Can handle 10+ bodies in single scene
-- Energy conservation < 1% error for all scenarios
-- Build time < 500ms for complex scenes
-- No hardcoded scene-kind logic anywhere
+- Image upload → initialization completes in < 5 seconds
+- User sees clear feedback: "Detected 2 masses, 1 pulley"
+- "Convert Simulation" button appears immediately after init
+- Simulation starts within 1 second of button click
+- No automatic simulation execution (user control maintained)
+- Error messages are clear and actionable
 
 ---
 
 ## Roadmap
 
-### v0.4 (Current): Universal Physics Builder
-- Remove analytic solver
-- Implement Universal Builder
-- Dynamic constraint inference
-- Flexible scene schema
+### v0.5 (Current): Automated Initialization Workflow
+- Create `/init_sim` endpoint with sequential pipeline
+- Create `/run_sim` endpoint for manual simulation trigger
+- Add "Convert Simulation" button to UI
+- Remove GPT-5 Agent dependency for initialization
 
-### v0.5 (Next): Advanced Constraints
-- Hinge joints with angle limits
-- Motor constraints (powered motion)
-- Soft body simulation (deformable objects)
-- Collision groups and filters
+### v0.6 (Next): Real-time Progress Updates
+- WebSocket support for initialization progress
+- Live updates: "Segmenting... 50% complete"
+- Streaming simulation frames to frontend
+- Cancel initialization/simulation mid-process
 
-### v0.6 (Future): 3D Support
-- Migrate to Rapier3D
-- 3D entity recognition
-- Camera controls for 3D view
-- Volume-based mass estimation
+### v0.7 (Future): Advanced Validation
+- Physics plausibility checks (energy, forces)
+- Suggest corrections: "Mass too light for observed motion"
+- Interactive entity editing before simulation
+- Compare simulation vs theoretical predictions
 
 ---
 
-**Status**: v0.4 specification complete, ready for implementation  
-**Breaking Changes**: Analytic solver removed, scene schema simplified  
-**Migration Path**: All v0.3 scenes automatically converted by Universal Builder
+**Status**: v0.5 specification complete, ready for implementation  
+**Breaking Changes**: `/chat` no longer handles image upload workflow  
+**Migration Path**: Frontend must call `/init_sim` → `/run_sim` instead of single `/chat` call
 ````
