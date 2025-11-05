@@ -100,6 +100,12 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
         uploadImage,
         sendMessage,
         inspectSimulation,
+        
+        // v0.5 New
+        isInitialized,
+        readyForSimulation,
+        initResult,
+        runSimulation,
     } = useSimulationBoxAgent({
         boxId: node.id,
         boxName: node.name,
@@ -517,6 +523,20 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
                             disabled={agentLoading}
                         />
                     </label>
+                    
+                    {/* v0.5 Convert Simulation Button */}
+                    {readyForSimulation && !frames.length && (
+                        <button
+                            type="button"
+                            className="rounded px-2 py-1 text-xs font-medium bg-primary text-primary-foreground transition-colors hover:bg-primary/90"
+                            onClick={runSimulation}
+                            aria-label="Convert to simulation"
+                            data-node-action="true"
+                            disabled={agentLoading}
+                        >
+                            ▶️ Convert Simulation
+                        </button>
+                    )}
                     
                     {/* Inspect Simulation */}
                     {conversationId && (
