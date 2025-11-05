@@ -7,12 +7,15 @@ import {
     createIsoTimestamp,
     isStrokeNode,
     type CameraState,
+    type ImageNode,
     type NodeId,
     type SimulationBoxNode,
     type StrokeNode,
     type WhiteboardNode,
     type WhiteboardState,
 } from './types';
+import { calculateImageNodeBounds } from './utils';
+import { SIMULATION_BOX_DEFAULT_HEIGHT, SIMULATION_BOX_DEFAULT_WIDTH } from './constants';
 
 type WhiteboardAction =
     | { type: 'add-node'; node: WhiteboardNode }
@@ -122,7 +125,12 @@ export interface WhiteboardStoreValue {
     clearStrokes: () => void;
     setSelection: (selection: NodeId[]) => void;
     setCamera: (camera: Partial<CameraState>) => void;
-    createSimulationBox: (initial?: Partial<Pick<SimulationBoxNode, 'transform' | 'bounds'>>) => NodeId;
+    createSimulationBox: (initial?: Partial<Pick<SimulationBoxNode, 'transform' | 'bounds' | 'metadata' | 'name' | 'linkedSimulationId'>>) => NodeId;
+    createImageBox: (input: {
+        source: ImageNode['source'];
+        originalSize: { width: number; height: number };
+        initial?: Partial<Pick<ImageNode, 'transform' | 'bounds' | 'isPlacedInsideSimulationBox'>>;
+    }) => NodeId;
 }
 
 const WhiteboardContext = createContext<WhiteboardStoreValue | null>(null);
@@ -149,6 +157,12 @@ export function WhiteboardProvider({ children }: { children: React.ReactNode }) 
             createSimulationBox: (initial) => {
                 const id = createNodeId();
                 const node = createSimulationBoxNode({ id, initial });
+                dispatch({ type: 'add-node', node });
+                return id;
+            },
+            createImageBox: ({ source, originalSize, initial }) => {
+                const id = createNodeId();
+                const node = createImageBoxNode({ id, source, originalSize, initial });
                 dispatch({ type: 'add-node', node });
                 return id;
             },
@@ -187,11 +201,12 @@ export function createSimulationBoxNode({
     initial,
 }: {
     id?: NodeId;
-    initial?: Partial<Pick<SimulationBoxNode, 'transform' | 'bounds'>>;
+    initial?: Partial<Pick<SimulationBoxNode, 'transform' | 'bounds' | 'metadata' | 'name' | 'linkedSimulationId'>>;
 }): SimulationBoxNode {
     const nodeId = id ?? createNodeId();
     const transform = initial?.transform ?? { x: 160, y: 120, scaleX: 1, scaleY: 1, rotation: 0 };
-    const bounds = initial?.bounds ?? { width: 420, height: 280 };
+    const bounds = initial?.bounds ?? { width: SIMULATION_BOX_DEFAULT_WIDTH, height: SIMULATION_BOX_DEFAULT_HEIGHT };
+    const metadata = initial?.metadata ? { ...initial.metadata } : undefined;
     return {
         id: nodeId,
         type: 'simulation-box',
@@ -199,7 +214,36 @@ export function createSimulationBoxNode({
         transform,
         zIndex: 0,
         bounds,
-        linkedSimulationId: 'default',
+        linkedSimulationId: initial?.linkedSimulationId ?? 'default',
         childIds: [],
+        name: initial?.name,
+        metadata,
+    };
+}
+
+export function createImageBoxNode({
+    id,
+    source,
+    originalSize,
+    initial,
+}: {
+    id?: NodeId;
+    source: ImageNode['source'];
+    originalSize: { width: number; height: number };
+    initial?: Partial<Pick<ImageNode, 'transform' | 'bounds' | 'isPlacedInsideSimulationBox'>>;
+}): ImageNode {
+    const nodeId = id ?? createNodeId();
+    const transform = initial?.transform ?? { x: 160, y: 120, scaleX: 1, scaleY: 1, rotation: 0 };
+    const bounds = initial?.bounds ?? calculateImageNodeBounds(originalSize.width, originalSize.height);
+    return {
+        id: nodeId,
+        type: 'image',
+        parentId: null,
+        transform,
+        zIndex: 0,
+        source,
+        originalSize,
+        bounds,
+        isPlacedInsideSimulationBox: initial?.isPlacedInsideSimulationBox ?? false,
     };
 }

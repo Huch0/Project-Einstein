@@ -3,7 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, ReactNode } from 'react';
 import { simulatePulleyAnalytic } from '@/simulation/pulleyAnalytic';
 import type { SimulationFrame } from '@/simulation/types';
-import { parseDiagram, type DiagramParseDetection } from '@/lib/api';
+import { parseDiagram, type DiagramParseDetection, type DiagramParseResponse } from '@/lib/api';
 
 export interface SimulationConfig {
   massA: number;
@@ -26,14 +26,12 @@ interface SimulationState extends SimulationConfig {
   resetSimulation: () => void;
   setPlaying: (p: boolean) => void;
   updateConfig: (partial: Partial<SimulationConfig>) => void;
-  backgroundImage: string | null;
-  setBackgroundImage: (dataUrl: string | null) => void;
   detections: DiagramParseDetection[];
   imageSizePx: { width: number; height: number } | null;
   scale_m_per_px: number | null;
   scene: any | null;
   labels: { entities: Array<{ segment_id: string; label: string; props?: Record<string, unknown> }> } | null;
-  parseAndBind: (file: File) => Promise<void>;
+  parseAndBind: (file: File) => Promise<DiagramParseResponse>;
 }
 
 const SimulationContext = createContext<SimulationState | null>(null);
@@ -55,7 +53,6 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
   const [tension, setTension] = useState<number | undefined>();
   const [staticCondition, setStaticCondition] = useState<boolean | undefined>();
   const lastTimestamp = useRef<number | null>(null);
-  const [backgroundImage, setBackgroundImage] = useState<string | null>(null);
   const [detections, setDetections] = useState<DiagramParseDetection[]>([]);
   const [imageSizePx, setImageSizePx] = useState<{ width: number; height: number } | null>(null);
   const [scale_m_per_px, setScale] = useState<number | null>(null);
@@ -93,7 +90,7 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     setConfig(prev => ({ ...prev, ...partial }));
   }, []);
 
-  const parseAndBind = useCallback(async (file: File) => {
+  const parseAndBind = useCallback(async (file: File): Promise<DiagramParseResponse> => {
     // Reset state before parsing
     setPlaying(false);
     setCurrentIndex(0);
@@ -139,7 +136,7 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
       lastTimestamp.current = null;
       // eslint-disable-next-line no-console
       console.log('Rapier simulation summary', sim);
-      return;
+      return res;
     }
     // Bind parameters to current config
     setConfig(prev => ({
@@ -151,6 +148,7 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     }));
     // Optional: rerun analytic with new params
     runAnalytic();
+    return res;
   }, [runAnalytic]);
 
   // Playback loop
@@ -187,8 +185,6 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     resetSimulation,
     setPlaying,
     updateConfig,
-    backgroundImage,
-    setBackgroundImage,
     detections,
     imageSizePx,
     scale_m_per_px,

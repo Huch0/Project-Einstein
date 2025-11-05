@@ -65,6 +65,7 @@ export interface ImageNode extends BaseNode {
         uri: string;
     };
     originalSize: { width: number; height: number };
+    bounds: { width: number; height: number };
     isPlacedInsideSimulationBox: boolean;
 }
 

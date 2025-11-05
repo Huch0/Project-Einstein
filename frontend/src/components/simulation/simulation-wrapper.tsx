@@ -1,9 +1,7 @@
-
 "use client";
 
 import { useEffect, useRef, useState } from 'react';
-import { useSimulation } from '@/simulation/SimulationContext';
-import { Hand, UploadCloud, Trash2, SquarePlus } from 'lucide-react';
+import { Hand, UploadCloud } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import {
@@ -20,26 +18,31 @@ import { Label } from '@/components/ui/label';
 import { WhiteboardProvider, useWhiteboardStore } from '@/whiteboard/context';
 import WhiteboardCanvas from '@/whiteboard/WhiteboardCanvas';
 import type { InteractionMode } from '@/whiteboard/types';
+import { cn } from '@/lib/utils';
+import { calculateImageNodeBounds } from '@/whiteboard/utils';
 
 const INITIAL_MODE: InteractionMode = 'simulation';
 
-export default function SimulationCanvasStack() {
+interface SimulationCanvasStackProps {
+    className?: string;
+}
+
+export default function SimulationCanvasStack({ className }: SimulationCanvasStackProps = {}) {
     return (
         <WhiteboardProvider>
-            <SimulationCanvasInner />
+            <SimulationCanvasInner className={className} />
         </WhiteboardProvider>
     );
 }
 
-function SimulationCanvasInner() {
+function SimulationCanvasInner({ className }: SimulationCanvasStackProps) {
     const wrapperRef = useRef<HTMLDivElement>(null);
     const contentRef = useRef<HTMLDivElement>(null);
-    const { setBackgroundImage, parseAndBind } = useSimulation();
-
+    const imageInputRef = useRef<HTMLInputElement>(null);
     const [mode, setMode] = useState<InteractionMode>(INITIAL_MODE);
     const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
     const [open, setOpen] = useState(false);
-    const { strokeNodes, clearStrokes, createSimulationBox } = useWhiteboardStore();
+    const { strokeNodes, clearStrokes, createImageBox, setSelection } = useWhiteboardStore();
 
     const hasCanvasContent = strokeNodes.length > 0;
 
@@ -65,10 +68,43 @@ function SimulationCanvasInner() {
         clearStrokes();
     };
 
+    const handleImageSelection = (file: File) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+            const dataUrl = reader.result as string;
+            const image = new Image();
+            image.onload = () => {
+                const bounds = calculateImageNodeBounds(image.naturalWidth, image.naturalHeight);
+                const totalWidth = bounds.width;
+                const totalHeight = bounds.height;
+                const defaultX = dimensions.width > 0 ? Math.max(0, (dimensions.width - totalWidth) / 2) : 160;
+                const defaultY = dimensions.height > 0 ? Math.max(0, (dimensions.height - totalHeight) / 2) : 120;
+                const nodeId = createImageBox({
+                    source: { kind: 'upload', uri: dataUrl },
+                    originalSize: { width: image.naturalWidth, height: image.naturalHeight },
+                    initial: {
+                        bounds,
+                        transform: { x: defaultX, y: defaultY, scaleX: 1, scaleY: 1, rotation: 0 },
+                    },
+                });
+                setSelection([nodeId]);
+            };
+            image.src = dataUrl;
+        };
+        reader.readAsDataURL(file);
+    };
+
+    const handleAddImageClick = () => {
+        imageInputRef.current?.click();
+    };
+
     return (
-        <div ref={wrapperRef} className="flex h-full w-full flex-col p-2 md:p-4 gap-2">
+        <div
+            ref={wrapperRef}
+            className={cn('flex h-full w-full flex-col', className)}
+        >
             {/* Top bezel toolbar */}
-            <div className="flex items-center justify-between rounded-md border bg-background/80 px-2 py-2 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-background/60">
+            <div className="flex items-center justify-between rounded-none border-b bg-background/80 px-2 py-2 shadow-none backdrop-blur supports-[backdrop-filter]:bg-background/60 shrink-0">
                 <div className="flex gap-1">
                     <Button
                         type="button"
@@ -104,69 +140,23 @@ function SimulationCanvasInner() {
                         type="button"
                         variant="outline"
                         size="sm"
-                        onClick={() => {
-                            createSimulationBox();
+                        onClick={handleAddImageClick}
+                    >
+                        <UploadCloud className="mr-2 h-4 w-4" />
+                        Add Image
+                    </Button>
+                    <input
+                        ref={imageInputRef}
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={(event) => {
+                            const file = event.target.files?.[0];
+                            if (!file) return;
+                            handleImageSelection(file);
+                            event.target.value = '';
                         }}
-                    >
-                        <SquarePlus className="mr-2 h-4 w-4" />
-                        New Simulation Box
-                    </Button>
-                    <Button
-                        type="button"
-                        variant="outline"
-                        size="icon"
-                        onClick={handleClear}
-                        disabled={!hasCanvasContent}
-                        aria-label="Clear drawing"
-                    >
-                        <Trash2 className="h-4 w-4" />
-                    </Button>
-                    <Dialog open={open} onOpenChange={setOpen}>
-                        <DialogTrigger asChild>
-                            <Button type="button" onClick={() => setOpen(true)}>
-                                <UploadCloud className="mr-2 h-4 w-4" />
-                                Upload Diagram
-                            </Button>
-                        </DialogTrigger>
-                        <DialogContent className="sm:max-w-md">
-                            <DialogHeader>
-                                <DialogTitle>Upload Physics Diagram</DialogTitle>
-                                <DialogDescription>
-                                    Upload an image or PDF of a physics diagram to convert it into a simulation.
-                                </DialogDescription>
-                            </DialogHeader>
-                            <div className="grid flex-1 gap-2">
-                                <Label htmlFor="diagram-file" className="sr-only">
-                                    Diagram File
-                                </Label>
-                                <Input id="diagram-file" type="file" accept="image/*" onChange={async (e) => {
-                                    const file = e.target.files?.[0];
-                                    if (!file) return;
-                                    
-                                    // Load image as data URL first (ensure it's loaded before parse)
-                                    const dataUrl = await new Promise<string>((resolve, reject) => {
-                                        const reader = new FileReader();
-                                        reader.onload = ev => resolve(ev.target?.result as string);
-                                        reader.onerror = reject;
-                                        reader.readAsDataURL(file);
-                                    });
-                                    
-                                    setBackgroundImage(dataUrl);
-                                    
-                                    // Now trigger backend parse (+simulate=1 via SimulationContext)
-                                    try {
-                                        await parseAndBind(file);
-                                    } catch (err) {
-                                        // eslint-disable-next-line no-console
-                                        console.error('Parse failed', err);
-                                    }
-                                }} />
-                            </div>
-                            <Button type="button" className="w-full" onClick={() => setOpen(false)}>
-                                Set As Background
-                            </Button>
-                        </DialogContent>
-                    </Dialog>
+                    />
                 </div>
             </div>
             {/* Content area (no overlap with toolbar) */}

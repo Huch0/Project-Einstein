@@ -68,7 +68,6 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
     } = useWhiteboardStore();
     const globalChat = useGlobalChat();
     const [objectPosition, setObjectPosition] = useState<SimulationObjectPosition>({ x: 0, y: 0 });
-    const [backgroundImage, setBackgroundImage] = useState<string | null>(null);
     
     // Get all simulation boxes for context insertion
     const availableBoxes = orderedNodeIds
@@ -373,7 +372,7 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
                 id: node.id,
                 name: currentNode.name || `Box ${node.id.slice(0, 8)}`,
                 conversationId,
-                hasImage: !!backgroundImage,
+                hasImage: false,
                 hasSimulation: frames.length > 0,
             });
         }
@@ -391,12 +390,12 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
             globalChat.updateSimulationBox(node.id, {
                 name: currentNode.name || `Box ${node.id.slice(0, 8)}`,
                 conversationId,
-                hasImage: !!backgroundImage,
+                hasImage: false,
                 hasSimulation: frames.length > 0,
             });
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [node.id, conversationId, backgroundImage, frames.length]);
+    }, [node.id, conversationId, frames.length]);
 
     const handleResizePointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
         event.stopPropagation();
@@ -496,7 +495,7 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
                     )}
                 </div>
                 <div className="flex items-center gap-1">
-                    {/* Upload Image */}
+                    {/* Upload image for agent context */}
                     <label
                         className="rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground cursor-pointer bg-background"
                         data-node-action="true"
@@ -508,16 +507,13 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
                             className="hidden"
                             onChange={async (e) => {
                                 const file = e.target.files?.[0];
-                                if (file) {
-                                    // Create preview URL for background
-                                    const reader = new FileReader();
-                                    reader.onloadend = () => {
-                                        setBackgroundImage(reader.result as string);
-                                    };
-                                    reader.readAsDataURL(file);
-                                    
-                                    // Upload to agent
+                                if (!file) {
+                                    return;
+                                }
+                                try {
                                     await uploadImage(file);
+                                } finally {
+                                    e.target.value = '';
                                 }
                             }}
                             disabled={agentLoading}
@@ -587,20 +583,6 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
                 )}
                 style={{ height: Math.max(MIN_BOUNDS.height - HEADER_HEIGHT, node.bounds.height - HEADER_HEIGHT) }}
             >
-                {/* Background Image - Only show when not in simulation mode */}
-                {backgroundImage && !frames.length && (
-                    <div 
-                        className="absolute inset-0 z-20 flex items-center justify-center p-4 bg-background"
-                    >
-                        <img 
-                            src={backgroundImage} 
-                            alt="Uploaded diagram"
-                            className="max-w-full max-h-full object-contain"
-                            style={{ opacity: 0.9 }}
-                        />
-                    </div>
-                )}
-                
                 {/* Agent Error Display */}
                 {agentError && (
                     <div className="absolute top-2 left-2 right-2 z-20 bg-destructive/90 text-destructive-foreground text-xs px-2 py-1 rounded">
