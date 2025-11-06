@@ -6,9 +6,13 @@ Standalone implementation - no dependency on pipeline/sam_detector.py.
 """
 
 import base64
+import io
 import json
+import logging
 import uuid
 import http.client
+from datetime import datetime
+from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
 
@@ -61,6 +65,70 @@ class SegmentImageOutput(BaseModel):
     
     segments: list[Segment]
     image: ImageMetadata
+# Logger for debug artfacts
+logger = logging.getLogger("segment_image")
+
+
+# ===========================
+# Debug Visualization Helpers
+# ===========================
+
+def _ensure_dir(path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _bbox_to_polygon(bbox: tuple[float, float, float, float]) -> list[tuple[float, float]]:
+    x, y, w, h = bbox
+    return [
+        (x, y),
+        (x + w, y),
+        (x + w, y + h),
+        (x, y + h),
+    ]
+
+
+def _save_segmentation_debug(image_bytes: bytes, segments: list[Segment], image_meta: ImageMetadata) -> None:
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:
+        logger.warning("Pillow not installed; skipping segmentation visualization")
+        return
+
+    try:
+        base_dir = _ensure_dir(Path(__file__).resolve().parents[3] / "logs" / "segmentation")
+        image = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
+        overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay, "RGBA")
+
+        palette = [
+            (59, 130, 246, 120),
+            (16, 185, 129, 120),
+            (249, 115, 22, 120),
+            (236, 72, 153, 120),
+            (14, 165, 233, 120),
+            (234, 179, 8, 120),
+        ]
+
+        for idx, seg in enumerate(segments):
+            polygon = seg.polygon_px or _bbox_to_polygon(seg.bbox)
+            if not polygon:
+                continue
+            color = palette[idx % len(palette)]
+            outline = (color[0], color[1], color[2], 200)
+            draw.polygon(polygon, fill=color, outline=outline)
+            centroid_x = sum(pt[0] for pt in polygon) / len(polygon)
+            centroid_y = sum(pt[1] for pt in polygon) / len(polygon)
+            draw.text((centroid_x, centroid_y), str(seg.id), fill=(255, 255, 255, 230))
+
+        composite = Image.alpha_composite(image, overlay).convert("RGB")
+        timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+        filename = f"{image_meta.image_id}_segments_{timestamp}.png"
+        output_path = base_dir / filename
+        composite.save(output_path, format="PNG")
+        logger.info("Segmentation debug saved to %s", output_path)
+    except Exception as exc:
+        logger.warning("Failed to save segmentation debug: %s", exc, exc_info=False)
 
 
 # ===========================
@@ -252,6 +320,14 @@ async def segment_image(input_data: SegmentImageInput) -> SegmentImageOutput:
         width_px=width_px,
         height_px=height_px
     )
+    if input_data.image_data.startswith("img_"):
+        image_meta.image_id = input_data.image_data
+    
+    # Persist debug visualization
+    try:
+        _save_segmentation_debug(image_bytes, segments, image_meta)
+    except Exception as exc:  # pragma: no cover - diagnostics should not break pipeline
+        logger.warning("Segmentation debug visualization failed: %s", exc, exc_info=False)
     
     return SegmentImageOutput(
         segments=segments,

@@ -79,6 +79,9 @@ class Settings(BaseSettings):
     LABELER_MODE: str = "openai"  # "openai" | "stub"
     LABELER_MODEL: str = "gpt-5"  # GPT-5 with Responses API
     LABELER_SYSTEM_PROMPT_PATH: str = "app/agent/prompts/labeler_system.yaml"
+
+    # Tool: build_scene (agent-based)
+    INIT_SIM_SCENE_MODEL: str | None = None  # Optional override for initialization builder model
     
     # Tool: simulate_physics
     MATTER_WORKER_PATH: str | None = "backend/sim_worker/matter_worker.js"  # If None, defaults to backend/sim_worker/matter_worker.js

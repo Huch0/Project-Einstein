@@ -95,6 +95,9 @@ export interface FrameBodyState {
   id: string;
   position_m: [number, number];
   velocity_m_s: [number, number];
+  angle_rad?: number;
+  angular_velocity_rad_s?: number;
+  vertices_world?: Array<[number, number]>;
 }
 
 export interface SimulationFrame {

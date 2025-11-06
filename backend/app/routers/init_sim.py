@@ -1,30 +1,119 @@
 """
-Router: /init_sim - Automated Initialization Pipeline (v0.5)
+Router: /init_sim - Agent Scene Initialization (v0.6)
 
-Executes sequential initialization workflow without GPT-5 Agent:
-1. segment_image: SAM segmentation
-2. label_segments: GPT-5 Vision entity recognition
-3. validate_entities: Consistency checks
-4. build_physics_scene: Universal Builder scene construction
-
+Builds a physics scene directly from an uploaded diagram using the agent-based builder.
 Returns initialized scene ready for simulation.
 """
 
-import logging
-from typing import Optional
+import io
+from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from app.agent.agent_context import get_context_store, ConversationContext
-from app.agent.tools.segment_image import segment_image, SegmentImageInput
-from app.agent.tools.label_segments import label_segments, LabelSegmentsInput
-from app.agent.tools.validate_entities import validate_scene_entities, ValidateEntitiesInput
-from app.agent.tools.build_scene import build_physics_scene, BuildSceneInput
+from app.agent.agent_context import get_context_store
+from app.agent.tools.build_scene import (
+    BuildSceneInput,
+    build_physics_scene,
+    _render_scene_image,
+)
+from app.routers.diagram import get_uploaded_image_bytes
+from app.logging_utils import get_logger
 
-logger = logging.getLogger("init_sim")
+logger = get_logger("init_sim")
 
 router = APIRouter(prefix="/init_sim", tags=["initialization"])
+
+def _save_scene_visualization(
+    scene: dict,
+    image_metadata: dict,
+    conversation_id: str,
+    log_timestamp: Optional[str] = None,
+) -> None:
+    try:
+        _, output_path = _render_scene_image(
+            scene,
+            image_metadata,
+            label=f"conversation-{conversation_id}",
+            log_timestamp=log_timestamp,
+        )
+        if output_path:
+            logger.info("Scene debug saved to %s", output_path)
+    except Exception as exc:  # pragma: no cover - diagnostics best-effort only
+        logger.warning("Failed to save scene visualization: %s", exc, exc_info=False)
+
+
+def _load_image_metadata(image_id: str) -> dict[str, Any]:
+    """Load image metadata for the uploaded diagram."""
+
+    try:
+        image_bytes = get_uploaded_image_bytes(image_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    try:
+        from PIL import Image
+    except ImportError as exc:  # pragma: no cover - environment misconfiguration
+        raise HTTPException(status_code=500, detail="Pillow is required for initialization") from exc
+
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as img:
+            width, height = img.size
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid image data for {image_id}: {exc}") from exc
+
+    return {
+        "width_px": int(width),
+        "height_px": int(height),
+        "image_id": image_id,
+    }
+
+
+def _scene_entities(scene: dict) -> list[dict[str, Any]]:
+    """Translate scene bodies and constraints into entity summaries."""
+
+    entities: list[dict[str, Any]] = []
+
+    for body in scene.get("bodies", []):
+        body_id = body.get("id")
+        if not body_id:
+            continue
+
+        props = {
+            "mass_kg": body.get("mass_kg"),
+            "position_m": body.get("position_m"),
+            "velocity_m_s": body.get("velocity_m_s"),
+            "collider": body.get("collider"),
+            "material": body.get("material"),
+            "notes": body.get("notes"),
+        }
+
+        entities.append({
+            "segment_id": str(body_id),
+            "type": body.get("type", "body"),
+            "props": {k: v for k, v in props.items() if v is not None},
+        })
+
+    for constraint in scene.get("constraints", []):
+        constraint_id = constraint.get("id")
+        if not constraint_id:
+            continue
+
+        props = {
+            "body_a": constraint.get("body_a"),
+            "body_b": constraint.get("body_b"),
+            "anchor_m": constraint.get("anchor_m"),
+            "rope_length_m": constraint.get("rope_length_m"),
+            "notes": constraint.get("notes"),
+        }
+
+        entities.append({
+            "segment_id": f"constraint::{constraint_id}",
+            "type": constraint.get("type", "constraint"),
+            "props": {k: v for k, v in props.items() if v is not None},
+        })
+
+    return entities
 
 
 # ===========================
@@ -101,18 +190,7 @@ class InitSimStatusResponse(BaseModel):
 
 @router.post("", response_model=InitSimResponse)
 async def initialize_simulation(request: InitSimRequest):
-    """
-    Execute sequential initialization pipeline.
-    
-    Pipeline:
-    1. segment_image(image_id) → segments
-    2. label_segments(image_id, segments) → entities
-    3. validate_entities(entities) → validation
-    4. build_physics_scene(segments, entities) → scene
-    
-    Returns:
-        InitSimResponse with initialized scene ready for simulation
-    """
+    """Generate a physics scene directly from the uploaded diagram image."""
     context_store = get_context_store()
     
     # Get or create context
@@ -123,190 +201,107 @@ async def initialize_simulation(request: InitSimRequest):
                 status_code=404,
                 detail=f"Conversation {request.conversation_id} not found"
             )
+
         logger.info(f"[init_sim] Using existing conversation: {request.conversation_id}")
     else:
         context = context_store.create_context()
         logger.info(f"[init_sim] Created new conversation: {context.conversation_id}")
     
     try:
-        # ===========================
-        # Step 1: Segment Image
-        # ===========================
-        logger.info(f"[init_sim] Step 1/4: Segmenting image {request.image_id}")
-        
-        segment_result = await segment_image(SegmentImageInput(
-            image_data=request.image_id,
-            mode="polygon",
-            sam_server_url="http://localhost:9001/segment"
-        ))
-        
-        segments = [seg.dict() for seg in segment_result.segments]
-        image_metadata = segment_result.image.dict()
-        
-        logger.info(f"[init_sim] ✅ Segmentation complete: {len(segments)} segments found")
-        
-        # Update context
+        image_metadata = _load_image_metadata(request.image_id)
         context.update_pipeline_state(
             image_id=request.image_id,
             image_metadata=image_metadata,
-            segments=segments
+            segments=[],
+            detections=[],
+            entities=[],
+            entity_summary={},
+            scene=None,
         )
         context_store.update_context(context)
-        
-        if not segments:
-            return InitSimResponse(
-                status="failed",
-                conversation_id=context.conversation_id,
-                image_id=request.image_id,
-                initialization={
-                    "segments_count": 0,
-                    "entities_count": 0,
-                    "scene": None,
-                    "warnings": [],
-                    "errors": ["No segments found in image"]
-                },
-                ready_for_simulation=False
-            )
-        
-        # ===========================
-        # Step 2: Label Segments
-        # ===========================
-        logger.info(f"[init_sim] Step 2/4: Labeling {len(segments)} segments")
-        
-        label_result = await label_segments(LabelSegmentsInput(
-            image_id=request.image_id,
-            segments=segments,
-            context=request.options.get("context", ""),
-            use_vision=True
-        ))
-        
-        entities = [entity.dict() for entity in label_result.entities]
-        
-        logger.info(f"[init_sim] ✅ Labeling complete: {len(entities)} entities identified")
-        
-        # Update context
-        context.update_pipeline_state(entities=entities)
-        context_store.update_context(context)
-        
-        if not entities:
-            return InitSimResponse(
-                status="failed",
-                conversation_id=context.conversation_id,
-                image_id=request.image_id,
-                initialization={
-                    "segments_count": len(segments),
-                    "entities_count": 0,
-                    "scene": None,
-                    "warnings": [],
-                    "errors": ["No entities could be labeled from segments"]
-                },
-                ready_for_simulation=False
-            )
-        
-        # ===========================
-        # Step 3: Validate Entities
-        # ===========================
-        auto_validate = request.options.get("auto_validate", True)
-        validation = {"valid": True, "warnings": [], "errors": []}
-        
-        if auto_validate:
-            logger.info(f"[init_sim] Step 3/4: Validating {len(entities)} entities")
-            
-            # Call validate_scene_entities tool
-            validate_result = await validate_scene_entities(ValidateEntitiesInput(
-                entities=entities,
-                allow_incomplete=True
-            ))
-            
-            # Convert tool output to validation dict
-            validation = {
-                "valid": validate_result.valid,
-                "warnings": validate_result.warnings,
-                "errors": [] if validate_result.valid else ["Validation failed"]
-            }
-            
-            # Log entity summary
-            logger.info(f"[init_sim] Entity summary: {validate_result.entity_summary}")
-            if validate_result.suggestions:
-                for suggestion in validate_result.suggestions:
-                    logger.info(f"[init_sim] 💡 {suggestion}")
-            
-            if not validation["valid"]:
-                logger.error(f"[init_sim] ❌ Validation failed: {validation['errors']}")
-                return InitSimResponse(
-                    status="failed",
-                    conversation_id=context.conversation_id,
-                    image_id=request.image_id,
-                    initialization={
-                        "segments_count": len(segments),
-                        "entities_count": len(entities),
-                        "entities": entities,
-                        "scene": None,
-                        "warnings": validation["warnings"],
-                        "errors": validation["errors"]
-                    },
-                    ready_for_simulation=False
-                )
-            
-            if validation["warnings"]:
-                logger.warning(f"[init_sim] ⚠️ Validation warnings: {validation['warnings']}")
-        else:
-            logger.info(f"[init_sim] Step 3/4: Skipping validation (auto_validate=False)")
-        
-        # ===========================
-        # Step 4: Build Scene
-        # ===========================
-        logger.info(f"[init_sim] Step 4/4: Building physics scene")
-        
+
+        logger.info(f"[init_sim] Building scene for image {request.image_id}")
+
+        builder_options = dict(request.options or {})
+        default_scale = float(builder_options.get("scale_m_per_px", 0.01))
+        builder_options.setdefault("scale_m_per_px", default_scale)
+        builder_options.setdefault("mapping", {
+            "origin_mode": "image_center",
+            "scale_m_per_px": default_scale,
+        })
+        builder_options.setdefault("refinement_rounds", 1)
+
         build_result = await build_physics_scene(BuildSceneInput(
+            conversation_id=context.conversation_id,
             image=image_metadata,
-            segments=segments,
-            entities=entities,
-            mapping={
-                "origin_mode": "anchor_centered",
-                "scale_m_per_px": 0.01
-            },
-            defaults={
-                "gravity_m_s2": 9.81,
-                "time_step_s": 0.016
-            }
+            image_id=request.image_id,
+            options=builder_options,
         ))
-        
+
         scene = build_result.scene
-        build_warnings = build_result.warnings
-        
-        logger.info(f"[init_sim] ✅ Scene built: {len(scene.get('bodies', []))} bodies, {len(scene.get('constraints', []))} constraints")
-        if build_warnings:
-            logger.warning(f"[init_sim] Build warnings: {build_warnings}")
-        
-        # Combine validation and build warnings
-        all_warnings = validation["warnings"] + build_warnings
-        
-        # Update context
-        context.update_pipeline_state(scene=scene)
+        detections = build_result.detections or []
+        warnings = build_result.warnings or []
+
+        logger.info(
+            "[init_sim] ✅ Scene built: %s bodies, %s constraints",
+            len(scene.get("bodies", [])),
+            len(scene.get("constraints", [])),
+        )
+        if warnings:
+            logger.warning("[init_sim] ⚠️ Builder warnings: %s", warnings)
+
+        entities = _scene_entities(scene)
+        entity_summary: dict[str, int] = {}
+        for entity in entities:
+            entity_type = entity.get("type", "entity")
+            entity_summary[entity_type] = entity_summary.get(entity_type, 0) + 1
+
+        context.update_pipeline_state(
+            detections=detections,
+            entities=entities,
+            entity_summary=entity_summary,
+            scene=scene,
+            mapping=scene.get("mapping"),
+        )
         context_store.update_context(context)
-        
-        # ===========================
-        # Success Response
-        # ===========================
+
+        scene_log_timestamp = build_result.meta.get("scene_log_timestamp") if build_result.meta else None
+        _save_scene_visualization(
+            scene,
+            image_metadata,
+            context.conversation_id,
+            log_timestamp=scene_log_timestamp,
+        )
+
+        mapping = scene.get("mapping") or builder_options.get("mapping") or {
+            "origin_mode": "image_center",
+            "scale_m_per_px": default_scale,
+        }
+
         return InitSimResponse(
             status="initialized",
             conversation_id=context.conversation_id,
             image_id=request.image_id,
             initialization={
-                "segments_count": len(segments),
+                "segments_count": len(detections),
                 "entities_count": len(entities),
                 "entities": entities,
                 "scene": scene,
-                "warnings": all_warnings,
-                "errors": []
+                "scene_meta": build_result.meta,
+                "segments": detections,
+                "detections": detections,
+                "image": image_metadata,
+                "mapping": mapping,
+                "entity_summary": entity_summary,
+                "warnings": warnings,
+                "errors": [],
             },
-            ready_for_simulation=True
+            ready_for_simulation=True,
         )
-        
+
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception as e:  # pragma: no cover - unexpected failures bubbled as HTTP 500
         logger.error(f"[init_sim] Initialization failed: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
@@ -331,29 +326,27 @@ async def get_initialization_status(conversation_id: str):
         )
     
     # Determine current status
-    has_segments = bool(context.segments)
+    has_detections = bool(context.detections)
     has_entities = bool(context.entities)
     has_scene = bool(context.scene)
     
     if has_scene:
         status = "initialized"
         current_step = "complete"
-    elif has_entities:
+    elif has_entities or has_detections:
         status = "in_progress"
         current_step = "build"
-    elif has_segments:
-        status = "in_progress"
-        current_step = "label"
     else:
         status = "in_progress"
-        current_step = "segment"
+        current_step = "pending"
     
     return InitSimStatusResponse(
         conversation_id=conversation_id,
         status=status,
         current_step=current_step,
         progress={
-            "segments_count": len(context.segments),
+            "segments_count": len(context.detections),
+            "detections_count": len(context.detections),
             "entities_count": len(context.entities),
             "has_scene": has_scene
         }

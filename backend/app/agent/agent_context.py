@@ -7,6 +7,7 @@ Updated for Universal Builder architecture - no scene_kind field.
 
 import uuid
 from datetime import datetime
+from copy import deepcopy
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -59,6 +60,11 @@ class ConversationContext(BaseModel):
         default_factory=list,
         description="SAM segmentation results"
     )
+
+    detections: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Derived detection overlays (polygon + bbox in px)"
+    )
     
     entities: list[dict[str, Any]] = Field(
         default_factory=list,
@@ -73,6 +79,26 @@ class ConversationContext(BaseModel):
     scene: dict[str, Any] | None = Field(
         default=None,
         description="Built Scene JSON"
+    )
+
+    mapping: dict[str, Any] | None = Field(
+        default=None,
+        description="Coordinate mapping details between pixels and meters"
+    )
+
+    scene_state: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Mutable scene state used during iterative editing"
+    )
+
+    scene_history: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Chronological record of scene snapshots"
+    )
+
+    last_scene_render_path: str | None = Field(
+        default=None,
+        description="Filesystem path of most recent scene render"
     )
     
     frames: list[dict[str, Any]] = Field(
@@ -124,6 +150,96 @@ class ConversationContext(BaseModel):
             if hasattr(self, key):
                 setattr(self, key, value)
         self.updated_at = datetime.now()
+
+    # Scene editing helpers
+
+    def reset_scene_state(
+        self,
+        *,
+        world: dict[str, Any] | None = None,
+        mapping: dict[str, Any] | None = None,
+    ) -> None:
+        """Initialize the mutable scene state for iterative editing."""
+        default_world = {
+            "gravity_m_s2": 9.81,
+            "time_step_s": 0.016,
+        }
+        self.scene_state = {
+            "world": world or default_world,
+            "bodies": {},
+            "constraints": {},
+            "mapping": mapping,
+        }
+        self.scene_history = []
+        self.scene = None
+        self.mapping = mapping
+        self.updated_at = datetime.now()
+
+    def scene_snapshot(self) -> dict[str, Any]:
+        """Return the current scene state in builder schema format."""
+        if not self.scene_state:
+            self.reset_scene_state()
+        snapshot = {
+            "version": "0.6-iterative",
+            "world": deepcopy(self.scene_state.get("world", {})),
+            "bodies": list(deepcopy(self.scene_state.get("bodies", {})).values()),
+            "constraints": list(deepcopy(self.scene_state.get("constraints", {})).values()),
+            "mapping": deepcopy(self.scene_state.get("mapping")),
+        }
+        self.scene = snapshot
+        return snapshot
+
+    def record_scene_snapshot(self, note: str | None = None) -> dict[str, Any]:
+        """Persist the current scene snapshot to history with optional note."""
+        snapshot = self.scene_snapshot()
+        entry = {
+            "timestamp": datetime.now().isoformat(),
+            "note": note,
+            "scene": snapshot,
+        }
+        self.scene_history.append(entry)
+        self.updated_at = datetime.now()
+        return snapshot
+
+    def apply_scene_updates(
+        self,
+        *,
+        bodies: dict[str, dict[str, Any]] | None = None,
+        constraints: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Merge provided bodies/constraints into the mutable scene state."""
+        if not self.scene_state:
+            self.reset_scene_state()
+
+        if bodies:
+            self.scene_state.setdefault("bodies", {}).update(bodies)
+        if constraints:
+            self.scene_state.setdefault("constraints", {}).update(constraints)
+        self.updated_at = datetime.now()
+        return self.scene_snapshot()
+
+    def remove_scene_entities(
+        self,
+        *,
+        body_ids: list[str] | None = None,
+        constraint_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Remove scene entities by identifier from the mutable scene state."""
+        if not self.scene_state:
+            self.reset_scene_state()
+
+        if body_ids:
+            body_map = self.scene_state.setdefault("bodies", {})
+            for body_id in body_ids:
+                body_map.pop(body_id, None)
+
+        if constraint_ids:
+            constraint_map = self.scene_state.setdefault("constraints", {})
+            for constraint_id in constraint_ids:
+                constraint_map.pop(constraint_id, None)
+
+        self.updated_at = datetime.now()
+        return self.scene_snapshot()
 
 
 class ContextStore:

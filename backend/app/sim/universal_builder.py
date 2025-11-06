@@ -88,9 +88,10 @@ def create_body_from_entity(
         body_type = "dynamic"
         estimated_mass = estimate_mass_from_area(bbox)
         mass_kg = _coerce_positive(props.get("mass_guess_kg"), estimated_mass)
-    elif entity_type == "surface":
+    elif entity_type in {"surface", "ramp", "ground", "rope", "anchor"}:
         body_type = "static"
-        mass_kg = _coerce_positive(props.get("mass_guess_kg"), 1000.0)
+        fallback_mass = 1000.0 if entity_type in {"surface", "ground"} else 1.0
+        mass_kg = _coerce_positive(props.get("mass_guess_kg"), fallback_mass)
     elif entity_type == "pulley":
         body_type = "static"  # Pulley wheel is fixed
         mass_kg = _coerce_positive(props.get("mass_guess_kg"), 0.1)
@@ -100,21 +101,34 @@ def create_body_from_entity(
         mass_kg = _coerce_positive(props.get("mass_guess_kg"), 1.0)
     
     # Create collider from polygon or bbox
-    polygon_px = segment.get("polygon_px")
-    if polygon_px and len(polygon_px) > 3:
-        # Polygon collider (convert to meters)
-        vertices_m = [
+    raw_polygon_px = segment.get("polygon_px")
+    outline_px: List[Tuple[float, float]]
+    outline_m: List[Tuple[float, float]]
+
+    if raw_polygon_px and len(raw_polygon_px) >= 3:
+        outline_px = [(float(pt[0]), float(pt[1])) for pt in raw_polygon_px]
+        outline_m = [
             px_to_meters((pt[0], pt[1]), img_center, scale_m_per_px)
-            for pt in polygon_px
+            for pt in outline_px
         ]
         collider = {
             "type": "polygon",
-            "vertices": vertices_m
+            "vertices": [list(vertex) for vertex in outline_m]
         }
     else:
-        # Rectangle collider from bbox
-        width_m = bbox[2] * scale_m_per_px
-        height_m = bbox[3] * scale_m_per_px
+        x, y, w, h = bbox
+        outline_px = [
+            (float(x), float(y)),
+            (float(x + w), float(y)),
+            (float(x + w), float(y + h)),
+            (float(x), float(y + h))
+        ]
+        outline_m = [
+            px_to_meters(vertex, img_center, scale_m_per_px)
+            for vertex in outline_px
+        ]
+        width_m = w * scale_m_per_px
+        height_m = h * scale_m_per_px
         collider = {
             "type": "rectangle",
             "width_m": width_m,
@@ -144,6 +158,15 @@ def create_body_from_entity(
 
     if material:
         body_dict["material"] = material
+
+    body_dict["source_segment_id"] = entity.get("segment_id")
+    body_dict["geometry"] = {
+        "polygon_px": [list(vertex) for vertex in outline_px],
+        "polygon_m": [list(vertex) for vertex in outline_m],
+        "bbox_px": [float(v) for v in bbox],
+        "center_px": [float(pos_px[0]), float(pos_px[1])],
+        "center_m": [float(pos_m[0]), float(pos_m[1])],
+    }
 
     return body_dict
 
@@ -314,7 +337,16 @@ def build_scene_universal(request: Dict[str, Any]) -> Dict[str, Any]:
             "time_step_s": time_step
         },
         "bodies": bodies,
-        "constraints": constraints
+        "constraints": constraints,
+        "mapping": {
+            "scale_m_per_px": scale_m_per_px,
+            "origin_mode": mapping.get("origin_mode", "anchor_centered"),
+            "origin_px": [img_center[0], img_center[1]],
+        },
+        "image": {
+            "width_px": W,
+            "height_px": H,
+        },
     }
     
     return {

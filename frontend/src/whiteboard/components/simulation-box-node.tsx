@@ -49,15 +49,15 @@ const RESIZE_HANDLES: Array<{
     style: CSSProperties;
     cursor: CSSProperties['cursor'];
 }> = [
-    { id: 'top-left', style: { top: -HANDLE_OFFSET, left: -HANDLE_OFFSET }, cursor: 'nwse-resize' },
-    { id: 'top', style: { top: -HANDLE_OFFSET, left: '50%', transform: 'translateX(-50%)' }, cursor: 'ns-resize' },
-    { id: 'top-right', style: { top: -HANDLE_OFFSET, right: -HANDLE_OFFSET }, cursor: 'nesw-resize' },
-    { id: 'right', style: { top: '50%', right: -HANDLE_OFFSET, transform: 'translateY(-50%)' }, cursor: 'ew-resize' },
-    { id: 'bottom-right', style: { bottom: -HANDLE_OFFSET, right: -HANDLE_OFFSET }, cursor: 'nwse-resize' },
-    { id: 'bottom', style: { bottom: -HANDLE_OFFSET, left: '50%', transform: 'translateX(-50%)' }, cursor: 'ns-resize' },
-    { id: 'bottom-left', style: { bottom: -HANDLE_OFFSET, left: -HANDLE_OFFSET }, cursor: 'nesw-resize' },
-    { id: 'left', style: { top: '50%', left: -HANDLE_OFFSET, transform: 'translateY(-50%)' }, cursor: 'ew-resize' },
-];
+        { id: 'top-left', style: { top: -HANDLE_OFFSET, left: -HANDLE_OFFSET }, cursor: 'nwse-resize' },
+        { id: 'top', style: { top: -HANDLE_OFFSET, left: '50%', transform: 'translateX(-50%)' }, cursor: 'ns-resize' },
+        { id: 'top-right', style: { top: -HANDLE_OFFSET, right: -HANDLE_OFFSET }, cursor: 'nesw-resize' },
+        { id: 'right', style: { top: '50%', right: -HANDLE_OFFSET, transform: 'translateY(-50%)' }, cursor: 'ew-resize' },
+        { id: 'bottom-right', style: { bottom: -HANDLE_OFFSET, right: -HANDLE_OFFSET }, cursor: 'nwse-resize' },
+        { id: 'bottom', style: { bottom: -HANDLE_OFFSET, left: '50%', transform: 'translateX(-50%)' }, cursor: 'ns-resize' },
+        { id: 'bottom-left', style: { bottom: -HANDLE_OFFSET, left: -HANDLE_OFFSET }, cursor: 'nesw-resize' },
+        { id: 'left', style: { top: '50%', left: -HANDLE_OFFSET, transform: 'translateY(-50%)' }, cursor: 'ew-resize' },
+    ];
 
 export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxNodeProps) {
     const {
@@ -68,13 +68,13 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
     } = useWhiteboardStore();
     const globalChat = useGlobalChat();
     const [objectPosition, setObjectPosition] = useState<SimulationObjectPosition>({ x: 0, y: 0 });
-    
+
     // Get all simulation boxes for context insertion
     const availableBoxes = orderedNodeIds
         .map(id => nodes[id])
         .filter((n): n is SimulationBoxNodeType => n?.type === 'simulation-box' && n.id !== node.id)
         .map(n => ({ id: n.id, name: n.name }));
-    
+
     // Simulation context (global for now - will be per-box in future)
     const {
         frames,
@@ -82,13 +82,13 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
         currentIndex,
         setPlaying,
         resetSimulation,
-        dt,
         updateConfig,
+        setFrameIndex,
     } = useSimulation();
-    
-    // Local state for playback speed (multiplier on dt)
+
+    // Local state for playback speed (multiplier on playback cadence)
     const [playbackSpeed, setPlaybackSpeed] = useState(1);
-    
+
     // Agent integration
     const {
         conversationId,
@@ -99,7 +99,7 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
         uploadImage,
         sendMessage,
         inspectSimulation,
-        
+
         // v0.5 New
         isInitialized,
         readyForSimulation,
@@ -121,7 +121,7 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
             });
         },
     });
-    
+
     const [showChat, setShowChat] = useState(false);
     const [isEditingName, setIsEditingName] = useState(false);
     const [boxName, setBoxName] = useState(node.name || '');
@@ -136,27 +136,21 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
     }, [resetSimulation]);
 
     const handleStep = useCallback(() => {
-        // Step forward one frame (not implemented in context yet)
-        // For now, we can temporarily set playing and let it advance
         if (currentIndex < frames.length - 1) {
-            setPlaying(true);
-            setTimeout(() => setPlaying(false), dt * 1000);
+            setPlaying(false);
+            setFrameIndex(currentIndex + 1);
         }
-    }, [currentIndex, frames.length, setPlaying, dt]);
+    }, [currentIndex, frames.length, setFrameIndex, setPlaying]);
 
     const handleFrameChange = useCallback((frameIndex: number) => {
-        // Direct frame navigation (not exposed by context)
-        // We'd need to add setCurrentIndex to context
-        // For now, this is a placeholder
-        console.log('[SimulationBox] Frame navigation not yet implemented:', frameIndex);
-    }, []);
+        setPlaying(false);
+        setFrameIndex(frameIndex);
+    }, [setFrameIndex, setPlaying]);
 
     const handleSpeedChange = useCallback((speed: number) => {
         setPlaybackSpeed(speed);
-        // Adjust dt based on speed multiplier
-        // Note: This inverts the relationship - higher speed = smaller dt
-        const baseDt = 0.02; // Base dt from initial config
-        updateConfig({ dt: baseDt / speed });
+        // Adjust integrator step based on speed multiplier; higher speed = smaller dt
+        updateConfig({ dt: 0.02 / speed });
     }, [updateConfig]);
 
     const draggable = mode === 'pan';
@@ -448,7 +442,7 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
             >
                 <div className="flex items-center gap-2 text-muted-foreground flex-1">
                     <GripHorizontal className="h-3 w-3" />
-                    
+
                     {/* Editable Box Name */}
                     {isEditingName ? (
                         <Input
@@ -476,7 +470,7 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
                             data-node-action="true"
                         />
                     ) : (
-                        <span 
+                        <span
                             className="cursor-text hover:text-foreground transition-colors"
                             onDoubleClick={(e) => {
                                 e.stopPropagation();
@@ -487,7 +481,7 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
                             {node.name || 'Simulation Box'}
                         </span>
                     )}
-                    
+
                     {agentState && (
                         <span className="text-[10px] bg-primary/20 px-1.5 py-0.5 rounded">
                             {agentState.scene_kind || `${agentState.entities_count} entities`}
@@ -496,7 +490,7 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
                 </div>
                 <div className="flex items-center gap-1">
                     {/* Upload image for agent context */}
-                    <label
+                    {/* <label
                         className="rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground cursor-pointer bg-background"
                         data-node-action="true"
                     >
@@ -518,24 +512,10 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
                             }}
                             disabled={agentLoading}
                         />
-                    </label>
-                    
-                    {/* v0.5 Convert Simulation Button */}
-                    {readyForSimulation && !frames.length && (
-                        <button
-                            type="button"
-                            className="rounded px-2 py-1 text-xs font-medium bg-primary text-primary-foreground transition-colors hover:bg-primary/90"
-                            onClick={runSimulation}
-                            aria-label="Convert to simulation"
-                            data-node-action="true"
-                            disabled={agentLoading}
-                        >
-                            ▶️ Convert Simulation
-                        </button>
-                    )}
-                    
+                    </label> */}
+
                     {/* Inspect Simulation */}
-                    {conversationId && (
+                    {/* {conversationId && (
                         <button
                             type="button"
                             className="rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground bg-background"
@@ -546,10 +526,10 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
                         >
                             <FlaskConical className="h-3.5 w-3.5" />
                         </button>
-                    )}
-                    
+                    )} */}
+
                     {/* Chat with Agent */}
-                    {conversationId && (
+                    {/* {conversationId && (
                         <button
                             type="button"
                             className={cn(
@@ -563,7 +543,7 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
                             <MessageSquare className="h-3.5 w-3.5" />
                         </button>
                     )}
-                    
+                     */}
                     {/* Remove Box */}
                     <button
                         type="button"
@@ -589,14 +569,14 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
                         {agentError}
                     </div>
                 )}
-                
+
                 {/* Agent Loading Overlay */}
                 {agentLoading && (
                     <div className="absolute inset-0 z-10 bg-background/50 flex items-center justify-center">
                         <div className="text-sm text-muted-foreground">Agent processing...</div>
                     </div>
                 )}
-                
+
                 {/* Agent Chat Panel */}
                 {showChat && (
                     <AgentChatPanel
@@ -609,7 +589,7 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
                         availableBoxes={availableBoxes}
                     />
                 )}
-                
+
                 {/* Simulation Viewport */}
                 <div className="flex flex-col h-full relative z-10">
                     <div className="flex-1 overflow-hidden">
@@ -620,7 +600,7 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
                             dimensions={{ width: node.bounds.width, height: Math.max(MIN_BOUNDS.height - HEADER_HEIGHT, node.bounds.height - HEADER_HEIGHT) }}
                         />
                     </div>
-                    
+
                     {/* Simulation Playback Controls */}
                     {frames.length > 0 && (
                         <div className="border-t border-border bg-background/95 p-2" data-node-action="true">
