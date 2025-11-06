@@ -1,17 +1,14 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState, ReactNode } from 'react';
-import { simulatePulleyAnalytic } from '@/simulation/pulleyAnalytic';
 import type { SimulationFrame } from '@/simulation/types';
 import { parseDiagram, type DiagramParseDetection, type DiagramParseResponse } from '@/lib/api';
 
 export interface SimulationConfig {
-  massA: number;
-  massB: number;
+  // Universal physics config (not pulley-specific)
   gravity: number;
-  wheelRadius: number;
-  dt: number; // integrator dt for analytic playback
-  friction: number; // kinetic friction (not exposed in current UI; default 0.5 for test1.jpg)
+  dt: number; // integrator dt for playback
+  friction: number; // default friction coefficient
   duration: number;
 }
 
@@ -22,10 +19,10 @@ interface SimulationState extends SimulationConfig {
   acceleration?: number;
   tension?: number;
   staticCondition?: boolean;
-  runAnalytic: () => void;
   resetSimulation: () => void;
   setPlaying: (p: boolean) => void;
   updateConfig: (partial: Partial<SimulationConfig>) => void;
+  updateSceneAndResimulate: (sceneUpdates: any) => Promise<void>; // Universal scene update
   detections: DiagramParseDetection[];
   imageSizePx: { width: number; height: number } | null;
   scale_m_per_px: number | null;
@@ -38,10 +35,7 @@ const SimulationContext = createContext<SimulationState | null>(null);
 
 export function SimulationProvider({ children }: { children: ReactNode }) {
   const [config, setConfig] = useState<SimulationConfig>({
-    massA: 3,
-    massB: 6,
     gravity: 10,
-    wheelRadius: 0.1,
     dt: 0.02,
     friction: 0.5,
     duration: 2,
@@ -59,24 +53,6 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
   const [scene, setScene] = useState<any | null>(null);
   const [labels, setLabels] = useState<{ entities: Array<{ segment_id: string; label: string; props?: Record<string, unknown> }> } | null>(null);
 
-  const runAnalytic = useCallback(() => {
-    const result = simulatePulleyAnalytic({
-      m1_kg: config.massA,
-      m2_kg: config.massB,
-      mu_k: config.friction,
-      g: config.gravity,
-      timeStep_s: config.dt,
-      totalTime_s: config.duration,
-    });
-    setFrames(result.frames);
-    setAcceleration(result.acceleration_m_s2);
-    setTension(result.tension_N);
-    setStaticCondition(result.staticCondition);
-    setCurrentIndex(0);
-    setPlaying(true);
-    lastTimestamp.current = null;
-  }, [config]);
-
   const resetSimulation = useCallback(() => {
     console.log('[SimulationContext] resetSimulation called');
     // Stop playback and reset to beginning
@@ -89,6 +65,28 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
   const updateConfig = useCallback((partial: Partial<SimulationConfig>) => {
     setConfig(prev => ({ ...prev, ...partial }));
   }, []);
+
+  // NEW: Update scene and re-run Matter.js simulation
+  const updateSceneAndResimulate = useCallback(async (sceneUpdates: any) => {
+    if (!scene) {
+      console.warn('[SimulationContext] No scene to update');
+      return;
+    }
+
+    // TODO: Call backend API when available
+    // For now, just update local scene state
+    const updatedScene = { ...scene, ...sceneUpdates };
+    setScene(updatedScene);
+    
+    console.log('[SimulationContext] Scene updated, waiting for backend API to resimulate', updatedScene);
+    // Backend API call will go here:
+    // const response = await fetch('/api/simulation/update', {
+    //   method: 'POST',
+    //   body: JSON.stringify({ scene: updatedScene })
+    // });
+    // const { frames } = await response.json();
+    // setFrames(frames);
+  }, [scene]);
 
   const parseAndBind = useCallback(async (file: File): Promise<DiagramParseResponse> => {
     // Reset state before parsing
@@ -138,18 +136,11 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
       console.log('Rapier simulation summary', sim);
       return res;
     }
-    // Bind parameters to current config
-    setConfig(prev => ({
-      ...prev,
-      massA: res.parameters.massA_kg,
-      massB: res.parameters.massB_kg,
-      gravity: res.parameters.gravity_m_s2,
-      friction: res.parameters.mu_k,
-    }));
-    // Optional: rerun analytic with new params
-    runAnalytic();
+    
+    // No backend frames - scene uploaded but simulation not run yet
+    console.warn('[SimulationContext] No simulation frames from backend. Upload with simulate=true or wait for Matter.js worker.');
     return res;
-  }, [runAnalytic]);
+  }, []);
 
   // Playback loop
   useEffect(() => {
@@ -181,10 +172,10 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     acceleration,
     tension,
     staticCondition,
-    runAnalytic,
     resetSimulation,
     setPlaying,
     updateConfig,
+    updateSceneAndResimulate,
     detections,
     imageSizePx,
     scale_m_per_px,
