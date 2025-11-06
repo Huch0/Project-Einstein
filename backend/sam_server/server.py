@@ -18,8 +18,8 @@ import numpy as np
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-MODEL_VARIANT = "vit_b"  # vit_b, vit_l, vit_h
-CHECKPOINT_PATH = "weights/sam_vit_b.pth"  # update if using another variant
+MODEL_VARIANT = "vit_h"  # vit_b, vit_l, vit_h
+CHECKPOINT_PATH = "weights/sam_vit_h.pth"  # update if using another variant
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 app = FastAPI(title="SAM HTTP Server", version="0.1.0")

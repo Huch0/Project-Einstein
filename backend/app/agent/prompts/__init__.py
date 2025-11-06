@@ -35,6 +35,12 @@ def get_agent_system_prompt() -> str:
     return config["system_prompt"]
 
 
+def get_ask_system_prompt() -> str:
+    """Get the ASK mode system prompt (educational tutor)."""
+    config = load_prompt("ask_system")
+    return config["system_prompt"]
+
+
 def get_labeler_system_prompt() -> str:
     """Get the labeler system prompt."""
     config = load_prompt("labeler_system")
