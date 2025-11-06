@@ -15,6 +15,12 @@ import {
 import { calculateImageNodeBounds, getImageContentHeight } from '@/whiteboard/utils';
 import type { CameraState, ImageNode as ImageNodeType, InteractionMode } from '@/whiteboard/types';
 import { useSimulation } from '@/simulation/SimulationContext';
+import {
+    uploadDiagram,
+    sendInitSimulation,
+    type InitSimRequest,
+} from '@/lib/agent-api';
+import { runMatterSimulation } from '@/simulation/matterRunner';
 
 interface ImageNodeProps {
     node: ImageNodeType;
@@ -58,7 +64,7 @@ export default function ImageNode({ node, mode, camera }: ImageNodeProps) {
         createSimulationBox,
         state: { selection },
     } = useWhiteboardStore();
-    const { parseAndBind } = useSimulation();
+    const { loadSimulationRun } = useSimulation();
 
     const replaceInputRef = useRef<HTMLInputElement>(null);
     const draggable = mode === 'pan';
@@ -142,12 +148,76 @@ export default function ImageNode({ node, mode, camera }: ImageNodeProps) {
         setConversionError(null);
         try {
             const imageFile = await dataUrlToFile(node.source.uri);
-            const response = await parseAndBind(imageFile);
+            const { image_id, width_px, height_px } = await uploadDiagram(imageFile);
+
+            const initRequest: InitSimRequest = {
+                image_id,
+            };
+            console.debug('[ImageNode] /init_sim request sent')
+
+            const initResponse = await sendInitSimulation(initRequest);
+            // eslint-disable-next-line no-console
+            console.debug('[ImageNode] /init_sim response', initResponse);
+            if (initResponse.status !== 'initialized') {
+                const details = initResponse.initialization.errors?.join(', ') || 'Unknown error';
+                throw new Error(`Initialization failed: ${details}`);
+            }
+
+            if (!initResponse.ready_for_simulation) {
+                throw new Error('Initialization incomplete. The scene is not ready for simulation.');
+            }
+
+            const scene = initResponse.initialization.scene as any;
+            if (!scene) {
+                throw new Error('Initialization did not return a physics scene.');
+            }
+
+            const defaultDuration = typeof scene?.world?.simulation_duration_s === 'number'
+                ? scene.world.simulation_duration_s
+                : undefined;
+
+            const localSimulation = runMatterSimulation(scene, {
+                duration_s: defaultDuration,
+            });
+
+            const frames = localSimulation.frames;
+            const framesCount = frames.length;
+            const totalSimTime = framesCount > 0 ? frames[framesCount - 1].t : defaultDuration;
+
+            const labelEntities = initResponse.initialization.entities
+                ? initResponse.initialization.entities.map((entity) => ({
+                      segment_id: entity.segment_id,
+                      label: entity.type,
+                      props: entity.props,
+                  }))
+                : undefined;
+
+            const scaleMetersPerPx = typeof (scene as any)?.mapping?.scale_m_per_px === 'number'
+                ? (scene as any).mapping.scale_m_per_px
+                : null;
+
+            await loadSimulationRun({
+                frames,
+                meta: {
+                    frames_count: framesCount,
+                    simulation_time_s: totalSimTime,
+                    time_step_s: localSimulation.dt,
+                },
+                scene,
+                imageSizePx:
+                    typeof width_px === 'number' && typeof height_px === 'number'
+                        ? { width: width_px, height: height_px }
+                        : null,
+                scale_m_per_px: scaleMetersPerPx,
+                labels: labelEntities
+                    ? {
+                          entities: labelEntities,
+                      }
+                    : null,
+            });
+
             const width = Math.max(SIMULATION_BOX_MIN_WIDTH, node.bounds.width);
             const height = Math.max(SIMULATION_BOX_MIN_HEIGHT, node.bounds.height);
-            const framesCount = Array.isArray(((response.meta as any)?.simulation as any)?.frames)
-                ? (((response.meta as any).simulation as any).frames as unknown[]).length
-                : 0;
             const horizontalSpacing = 32;
             const simNodeId = createSimulationBox({
                 transform: {
@@ -158,12 +228,33 @@ export default function ImageNode({ node, mode, camera }: ImageNodeProps) {
                 metadata: {
                     sourceImageNodeId: node.id,
                     conversion: {
-                        framesCount,
-                        imageWidth: response.image.width_px,
-                        imageHeight: response.image.height_px,
-                    },
+                            framesCount,
+                            imageWidth: width_px,
+                            imageHeight: height_px,
+                            conversationId: initResponse.conversation_id,
+                            imageId: initResponse.image_id,
+                            warnings: initResponse.initialization.warnings,
+                        },
                 },
             });
+
+            updateNode(simNodeId, (current) => {
+                if (current.type !== 'simulation-box') {
+                    return current;
+                }
+                return {
+                    ...current,
+                    conversationId: initResponse.conversation_id,
+                    agentState: {
+                        segments_count: initResponse.initialization.segments_count,
+                        entities_count: initResponse.initialization.entities_count,
+                        scene_kind: (initResponse.initialization.scene as any)?.kind,
+                        has_scene: !!initResponse.initialization.scene,
+                        frames_count: framesCount,
+                    },
+                };
+            });
+
             setSelection([simNodeId]);
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Conversion failed';
@@ -180,8 +271,9 @@ export default function ImageNode({ node, mode, camera }: ImageNodeProps) {
         node.id,
         node.source.uri,
         node.transform,
-        parseAndBind,
+        loadSimulationRun,
         setSelection,
+        updateNode,
     ]);
 
     const isInteractiveTarget = (target: EventTarget | null) => {

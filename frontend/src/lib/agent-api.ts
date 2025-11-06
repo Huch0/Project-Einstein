@@ -58,6 +58,36 @@ export interface AgentContext {
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
+export interface UploadDiagramResult {
+  image_id: string;
+  width_px?: number;
+  height_px?: number;
+}
+
+/**
+ * Upload a diagram image and return its identifier.
+ */
+export async function uploadDiagram(imageFile: File): Promise<UploadDiagramResult> {
+  const formData = new FormData();
+  formData.append('file', imageFile);
+
+  const response = await fetch(`${API_BASE}/diagram/upload`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    throw new Error(`Image upload failed: ${response.statusText}`);
+  }
+
+  const payload = await response.json().catch(() => ({ image_id: undefined }));
+  if (!payload?.image_id) {
+    throw new Error('Upload response did not include an image_id');
+  }
+
+  return payload as UploadDiagramResult;
+}
+
 /**
  * Send message to agent chat endpoint.
  */
@@ -121,20 +151,7 @@ export async function startAgentSimulation(
   imageFile: File,
   conversationId?: string
 ): Promise<AgentChatResponse> {
-  // Upload image to backend first
-  const formData = new FormData();
-  formData.append('file', imageFile);
-  
-  const uploadResponse = await fetch(`${API_BASE}/diagram/upload`, {
-    method: 'POST',
-    body: formData,
-  });
-  
-  if (!uploadResponse.ok) {
-    throw new Error(`Image upload failed: ${uploadResponse.statusText}`);
-  }
-  
-  const { image_id } = await uploadResponse.json();
+  const { image_id } = await uploadDiagram(imageFile);
 
   return sendAgentMessage({
     message: 'Analyze this physics diagram and create a simulation.',
