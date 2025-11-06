@@ -111,3 +111,12 @@ This server returns bounding boxes for each generated mask. The main backend cur
 - If model not found: ensure weights file path is correct.
 
 uv run --active uvicorn server:app --host 0.0.0.0 --port 9001
+
+# 1️⃣ 빌드
+docker build -t sam-server:cu121 .
+
+# 2️⃣ 실행 (GPU 연결)
+docker run -it --rm --gpus "device=0" \
+    -p 9001:9001 \
+    -v $(pwd)/weights:/app/weights \
+    sam-server:cu121
