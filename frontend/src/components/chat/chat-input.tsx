@@ -22,7 +22,7 @@ export function ChatInput({
     isLoading, 
     placeholder,
     onImageSelect,
-    selectedImage 
+    selectedImage
 }: ChatInputProps) {
     const fileInputRef = useRef<HTMLInputElement>(null);
     const [previewUrl, setPreviewUrl] = useState<string | null>(null);

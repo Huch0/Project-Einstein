@@ -4,100 +4,147 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import { Slider } from '@/components/ui/slider';
-import { Play, Pause, StepForward, RotateCcw } from 'lucide-react';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { Play, Pause, StepForward, RotateCcw, Box } from 'lucide-react';
 import { useMemo, useState } from 'react';
-import { examplePulleyScene, Scene } from '@/simulation/types';
 import { useSimulation } from '@/simulation/SimulationContext';
+import { useGlobalChat } from '@/contexts/global-chat-context';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 
-type Scope = 'global' | 'A' | 'B';
+type Scope = 'global' | 'entity';
 
 export default function ParametersPanel() {
-  const { massA, massB, gravity, wheelRadius, dt, updateConfig, runAnalytic, resetSimulation, playing, setPlaying, scene, labels } = useSimulation();
-  const [localScene, setLocalScene] = useState<Scene | null>(null);
+  const { 
+    gravity, dt, 
+    updateConfig, resetSimulation, 
+    playing, setPlaying, scene, labels,
+    updateSceneAndResimulate
+  } = useSimulation();
+  const globalChat = useGlobalChat();
   const [scope, setScope] = useState<Scope>('global');
+  const [selectedBoxId, setSelectedBoxId] = useState<string | null>(null);
+  const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
+  
+  // Physics parameters (must be at top level, not conditionally called)
+  const [friction, setFriction] = useState(0.5);
+  const [restitution, setRestitution] = useState(0.3);
+  const [density, setDensity] = useState(1.0);
 
-  const rebuildScene = (overrides: Partial<{ mass_a_kg: number; mass_b_kg: number; gravity: number; wheel_radius_m: number }>) => {
-    // If backend scene exists, we can just adjust local preview
-    // NOTE: Do NOT call runAnalytic() here - it would replace Matter.js frames with analytic!
-    // User needs to re-upload image to get new physics simulation with updated parameters
-    const base = localScene ?? (scene as Scene | null);
-    const next = base ?? examplePulleyScene({
-      mass_a_kg: overrides.mass_a_kg ?? massA,
-      mass_b_kg: overrides.mass_b_kg ?? massB,
-      gravity: overrides.gravity ?? gravity,
-      wheel_radius_m: overrides.wheel_radius_m ?? wheelRadius,
-    });
-    setLocalScene(next);
-    // Do NOT run analytic here - let user re-upload for new simulation
-  };
+  // Get simulation boxes from GlobalChatContext
+  const simulationBoxes = useMemo(() => {
+    return Array.from(globalChat.simulationBoxes.values());
+  }, [globalChat.simulationBoxes]);
 
-  // Derive simple entity mapping for display (A/B masses, pulley)
-  const entityMap = useMemo(() => {
-    const entities = labels?.entities ?? [];
-    const masses = entities.filter(e => (e.label || '').toLowerCase() === 'mass');
-    const pulley = entities.find(e => (e.label || '').toLowerCase() === 'pulley');
-    // Left/right by segment center x if segments present
-    return { masses, pulley };
-  }, [labels]);
+  // Get selected box data
+  const selectedBox = useMemo(() => {
+    if (!selectedBoxId) return null;
+    return globalChat.simulationBoxes.get(selectedBoxId);
+  }, [selectedBoxId, globalChat.simulationBoxes]);
+
+  // Get entities from selected box or fallback to current scene
+  const entities = useMemo(() => {
+    // For now, use labels.entities as before
+    // TODO: Fetch from selectedBox.conversationId context
+    return labels?.entities ?? [];
+  }, [labels, selectedBox]);
 
   return (
     <Card className="h-full flex flex-col">
       <CardHeader className="space-y-4">
+        {/* Simulation Box Selector */}
+        <div className="space-y-2">
+          <Label>Simulation Box</Label>
+          <Select value={selectedBoxId ?? ''} onValueChange={(value) => {
+            setSelectedBoxId(value);
+            setSelectedEntityId(null); // Reset entity selection
+          }}>
+            <SelectTrigger>
+              <SelectValue placeholder="Select a simulation box..." />
+            </SelectTrigger>
+            <SelectContent>
+              {simulationBoxes.length === 0 ? (
+                <div className="p-2 text-sm text-muted-foreground">No simulation boxes available</div>
+              ) : (
+                simulationBoxes.map((box) => (
+                  <SelectItem key={box.id} value={box.id}>
+                    🔷 {box.name}
+                  </SelectItem>
+                ))
+              )}
+            </SelectContent>
+          </Select>
+        </div>
+
         <div className="flex items-center justify-between">
           <CardTitle className="font-headline text-lg">Controls & Parameters</CardTitle>
           {labels && labels.entities?.length ? (
             <div className="flex gap-1 rounded-md border bg-background p-1">
               <Button type="button" variant={scope === 'global' ? 'default' : 'ghost'} size="sm" onClick={() => setScope('global')} aria-pressed={scope==='global'}>Global</Button>
-              <Button type="button" variant={scope === 'A' ? 'default' : 'ghost'} size="sm" onClick={() => setScope('A')} aria-pressed={scope==='A'}>A</Button>
-              <Button type="button" variant={scope === 'B' ? 'default' : 'ghost'} size="sm" onClick={() => setScope('B')} aria-pressed={scope==='B'}>B</Button>
+              <Button type="button" variant={scope === 'entity' ? 'default' : 'ghost'} size="sm" onClick={() => setScope('entity')} aria-pressed={scope==='entity'} disabled={entities.length === 0}>Entity</Button>
             </div>
           ) : null}
         </div>
       </CardHeader>
-      <CardContent className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-6">
-        {!scene ? (
-          <div className="col-span-1 md:col-span-2 flex items-center justify-center text-sm text-muted-foreground">
-            Upload an image to enable Controls & Parameters.
-          </div>
-        ) : !labels || !labels.entities?.length ? (
-          <div className="col-span-1 md:col-span-2 flex items-center justify-center text-sm text-muted-foreground">
-            Analyzing diagram… parameters will appear after labeling.
-          </div>
-        ) : (
-        <>
-        <div className="space-y-4">
-          <h3 className="font-medium text-sm text-muted-foreground">Simulation Controls</h3>
-          <div className="grid grid-cols-4 gap-2">
-            <Button variant="outline" size="icon" aria-label="Play" onClick={() => { setPlaying(true); }} disabled={playing}>
-              <Play className="h-4 w-4" />
-            </Button>
-            <Button variant="outline" size="icon" aria-label="Pause" onClick={() => setPlaying(false)} disabled={!playing}>
-              <Pause className="h-4 w-4" />
-            </Button>
-            <Button variant="outline" size="icon" aria-label="Step Forward">
-              <StepForward className="h-4 w-4" />
-            </Button>
-            <Button variant="outline" size="icon" aria-label="Reset" onClick={() => resetSimulation()}>
-              <RotateCcw className="h-4 w-4" />
-            </Button>
-          </div>
-        </div>
-        <div className="space-y-6">
-          {scope === 'global' && (
-            <>
-              <div className="grid gap-2">
-                <div className="flex justify-between items-center">
-                  <Label htmlFor="gravity">Gravity</Label>
-                  <span className="text-sm text-muted-foreground">{gravity.toFixed(2)} m/s²</span>
+      <CardContent className="flex-1 overflow-hidden p-0">
+        <ScrollArea className="h-full px-6 py-4">
+          {!scene ? (
+            <div className="flex items-center justify-center text-sm text-muted-foreground py-8">
+              Upload an image to enable Controls & Parameters.
+            </div>
+          ) : !labels || !labels.entities?.length ? (
+            <div className="flex items-center justify-center text-sm text-muted-foreground py-8">
+              Analyzing diagram… parameters will appear after labeling.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="space-y-4">
+                <h3 className="font-medium text-sm text-muted-foreground">Simulation Controls</h3>
+                <div className="grid grid-cols-4 gap-2">
+                  <Button variant="outline" size="icon" aria-label="Play" onClick={() => { setPlaying(true); }} disabled={playing}>
+                    <Play className="h-4 w-4" />
+                  </Button>
+                  <Button variant="outline" size="icon" aria-label="Pause" onClick={() => setPlaying(false)} disabled={!playing}>
+                    <Pause className="h-4 w-4" />
+                  </Button>
+                  <Button variant="outline" size="icon" aria-label="Step Forward">
+                    <StepForward className="h-4 w-4" />
+                  </Button>
+                  <Button variant="outline" size="icon" aria-label="Reset" onClick={() => resetSimulation()}>
+                    <RotateCcw className="h-4 w-4" />
+                  </Button>
                 </div>
-                <Slider id="gravity" value={[gravity]} max={20} step={0.1} onValueChange={(v) => { const g = v[0]; updateConfig({ gravity: g }); rebuildScene({ gravity: g }); }} />
               </div>
-              <div className="grid gap-2">
+              <div className="space-y-6">{scope === 'global' && (
+            <>
+                            <div className="grid gap-2">
                 <div className="flex justify-between items-center">
-                  <Label htmlFor="wheelRadius">Wheel Radius (m)</Label>
-                  <span className="text-sm text-muted-foreground">{wheelRadius.toFixed(3)}</span>
+                  <Label htmlFor="gravity">Gravity (m/s²)</Label>
+                  <span className="text-sm text-muted-foreground">{gravity.toFixed(1)}</span>
                 </div>
-                <Slider id="wheelRadius" value={[wheelRadius]} min={0.05} max={0.5} step={0.01} onValueChange={(v) => { const r = v[0]; updateConfig({ wheelRadius: r }); rebuildScene({ wheel_radius_m: r }); }} />
+                <Slider 
+                  id="gravity" 
+                  value={[gravity]} 
+                  max={20} 
+                  step={0.1} 
+                  onValueChange={(v) => { 
+                    const g = v[0]; 
+                    updateConfig({ gravity: g });
+                    // Update scene world settings
+                    if (scene?.world) {
+                      const updatedScene = {
+                        ...scene,
+                        world: { ...scene.world, gravity_m_s2: g }
+                      };
+                      updateSceneAndResimulate(updatedScene);
+                    }
+                  }} 
+                />
               </div>
               <div className="grid gap-2">
                 <div className="flex justify-between items-center">
@@ -108,32 +155,148 @@ export default function ParametersPanel() {
               </div>
             </>
           )}
-          {scope === 'A' && (
-            <div className="grid gap-2">
-              <div className="flex justify-between items-center">
-                <Label htmlFor="massA">Mass A (kg)</Label>
-                <span className="text-sm text-muted-foreground">{massA.toFixed(2)}</span>
+          {scope === 'entity' && entities.length > 0 && (
+            <>
+              {/* Entity Selector */}
+              <div className="space-y-2">
+                <Label>Select Entity</Label>
+                <Select value={selectedEntityId ?? ''} onValueChange={setSelectedEntityId}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select an entity..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {entities.map((entity) => (
+                      <SelectItem key={entity.segment_id} value={entity.segment_id}>
+                        {entity.label} (ID: {entity.segment_id})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
-              <Slider id="massA" value={[massA]} min={0.1} max={20} step={0.1} onValueChange={(v) => { const m = v[0]; updateConfig({ massA: m }); rebuildScene({ mass_a_kg: m }); }} />
-            </div>
-          )}
-          {scope === 'B' && (
-            <div className="grid gap-2">
-              <div className="flex justify-between items-center">
-                <Label htmlFor="massB">Mass B (kg)</Label>
-                <span className="text-sm text-muted-foreground">{massB.toFixed(2)}</span>
-              </div>
-              <Slider id="massB" value={[massB]} min={0.1} max={20} step={0.1} onValueChange={(v) => { const m = v[0]; updateConfig({ massB: m }); rebuildScene({ mass_b_kg: m }); }} />
-            </div>
+
+              {/* Entity Parameters */}
+              {selectedEntityId && (() => {
+                const entity = entities.find(e => e.segment_id === selectedEntityId);
+                if (!entity) return null;
+                
+                // Get mass from scene.bodies (pure universal approach)
+                const sceneBody = scene?.bodies?.find((b: any) => b.id === entity.segment_id);
+                const currentMass = sceneBody?.mass_kg ?? 3.0; // Default 3kg if not found
+
+                return (
+                  <div className="space-y-4">
+                    {/* Mass Parameter */}
+                    <div className="grid gap-2">
+                      <div className="flex justify-between items-center">
+                        <Label htmlFor={`mass-${entity.segment_id}`}>Mass (kg)</Label>
+                        <span className="text-sm text-muted-foreground">{currentMass.toFixed(2)}</span>
+                      </div>
+                      <Slider 
+                        id={`mass-${entity.segment_id}`}
+                        value={[currentMass]} 
+                        min={0.1} 
+                        max={20} 
+                        step={0.1} 
+                        onValueChange={(v) => { 
+                          const m = v[0];
+                          // Update scene body mass (universal approach only)
+                          if (scene?.bodies) {
+                            const updatedBodies = scene.bodies.map((b: any) => 
+                              b.id === entity.segment_id ? { ...b, mass_kg: m } : b
+                            );
+                            updateSceneAndResimulate({ ...scene, bodies: updatedBodies });
+                          }
+                        }} 
+                      />
+                    </div>
+
+                    {/* Friction Parameter */}
+                    <div className="grid gap-2">
+                      <div className="flex justify-between items-center">
+                        <Label htmlFor={`friction-${entity.segment_id}`}>Friction</Label>
+                        <span className="text-sm text-muted-foreground">{(sceneBody?.material?.friction ?? friction).toFixed(2)}</span>
+                      </div>
+                      <Slider 
+                        id={`friction-${entity.segment_id}`}
+                        value={[sceneBody?.material?.friction ?? friction]} 
+                        min={0} 
+                        max={1} 
+                        step={0.01} 
+                        onValueChange={(v) => { 
+                          setFriction(v[0]);
+                          // Update scene body material
+                          if (scene?.bodies) {
+                            const updatedBodies = scene.bodies.map((b: any) => 
+                              b.id === entity.segment_id 
+                                ? { ...b, material: { ...b.material, friction: v[0] } } 
+                                : b
+                            );
+                            updateSceneAndResimulate({ ...scene, bodies: updatedBodies });
+                          }
+                        }} 
+                      />
+                    </div>
+
+                    {/* Restitution Parameter */}
+                    <div className="grid gap-2">
+                      <div className="flex justify-between items-center">
+                        <Label htmlFor={`restitution-${entity.segment_id}`}>Restitution (Bounciness)</Label>
+                        <span className="text-sm text-muted-foreground">{(sceneBody?.material?.restitution ?? restitution).toFixed(2)}</span>
+                      </div>
+                      <Slider 
+                        id={`restitution-${entity.segment_id}`}
+                        value={[sceneBody?.material?.restitution ?? restitution]} 
+                        min={0} 
+                        max={1} 
+                        step={0.01} 
+                        onValueChange={(v) => { 
+                          setRestitution(v[0]);
+                          // Update scene body material
+                          if (scene?.bodies) {
+                            const updatedBodies = scene.bodies.map((b: any) => 
+                              b.id === entity.segment_id 
+                                ? { ...b, material: { ...b.material, restitution: v[0] } } 
+                                : b
+                            );
+                            updateSceneAndResimulate({ ...scene, bodies: updatedBodies });
+                          }
+                        }} 
+                      />
+                    </div>
+
+                    {/* Density Parameter */}
+                    <div className="grid gap-2">
+                      <div className="flex justify-between items-center">
+                        <Label htmlFor={`density-${entity.segment_id}`}>Density (kg/m³)</Label>
+                        <span className="text-sm text-muted-foreground">{density.toFixed(2)}</span>
+                      </div>
+                      <Slider 
+                        id={`density-${entity.segment_id}`}
+                        value={[density]} 
+                        min={0.1} 
+                        max={10} 
+                        step={0.1} 
+                        onValueChange={(v) => { 
+                          setDensity(v[0]);
+                          // TODO: Density affects mass calculation - needs more complex update
+                          console.log('[ParametersPanel] Density update not yet implemented');
+                        }} 
+                      />
+                    </div>
+                  </div>
+                );
+              })()}
+            </>
           )}
           <div className="text-xs text-muted-foreground space-y-1">
             <div>Scope: <code>{scope}</code></div>
-            <div>Scene kind: <code>{(scene as any)?.kind ?? (localScene?.kind ?? 'unknown')}</code></div>
-            <div>Rope length: {(localScene ?? (scene as any))?.constraints?.[0]?.rope_length_m?.toFixed?.(3) ?? '—'} m</div>
+            <div>Bodies: <code>{scene?.bodies?.length ?? 0}</code></div>
+            <div>Constraints: <code>{scene?.constraints?.length ?? 0}</code></div>
           </div>
-        </div>
-        </>
-        )}
+              </div>
+            </div>
+          )}
+        </ScrollArea>
       </CardContent>
     </Card>
   );

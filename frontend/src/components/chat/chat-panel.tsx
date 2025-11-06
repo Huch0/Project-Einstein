@@ -7,10 +7,11 @@ import { useGlobalChat } from '@/contexts/global-chat-context';
 
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
-import { MessageSquare, Bot } from 'lucide-react';
+import { MessageSquare, Bot, Plus, Image as ImageIcon, Box as BoxIcon, X } from 'lucide-react';
 import { sendUnifiedChat, streamAgentChat, type ChatMode } from '@/lib/unified-chat-api';
 import { ChatMessages } from './chat-messages';
 import { ChatInput } from './chat-input';
+import { SelectBoxModal } from './select-box-modal';
 import { SimulationViewer } from '@/components/simulation/simulation-viewer';
 import { cn } from '@/lib/utils';
 
@@ -33,13 +34,16 @@ type ChatPanelProps = {
 export default function ChatPanel({ padding = 'default' }: ChatPanelProps = {}) {
     const { toast } = useToast();
     const globalChat = useGlobalChat();
+    const getAllBoxes = globalChat.getAllBoxes;
     
     const [mode, setMode] = useState<ChatMode>('agent'); // Default to agent mode
     const [input, setInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const [progressMessages, setProgressMessages] = useState<string[]>([]);
     const [selectedImage, setSelectedImage] = useState<File | null>(null);
-    const eventSourceRef = useRef<EventSource | null>(null);
+    const [showBoxModal, setShowBoxModal] = useState(false);
+    const [attachedBoxIds, setAttachedBoxIds] = useState<string[]>([]); // Multiple boxes
+    const eventSourceRef = useRef<{ close: () => void } | null>(null);
 
     const scrollAreaRef = useRef<HTMLDivElement>(null);
 
@@ -86,7 +90,20 @@ export default function ChatPanel({ padding = 'default' }: ChatPanelProps = {}) 
             }
             setMode(newMode);
             setSelectedImage(null); // Clear image when switching modes
+            // Keep attached boxes when switching modes for better UX
         }
+    };
+
+    const handleContextAttach = () => {
+        setShowBoxModal(true);
+    };
+
+    const handleBoxSelect = (boxIds: string[]) => {
+        setAttachedBoxIds(boxIds);
+    };
+
+    const handleRemoveAttachedBox = (boxId: string) => {
+        setAttachedBoxIds(prev => prev.filter(id => id !== boxId));
     };
 
     const uploadImageToBackend = async (file: File): Promise<string> => {
@@ -159,6 +176,58 @@ export default function ChatPanel({ padding = 'default' }: ChatPanelProps = {}) 
             }
 
             if (mode === 'agent') {
+                // Build context object if boxes are attached
+                let contextData = undefined;
+                if (attachedBoxIds.length > 0) {
+                    const attachedBoxes = getAllBoxes().filter(box => attachedBoxIds.includes(box.id));
+                    
+                    contextData = {
+                        simulation_box: undefined,
+                        image_box: undefined,
+                        boxes: [] as any[],
+                    };
+                    
+                    for (const box of attachedBoxes) {
+                        if (box.type === 'simulation') {
+                            // Get simulation box context
+                            if (box.conversationId) {
+                                const boxContext = await fetch(
+                                    `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/chat/context/${box.conversationId}`
+                                ).then(res => res.ok ? res.json() : null).catch(() => null);
+                                
+                                contextData.boxes.push({
+                                    type: 'simulation',
+                                    id: box.id,
+                                    name: box.name,
+                                    conversationId: box.conversationId,
+                                    objects: boxContext?.entities || [],
+                                    parameters: boxContext?.scene || {},
+                                });
+                            }
+                        } else {
+                            // Image box
+                            contextData.boxes.push({
+                                type: 'image',
+                                id: box.id,
+                                name: box.name,
+                                imagePath: box.imagePath,
+                            });
+                        }
+                    }
+                    
+                    // For backward compatibility, set first simulation box as main simulation_box
+                    const firstSimBox = contextData.boxes.find((b: any) => b.type === 'simulation');
+                    if (firstSimBox) {
+                        contextData.simulation_box = firstSimBox;
+                    }
+                    
+                    // For backward compatibility, set first image box as main image_box
+                    const firstImgBox = contextData.boxes.find((b: any) => b.type === 'image');
+                    if (firstImgBox) {
+                        contextData.image_box = firstImgBox;
+                    }
+                }
+                
                 // Agent mode: Use streaming for real-time progress
                 const eventSource = streamAgentChat(
                     {
@@ -166,6 +235,7 @@ export default function ChatPanel({ padding = 'default' }: ChatPanelProps = {}) 
                         conversation_id: globalChat.conversationId,
                         mode: 'agent',
                         attachments: attachments,
+                        context: contextData,
                     },
                     {
                         onInit: ({ conversation_id }) => {
@@ -218,6 +288,7 @@ export default function ChatPanel({ padding = 'default' }: ChatPanelProps = {}) 
                         onDone: ({ conversation_id }) => {
                             globalChat.setConversationId(conversation_id);
                             setIsLoading(false);
+                            // Keep attached boxes for next message (user can remove manually with X button)
                             if (eventSourceRef.current) {
                                 eventSourceRef.current.close();
                                 eventSourceRef.current = null;
@@ -238,15 +309,66 @@ export default function ChatPanel({ padding = 'default' }: ChatPanelProps = {}) 
                 eventSourceRef.current = eventSource;
             } else {
                 // Ask mode: Simple request/response
+                // Build context object if boxes are attached
+                let contextData = undefined;
+                if (attachedBoxIds.length > 0) {
+                    const attachedBoxes = getAllBoxes().filter(box => attachedBoxIds.includes(box.id));
+                    
+                    contextData = {
+                        simulation_box: undefined,
+                        image_box: undefined,
+                        boxes: [] as any[],
+                    };
+                    
+                    for (const box of attachedBoxes) {
+                        if (box.type === 'simulation') {
+                            if (box.conversationId) {
+                                const boxContext = await fetch(
+                                    `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/chat/context/${box.conversationId}`
+                                ).then(res => res.ok ? res.json() : null).catch(() => null);
+                                
+                                contextData.boxes.push({
+                                    type: 'simulation',
+                                    id: box.id,
+                                    name: box.name,
+                                    conversationId: box.conversationId,
+                                    objects: boxContext?.entities || [],
+                                    parameters: boxContext?.scene || {},
+                                });
+                            }
+                        } else {
+                            contextData.boxes.push({
+                                type: 'image',
+                                id: box.id,
+                                name: box.name,
+                                imagePath: box.imagePath,
+                            });
+                        }
+                    }
+                    
+                    const firstSimBox = contextData.boxes.find((b: any) => b.type === 'simulation');
+                    if (firstSimBox) {
+                        contextData.simulation_box = firstSimBox;
+                    }
+                    
+                    const firstImgBox = contextData.boxes.find((b: any) => b.type === 'image');
+                    if (firstImgBox) {
+                        contextData.image_box = firstImgBox;
+                    }
+                }
+                
                 const response = await sendUnifiedChat({
                     message: userInput.content,
                     conversation_id: globalChat.conversationId,
                     mode: 'ask',
+                    context: contextData,
                 });
 
                 globalChat.setConversationId(response.conversation_id);
                 globalChat.addMessage({ role: 'assistant', content: response.message });
                 setIsLoading(false);
+                
+                // Keep attached boxes for next message (user can remove manually with X button)
             }
         } catch (error) {
             toast({
@@ -301,25 +423,72 @@ export default function ChatPanel({ padding = 'default' }: ChatPanelProps = {}) 
                     </div>
                 </div>
                 
-                {/* Simulation Box Context Display */}
-                {mode === 'agent' && globalChat.simulationBoxes.size > 0 && (
-                    <div className="mt-2 rounded-md bg-muted/50 p-2 text-xs">
-                        <div className="font-medium text-muted-foreground mb-1">
-                            Active Simulation Boxes ({globalChat.simulationBoxes.size}):
+                {/* All Boxes Display with + Button */}
+                <div className="mt-2 rounded-md bg-muted/50 p-2 text-xs">
+                    <div className="flex items-center justify-between mb-1">
+                        <div className="font-medium text-muted-foreground">
+                            Available Boxes ({getAllBoxes().length}):
                         </div>
-                        <div className="space-y-1">
-                            {Array.from(globalChat.simulationBoxes.values()).map((box) => (
-                                <div key={box.id} className="flex items-center gap-2 text-muted-foreground">
-                                    <span className="font-mono text-[10px] bg-background px-1 rounded">
-                                        {box.name}
-                                    </span>
-                                    {box.hasImage && <span className="text-[10px]">📸</span>}
-                                    {box.hasSimulation && <span className="text-[10px]">⚡</span>}
-                                </div>
-                            ))}
-                        </div>
+                        <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 w-6 p-0"
+                            onClick={handleContextAttach}
+                            title="Attach context boxes"
+                        >
+                            <Plus className="h-3.5 w-3.5" />
+                        </Button>
                     </div>
-                )}
+                    
+                    {getAllBoxes().length === 0 ? (
+                        <div className="text-[10px] text-muted-foreground py-1">
+                            No boxes yet. Create simulation or image boxes on the canvas.
+                        </div>
+                    ) : (
+                        <div className="space-y-1">
+                            {getAllBoxes().map((box) => {
+                                const isAttached = attachedBoxIds.includes(box.id);
+                                const isSimulation = box.type === 'simulation';
+                                
+                                return (
+                                    <div 
+                                        key={box.id} 
+                                        className={cn(
+                                            "flex items-center gap-2 text-muted-foreground rounded px-1 py-0.5 group",
+                                            isAttached && "bg-primary/10 border border-primary/30"
+                                        )}
+                                    >
+                                        <span className="text-[10px]">
+                                            {isSimulation ? '🔷' : '🖼️'}
+                                        </span>
+                                        <span className="font-mono text-[10px] bg-background px-1 rounded flex-1">
+                                            {box.name}
+                                        </span>
+                                        {isSimulation && 'hasImage' in box && box.hasImage && <span className="text-[10px]">📸</span>}
+                                        {isSimulation && 'hasSimulation' in box && box.hasSimulation && <span className="text-[10px]">⚡</span>}
+                                        {isAttached && (
+                                            <>
+                                                <span className="text-[10px] text-primary font-medium">
+                                                    [Context]
+                                                </span>
+                                                <Button
+                                                    variant="ghost"
+                                                    size="sm"
+                                                    className="h-4 w-4 p-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                                                    onClick={() => {
+                                                        setAttachedBoxIds(prev => prev.filter(id => id !== box.id));
+                                                    }}
+                                                >
+                                                    <X className="h-3 w-3" />
+                                                </Button>
+                                            </>
+                                        )}
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+                </div>
             </div>
 
             {/* Chat Messages */}
@@ -380,6 +549,14 @@ export default function ChatPanel({ padding = 'default' }: ChatPanelProps = {}) 
                     }
                 />
             </div>
+            
+            {/* Select Box Modal */}
+            <SelectBoxModal
+                open={showBoxModal}
+                onClose={() => setShowBoxModal(false)}
+                onSelect={handleBoxSelect}
+                initialSelected={attachedBoxIds}
+            />
         </div>
     );
 }

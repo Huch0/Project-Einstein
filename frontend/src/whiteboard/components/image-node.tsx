@@ -21,6 +21,7 @@ import {
     type InitSimRequest,
 } from '@/lib/agent-api';
 import { runMatterSimulation } from '@/simulation/matterRunner';
+import { useGlobalChat } from '@/contexts/global-chat-context';
 
 interface ImageNodeProps {
     node: ImageNodeType;
@@ -65,6 +66,7 @@ export default function ImageNode({ node, mode, camera }: ImageNodeProps) {
         state: { selection },
     } = useWhiteboardStore();
     const { loadSimulationRun } = useSimulation();
+    const { registerImageBox, unregisterImageBox } = useGlobalChat();
 
     const replaceInputRef = useRef<HTMLInputElement>(null);
     const draggable = mode === 'pan';
@@ -72,6 +74,22 @@ export default function ImageNode({ node, mode, camera }: ImageNodeProps) {
     const isSelected = selection.includes(node.id);
     const [isConverting, setIsConverting] = useState(false);
     const [conversionError, setConversionError] = useState<string | null>(null);
+
+    // Register image box with GlobalChatContext
+    useEffect(() => {
+        if (node.source.uri) {
+            registerImageBox({
+                id: node.id,
+                name: 'Image Box', // Default name, can be customized later
+                imagePath: node.source.uri,
+                uploadedAt: new Date(),
+            });
+        }
+
+        return () => {
+            unregisterImageBox(node.id);
+        };
+    }, [node.id, node.source.uri, registerImageBox, unregisterImageBox]);
 
     const dragState = useRef<{
         pointerId: number | null;

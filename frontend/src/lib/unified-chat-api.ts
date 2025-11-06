@@ -28,6 +28,29 @@ export interface UnifiedChatRequest {
     id?: string;
     data?: string;
   }>;
+  context?: {
+    simulation_box?: {
+      id: string;
+      name: string;
+      conversationId?: string;
+      objects?: any[];
+      parameters?: any;
+    };
+    image_box?: {
+      id: string;
+      imagePath: string; // Local file path for images
+      metadata?: any;
+    };
+    boxes?: Array<{
+      type: 'simulation' | 'image';
+      id: string;
+      name: string;
+      conversationId?: string;
+      objects?: any[];
+      parameters?: any;
+      imagePath?: string; // Local file path for images
+    }>;
+  };
   stream?: boolean;
 }
 
@@ -140,6 +163,7 @@ export async function sendUnifiedChat(
       conversation_id: request.conversation_id,
       mode: request.mode,
       attachments: request.attachments || [],
+      context: request.context,
       stream: false,
     }),
   });
@@ -210,130 +234,111 @@ export interface SSEStreamCallbacks {
 export function streamAgentChat(
   request: UnifiedChatRequest,
   callbacks: SSEStreamCallbacks
-): EventSource {
+): { close: () => void } {
   if (request.mode !== 'agent') {
     throw new Error('Streaming only supported in Agent mode');
   }
 
-  // Build query string
-  const params = new URLSearchParams({
-    message: request.message,
-    mode: request.mode,
-    stream: 'true',
-  });
+  let abortController = new AbortController();
+  let isClosed = false;
 
-  if (request.conversation_id) {
-    params.append('conversation_id', request.conversation_id);
-  }
+  // Use fetch with POST for large payloads (images)
+  fetch(`${API_BASE}/chat`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      message: request.message,
+      conversation_id: request.conversation_id,
+      mode: request.mode,
+      stream: true,
+      attachments: request.attachments || [],
+      context: request.context,
+    }),
+    signal: abortController.signal,
+  })
+    .then(async (response) => {
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
 
-  if (request.attachments && request.attachments.length > 0) {
-    params.append('attachments', JSON.stringify(request.attachments));
-  }
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error('No response body');
+      }
 
-  const url = `${API_BASE}/chat?${params.toString()}`;
-  const eventSource = new EventSource(url);
+      const decoder = new TextDecoder();
+      let buffer = '';
 
-  // Register event listeners
-  if (callbacks.onInit) {
-    eventSource.addEventListener('init', (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        callbacks.onInit!(data);
-      } catch (err) {
-        console.error('Failed to parse init event:', err);
+      while (!isClosed) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.trim() || line.startsWith(':')) continue;
+
+          if (line.startsWith('event:')) {
+            const eventType = line.substring(6).trim();
+            continue;
+          }
+
+          if (line.startsWith('data:')) {
+            const data = line.substring(5).trim();
+            if (!data) continue;
+
+            try {
+              const parsed = JSON.parse(data);
+              
+              // Determine event type from the last event: line or from data structure
+              // Since we're parsing SSE manually, we need to track the event type
+              // For simplicity, we'll check the data structure
+              
+              if (parsed.conversation_id && callbacks.onInit) {
+                callbacks.onInit(parsed);
+              } else if (parsed.status && callbacks.onThinking) {
+                callbacks.onThinking(parsed);
+              } else if (parsed.tool && parsed.index !== undefined && callbacks.onToolStart) {
+                callbacks.onToolStart(parsed);
+              } else if (parsed.tool && parsed.success !== undefined && callbacks.onToolComplete) {
+                callbacks.onToolComplete(parsed);
+              } else if (parsed.tool && parsed.error && callbacks.onToolError) {
+                callbacks.onToolError(parsed);
+              } else if (parsed.segments_count !== undefined && callbacks.onStateUpdate) {
+                callbacks.onStateUpdate(parsed);
+              } else if (parsed.content && callbacks.onMessage) {
+                callbacks.onMessage(parsed);
+              } else if (parsed.conversation_id && callbacks.onDone) {
+                callbacks.onDone(parsed);
+              }
+            } catch (err) {
+              console.error('Failed to parse SSE data:', err);
+            }
+          }
+        }
+      }
+    })
+    .catch((err) => {
+      if (err.name === 'AbortError') {
+        console.log('Stream aborted');
+      } else {
+        console.error('SSE stream error:', err);
+        if (callbacks.onError) {
+          callbacks.onError(err);
+        }
       }
     });
-  }
 
-  if (callbacks.onThinking) {
-    eventSource.addEventListener('thinking', (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        callbacks.onThinking!(data);
-      } catch (err) {
-        console.error('Failed to parse thinking event:', err);
-      }
-    });
-  }
-
-  if (callbacks.onToolStart) {
-    eventSource.addEventListener('tool_start', (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        callbacks.onToolStart!(data);
-      } catch (err) {
-        console.error('Failed to parse tool_start event:', err);
-      }
-    });
-  }
-
-  if (callbacks.onToolComplete) {
-    eventSource.addEventListener('tool_complete', (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        callbacks.onToolComplete!(data);
-      } catch (err) {
-        console.error('Failed to parse tool_complete event:', err);
-      }
-    });
-  }
-
-  if (callbacks.onToolError) {
-    eventSource.addEventListener('tool_error', (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        callbacks.onToolError!(data);
-        console.log(data);
-      } catch (err) {
-        console.error('Failed to parse tool_error event:', err);
-      }
-    });
-  }
-
-  if (callbacks.onStateUpdate) {
-    eventSource.addEventListener('state_update', (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        callbacks.onStateUpdate!(data);
-        console.log("state_update data:", data);
-      } catch (err) {
-        console.error('Failed to parse state_update event:', err);
-      }
-    });
-  }
-
-  if (callbacks.onMessage) {
-    eventSource.addEventListener('message', (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        callbacks.onMessage!(data);
-      } catch (err) {
-        console.error('Failed to parse message event:', err);
-      }
-    });
-  }
-
-  if (callbacks.onDone) {
-    eventSource.addEventListener('done', (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        callbacks.onDone!(data);
-      } catch (err) {
-        console.error('Failed to parse done event:', err);
-      }
-    });
-  }
-
-  // Error handler
-  eventSource.onerror = (err) => {
-    console.error('SSE connection error:', err);
-    if (callbacks.onError) {
-      callbacks.onError(new Error('SSE connection failed'));
-    }
-    eventSource.close();
+  return {
+    close: () => {
+      isClosed = true;
+      abortController.abort();
+    },
   };
-
-  return eventSource;
 }
 
 // ===========================
