@@ -17,6 +17,8 @@ from asyncio.log import logger
 import json
 import asyncio
 import traceback
+import base64
+from pathlib import Path
 from typing import Any, AsyncGenerator, Literal
 from uuid import UUID, uuid4
 
@@ -28,7 +30,7 @@ import openai
 from app.models.settings import settings
 from app.agent.tool_registry import get_registry
 from app.agent.agent_context import get_context_store
-from app.agent.prompts import get_agent_system_prompt
+from app.agent.prompts import get_agent_system_prompt, get_ask_system_prompt
 from app.chat.repository import ChatRepository
 from app.chat.schemas import ConversationState
 
@@ -57,6 +59,10 @@ class ChatRequest(BaseModel):
     attachments: list[dict[str, Any]] = Field(
         default_factory=list,
         description="Attachments (images, files) for Agent mode"
+    )
+    context: dict[str, Any] | None = Field(
+        default=None,
+        description="Additional context (simulation box metadata, etc.)"
     )
     stream: bool = Field(
         default=False,
@@ -94,25 +100,150 @@ _chat_repository = ChatRepository()
 
 
 # ===========================
+# Helper Functions
+# ===========================
+
+def encode_image_to_base64(image_path: str) -> tuple[str, str] | None:
+    """
+    Encode image to base64 for OpenAI Vision API.
+    
+    Args:
+        image_path: Path to image file or data URL
+    
+    Returns:
+        Tuple of (base64_string, mime_type) or None if failed
+    """
+    try:
+        # Handle data URLs (data:image/png;base64,...)
+        if image_path.startswith("data:"):
+            # Extract mime type and base64 data
+            header, base64_data = image_path.split(",", 1)
+            mime_type = header.split(":")[1].split(";")[0]
+            return base64_data, mime_type
+        
+        # Handle file paths
+        path = Path(image_path)
+        if not path.exists():
+            logger.warning(f"Image file not found: {image_path}")
+            return None
+        
+        # Determine mime type from extension
+        mime_types = {
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".gif": "image/gif",
+            ".webp": "image/webp"
+        }
+        mime_type = mime_types.get(path.suffix.lower(), "image/png")
+        
+        # Read and encode image
+        with open(path, "rb") as image_file:
+            base64_data = base64.b64encode(image_file.read()).decode("utf-8")
+        
+        return base64_data, mime_type
+    
+    except Exception as e:
+        logger.error(f"Failed to encode image: {e}")
+        return None
+
+
+# ===========================
 # Ask Mode: Normal Chat
 # ===========================
 
 async def _handle_ask_mode(
     message: str,
     conversation_id: str,
-    history: list[dict[str, str]]
+    history: list[dict[str, str]],
+    context_data: dict[str, Any] | None = None
 ) -> str:
     """
     Ask mode: Normal conversation without tool calls.
+    
+    Args:
+        message: User message
+        conversation_id: Conversation ID
+        history: Conversation history
+        context_data: Additional context (simulation box metadata, etc.)
     
     Uses OpenAI API (GPT-5 Responses or GPT-4 Chat Completions).
     """
     client = openai.AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
     
+    # Prepare system prompt (with context if provided)
+    system_prompt = get_ask_system_prompt()
+    
+    if context_data and context_data.get("simulation_box"):
+        sim_box = context_data["simulation_box"]
+        context_info = f"\n\n[Current Simulation Context]\n"
+        context_info += f"Box: {sim_box.get('name', sim_box.get('id'))}\n"
+        
+        if sim_box.get("objects"):
+            objects_summary = ", ".join([
+                f"{obj.get('type', 'unknown')}" 
+                for obj in sim_box["objects"][:5]
+            ])
+            context_info += f"Objects: {objects_summary}\n"
+        
+        if sim_box.get("parameters"):
+            params = sim_box["parameters"]
+            if params.get("world"):
+                context_info += f"Gravity: {params['world'].get('gravity_m_s2', 9.81)} m/s²\n"
+        
+        context_info += "\nWhen answering, you can reference this simulation if relevant."
+        system_prompt += context_info
+    
+    if context_data and context_data.get("image_box"):
+        img_box = context_data["image_box"]
+        context_info = f"\n\n[Current Image Context]\n"
+        context_info += f"Box: {img_box.get('name', img_box.get('id'))}\n"
+        if img_box.get("imagePath"):
+            context_info += f"Image attached for analysis.\n"
+        system_prompt += context_info
+    
+    # Collect images from context
+    image_contents = []
+    if context_data:
+        # Check image_box
+        if context_data.get("image_box") and context_data["image_box"].get("imagePath"):
+            encoded = encode_image_to_base64(context_data["image_box"]["imagePath"])
+            if encoded:
+                base64_data, mime_type = encoded
+                image_contents.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{mime_type};base64,{base64_data}"
+                    }
+                })
+        
+        # Check boxes array for additional images
+        if context_data.get("boxes"):
+            for box in context_data["boxes"]:
+                if box.get("type") == "image" and box.get("imagePath"):
+                    encoded = encode_image_to_base64(box["imagePath"])
+                    if encoded:
+                        base64_data, mime_type = encoded
+                        image_contents.append({
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{mime_type};base64,{base64_data}"
+                            }
+                        })
+    
     # Prepare messages with Ask mode system prompt
-    messages = [{"role": "system", "content": settings.ASK_SYSTEM_PROMPT}]
+    messages = [{"role": "system", "content": system_prompt}]
     messages.extend(history)
-    messages.append({"role": "user", "content": message})
+    
+    # Add user message with images if present
+    if image_contents:
+        user_content = [
+            {"type": "text", "text": message},
+            *image_contents
+        ]
+        messages.append({"role": "user", "content": user_content})
+    else:
+        messages.append({"role": "user", "content": message})
     
     # Check if using GPT-5
     is_gpt5 = settings.OPENAI_MODEL.startswith("gpt-5") or settings.OPENAI_MODEL.startswith("o1")
@@ -120,15 +251,31 @@ async def _handle_ask_mode(
     if is_gpt5:
         # GPT-5 Responses API
         # Convert messages to single input string
-        conversation_text = "\n".join([
-            f"{msg['role']}: {msg['content']}" for msg in messages
-        ])
-        
-        response = await client.responses.create(
-            model=settings.OPENAI_MODEL,
-            input=conversation_text,
-            text={"verbosity": "medium"}
-        )
+        # For images, we'll need to handle them differently in GPT-5
+        if image_contents:
+            # GPT-5 with images: use multimodal input format
+            # Note: Check GPT-5 documentation for correct image format
+            conversation_text = "\n".join([
+                f"{msg['role']}: {msg['content']}" for msg in messages
+            ])
+            
+            response = await client.responses.create(
+                model=settings.OPENAI_MODEL,
+                input=conversation_text,
+                # Include images in modalities if supported
+                text={"verbosity": "medium"}
+            )
+        else:
+            # GPT-5 without images
+            conversation_text = "\n".join([
+                f"{msg['role']}: {msg['content']}" for msg in messages
+            ])
+            
+            response = await client.responses.create(
+                model=settings.OPENAI_MODEL,
+                input=conversation_text,
+                text={"verbosity": "medium"}
+            )
         
         # Extract text from response
         assistant_message = ""
@@ -139,14 +286,6 @@ async def _handle_ask_mode(
                 assistant_message = response.output[0].content[0].text
             except Exception:
                 assistant_message = "Sorry, I couldn't process that request."
-    else:
-        # GPT-4 Chat Completions API
-        response = await client.chat.completions.create(
-            model=settings.OPENAI_MODEL,
-            messages=messages,
-            temperature=settings.OPENAI_TEMPERATURE,
-        )
-        assistant_message = response.choices[0].message.content or ""
     
     return assistant_message
 
@@ -159,10 +298,18 @@ async def _handle_agent_mode(
     message: str,
     conversation_id: str,
     attachments: list[dict[str, Any]],
-    context_store
+    context_store,
+    context_data: dict[str, Any] | None = None
 ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
     """
     Agent mode: Tool-enabled conversation.
+    
+    Args:
+        message: User message
+        conversation_id: Conversation ID
+        attachments: File attachments
+        context_store: Context store instance
+        context_data: Additional context (simulation box metadata, etc.)
     
     Returns: (assistant_message, tool_calls_made, state_snapshot)
     """
@@ -184,6 +331,26 @@ async def _handle_agent_mode(
     # Enhance message with explicit tool call hints for GPT-5
     enhanced_message = message
     message_lower = message.lower()
+    
+    # Add simulation box context if provided
+    if context_data and context_data.get("simulation_box"):
+        sim_box = context_data["simulation_box"]
+        box_context = f"\n\n[CONTEXT: User is referring to simulation box '{sim_box.get('name', sim_box.get('id'))}'."
+        
+        if sim_box.get("objects"):
+            box_context += f" It contains {len(sim_box['objects'])} objects: {', '.join([obj.get('type', 'unknown') for obj in sim_box['objects'][:5]])}."
+        
+        if sim_box.get("parameters"):
+            params = sim_box["parameters"]
+            if params.get("world"):
+                box_context += f" World settings: gravity={params['world'].get('gravity_m_s2', 9.81)} m/s²."
+        
+        if sim_box.get("conversationId"):
+            box_context += f" Conversation ID: {sim_box['conversationId']}."
+        
+        box_context += "]"
+        enhanced_message += box_context
+        logger.info(f"[Agent] Added simulation box context: {sim_box.get('name', sim_box.get('id'))}")
     
     # Detect intent and add explicit tool call instructions
     if any(keyword in message_lower for keyword in ["세그먼트", "segment", "분석", "analyze", "시뮬레이션", "simulate", "진행", "proceed"]):
@@ -222,13 +389,72 @@ async def _handle_agent_mode(
             image_context = f"\n[System: User has uploaded an image with ID: {image_id}. Use the segment_image tool to analyze it.]"
             context.messages[-1]["content"] += image_context
     
+    # Collect images from context_data (for attached image boxes)
+    image_contents = []
+    if context_data:
+        # Check image_box
+        if context_data.get("image_box") and context_data["image_box"].get("imagePath"):
+            encoded = encode_image_to_base64(context_data["image_box"]["imagePath"])
+            if encoded:
+                base64_data, mime_type = encoded
+                image_contents.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{mime_type};base64,{base64_data}"
+                    }
+                })
+                logger.info(f"[Agent] Added image from image_box: {context_data['image_box'].get('name')}")
+        
+        # Check boxes array for additional images
+        if context_data.get("boxes"):
+            for box in context_data["boxes"]:
+                if box.get("type") == "image" and box.get("imagePath"):
+                    encoded = encode_image_to_base64(box["imagePath"])
+                    if encoded:
+                        base64_data, mime_type = encoded
+                        image_contents.append({
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{mime_type};base64,{base64_data}"
+                            }
+                        })
+                        logger.info(f"[Agent] Added image from boxes array: {box.get('name')}")
+    
     # Prepare OpenAI request
     system_prompt = get_agent_system_prompt()
     messages = [{"role": "system", "content": system_prompt}]
-    messages.extend(context.messages)
+    
+    # Add conversation history with images in the last user message
+    for i, msg in enumerate(context.messages):
+        if i == len(context.messages) - 1 and msg["role"] == "user" and image_contents:
+            # Last user message - add images
+            messages.append({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": msg["content"]},
+                    *image_contents
+                ]
+            })
+        else:
+            messages.append(msg)
     
     # Detect if we're using GPT-5 (or o1 models) - use Responses API
     is_gpt5 = settings.OPENAI_MODEL.startswith("gpt-5") or settings.OPENAI_MODEL.startswith("o1")
+    
+    # Log user messages for debugging
+    user_messages = [m for m in messages if m["role"] == "user"]
+    logger.info(f"[Agent] User messages: {[m['content'][:100] if isinstance(m['content'], str) else 'multipart' for m in user_messages]}")
+    logger.info(f"[Agent] Context state: image_id={context.image_id}, segments={len(context.segments)}, entities={len(context.entities)}")
+    
+    client = openai.AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+    
+    # Detect if we're using GPT-5 (or o1 models) - use Responses API
+    is_gpt5 = settings.OPENAI_MODEL.startswith("gpt-5") or settings.OPENAI_MODEL.startswith("o1")
+    model_to_use = settings.OPENAI_MODEL
+    
+    # Always use the configured model (GPT-5)
+    if image_contents:
+        logger.info(f"[Agent] Images detected, using {model_to_use} with vision")
     
     # Get appropriate tool schemas
     if is_gpt5:
@@ -237,16 +463,6 @@ async def _handle_agent_mode(
         tools = registry.get_openai_function_schemas()
     
     logger.info(f"[Agent] Available tools: {[t.get('name') or t.get('function', {}).get('name') for t in tools]}")
-    
-    # Log user messages for debugging
-    user_messages = [m for m in messages if m["role"] == "user"]
-    logger.info(f"[Agent] User messages: {[m['content'][:100] for m in user_messages]}")
-    logger.info(f"[Agent] Context state: image_id={context.image_id}, segments={len(context.segments)}, entities={len(context.entities)}")
-    
-    client = openai.AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-    
-    # Detect if we're using GPT-5 (or o1 models) - use Responses API
-    is_gpt5 = settings.OPENAI_MODEL.startswith("gpt-5") or settings.OPENAI_MODEL.startswith("o1")
     
     # Convert messages to conversational format (for GPT-5)
     # GPT-5 Responses API needs clear instruction format
@@ -273,13 +489,13 @@ async def _handle_agent_mode(
     logger.info(f"[Agent] Conversation text (first 500 chars): {conversation_text[:500]}")
     
     # Call OpenAI with tool support
-    logger.info(f"[Agent] Calling {settings.OPENAI_MODEL} ({'Responses API' if is_gpt5 else 'Chat Completions API'}) with {len(messages)} messages and {len(tools)} tools")
+    logger.info(f"[Agent] Calling {model_to_use} ({'Responses API' if is_gpt5 else 'Chat Completions API'}) with {len(messages)} messages and {len(tools)} tools")
     
     if is_gpt5:
         # GPT-5 uses Responses API with 'input' parameter
         # Include system prompt explicitly in conversation
         first_response = await client.responses.create(
-            model=settings.OPENAI_MODEL,
+            model=model_to_use,
             input=conversation_text,  # Already includes system message
             tools=tools,
             reasoning={"effort": "medium"},
@@ -328,7 +544,7 @@ async def _handle_agent_mode(
     else:
         # GPT-4 models use Chat Completions API
         response = await client.chat.completions.create(
-            model=settings.OPENAI_MODEL,
+            model=model_to_use,
             messages=messages,
             tools=tools,
             tool_choice="auto"
@@ -552,10 +768,18 @@ async def _stream_agent_mode(
     message: str,
     conversation_id: str,
     attachments: list[dict[str, Any]],
-    context_store
+    context_store,
+    context_data: dict[str, Any] | None = None
 ) -> AsyncGenerator[str, None]:
     """
     Stream Agent mode execution with real-time progress updates.
+    
+    Args:
+        message: User message
+        conversation_id: Conversation ID
+        attachments: File attachments
+        context_store: Context store instance
+        context_data: Additional context (simulation box metadata, etc.)
     
     Yields SSE events:
     - event: tool_start
@@ -579,6 +803,25 @@ async def _stream_agent_mode(
     # Enhance message with explicit tool call hints for GPT-5
     enhanced_message = message
     message_lower = message.lower()
+    
+    # Add simulation box context if provided
+    if context_data and context_data.get("simulation_box"):
+        sim_box = context_data["simulation_box"]
+        box_context = f"\n\n[CONTEXT: User is referring to simulation box '{sim_box.get('name', sim_box.get('id'))}'."
+        
+        if sim_box.get("objects"):
+            box_context += f" It contains {len(sim_box['objects'])} objects: {', '.join([obj.get('type', 'unknown') for obj in sim_box['objects'][:5]])}."
+        
+        if sim_box.get("parameters"):
+            params = sim_box["parameters"]
+            if params.get("world"):
+                box_context += f" World settings: gravity={params['world'].get('gravity_m_s2', 9.81)} m/s²."
+        
+        if sim_box.get("conversationId"):
+            box_context += f" Conversation ID: {sim_box['conversationId']}."
+        
+        box_context += "]"
+        enhanced_message += box_context
     
     # Detect intent and add explicit tool call instructions
     if any(keyword in message_lower for keyword in ["세그먼트", "segment", "분석", "analyze", "시뮬레이션", "simulate", "진행", "proceed"]):
@@ -617,22 +860,72 @@ async def _stream_agent_mode(
     
     # Prepare OpenAI request
     system_prompt = get_agent_system_prompt()
+    
+    # Collect images from context_data (for attached image boxes)
+    image_contents = []
+    if context_data:
+        # Check image_box
+        if context_data.get("image_box") and context_data["image_box"].get("imagePath"):
+            encoded = encode_image_to_base64(context_data["image_box"]["imagePath"])
+            if encoded:
+                base64_data, mime_type = encoded
+                image_contents.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{mime_type};base64,{base64_data}"
+                    }
+                })
+                logger.info(f"[StreamAgent] Added image from image_box: {context_data['image_box'].get('name')}")
+        
+        # Check boxes array for additional images
+        if context_data.get("boxes"):
+            for box in context_data["boxes"]:
+                if box.get("type") == "image" and box.get("imagePath"):
+                    encoded = encode_image_to_base64(box["imagePath"])
+                    if encoded:
+                        base64_data, mime_type = encoded
+                        image_contents.append({
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{mime_type};base64,{base64_data}"
+                            }
+                        })
+                        logger.info(f"[StreamAgent] Added image from boxes array: {box.get('name')}")
+    
     messages = [{"role": "system", "content": system_prompt}]
-    messages.extend(context.messages)
+    
+    # Add conversation history with images in the last user message
+    for i, msg in enumerate(context.messages):
+        if i == len(context.messages) - 1 and msg["role"] == "user" and image_contents:
+            # Last user message - add images
+            messages.append({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": msg["content"]},
+                    *image_contents
+                ]
+            })
+        else:
+            messages.append(msg)
     
     # Detect if we're using GPT-5 (or o1 models) - use Responses API
     is_gpt5 = settings.OPENAI_MODEL.startswith("gpt-5") or settings.OPENAI_MODEL.startswith("o1")
+    
+    client = openai.AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+    
+    # Detect if we're using GPT-5 (or o1 models) - use Responses API
+    is_gpt5 = settings.OPENAI_MODEL.startswith("gpt-5") or settings.OPENAI_MODEL.startswith("o1")
+    model_to_use = settings.OPENAI_MODEL
+    
+    # Always use the configured model (GPT-5)
+    if image_contents:
+        logger.info(f"[StreamAgent] Images detected, using {model_to_use} with vision")
     
     # Get appropriate tool schemas
     if is_gpt5:
         tools = registry.get_gpt5_function_schemas()
     else:
         tools = registry.get_openai_function_schemas()
-    
-    client = openai.AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-    
-    # Detect if we're using GPT-5 (or o1 models) - use Responses API
-    is_gpt5 = settings.OPENAI_MODEL.startswith("gpt-5") or settings.OPENAI_MODEL.startswith("o1")
     
     # Convert messages to conversational format (for GPT-5)
     # GPT-5 Responses API needs clear instruction format
@@ -661,7 +954,7 @@ async def _stream_agent_mode(
     if is_gpt5:
         # GPT-5 uses Responses API with 'input' parameter
         response = await client.responses.create(
-            model=settings.OPENAI_MODEL,
+            model=model_to_use,
             input=conversation_text,
             tools=tools,
             reasoning={"effort": "medium"},
@@ -682,7 +975,7 @@ async def _stream_agent_mode(
     else:
         # GPT-4 models use Chat Completions API
         response = await client.chat.completions.create(
-            model=settings.OPENAI_MODEL,
+            model=model_to_use,
             messages=messages,
             tools=tools,
             tool_choice="auto"
@@ -880,7 +1173,8 @@ async def chat_sse(
     mode: Literal["ask", "agent"] = Query("ask", description="Chat mode"),
     conversation_id: str | None = Query(None, description="Conversation ID"),
     stream: bool = Query(True, description="Enable streaming"),
-    attachments: str | None = Query(None, description="JSON-encoded attachments")
+    attachments: str | None = Query(None, description="JSON-encoded attachments"),
+    context: str | None = Query(None, description="JSON-encoded context")
 ):
     """
     GET endpoint for SSE streaming (EventSource compatibility).
@@ -894,6 +1188,7 @@ async def chat_sse(
     - conversation_id: Optional conversation ID
     - stream: Must be true for streaming (default: true)
     - attachments: JSON-encoded attachments array
+    - context: JSON-encoded context object
     
     Example:
         GET /chat?message=hello&mode=agent&stream=true
@@ -921,6 +1216,17 @@ async def chat_sse(
                 detail="Invalid attachments JSON"
             )
     
+    # Parse context from query string
+    parsed_context = None
+    if context:
+        try:
+            parsed_context = json.loads(context)
+        except json.JSONDecodeError:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid context JSON"
+            )
+    
     # Generate conversation ID if not provided
     conv_id = conversation_id or str(uuid4())
     
@@ -931,7 +1237,8 @@ async def chat_sse(
             message,
             conv_id,
             parsed_attachments,
-            context_store
+            context_store,
+            parsed_context
         ),
         media_type="text/event-stream",
         headers={
@@ -982,7 +1289,8 @@ async def chat(request: ChatRequest) -> ChatResponse | StreamingResponse:
                     request.message,
                     conversation_id,
                     request.attachments,
-                    context_store
+                    context_store,
+                    request.context
                 ),
                 media_type="text/event-stream"
             )
@@ -1007,7 +1315,8 @@ async def chat(request: ChatRequest) -> ChatResponse | StreamingResponse:
             assistant_message = await _handle_ask_mode(
                 request.message,
                 conversation_id,
-                history
+                history,
+                request.context
             )
             
             # Save conversation (using chat repository)
@@ -1035,7 +1344,8 @@ async def chat(request: ChatRequest) -> ChatResponse | StreamingResponse:
                 request.message,
                 conversation_id,
                 request.attachments,
-                context_store
+                context_store,
+                request.context
             )
             
             return ChatResponse(
