@@ -136,12 +136,14 @@ export default function ParametersPanel() {
                     const g = v[0]; 
                     updateConfig({ gravity: g });
                     // Update scene world settings
-                    if (scene?.world) {
-                      const updatedScene = {
-                        ...scene,
-                        world: { ...scene.world, gravity_m_s2: g }
-                      };
-                      updateSceneAndResimulate(updatedScene);
+                    if (scene) {
+                      updateSceneAndResimulate((prev: any | null) => {
+                        if (!prev) {
+                          return prev;
+                        }
+                        const world = { ...(prev.world ?? {}), gravity_m_s2: g };
+                        return { ...prev, world };
+                      });
                     }
                   }} 
                 />
@@ -201,10 +203,15 @@ export default function ParametersPanel() {
                           const m = v[0];
                           // Update scene body mass (universal approach only)
                           if (scene?.bodies) {
-                            const updatedBodies = scene.bodies.map((b: any) => 
-                              b.id === entity.segment_id ? { ...b, mass_kg: m } : b
-                            );
-                            updateSceneAndResimulate({ ...scene, bodies: updatedBodies });
+                            updateSceneAndResimulate((prev: any | null) => {
+                              if (!prev?.bodies) {
+                                return prev;
+                              }
+                              const updatedBodies = prev.bodies.map((b: any) =>
+                                b.id === entity.segment_id ? { ...b, mass_kg: m } : b,
+                              );
+                              return { ...prev, bodies: updatedBodies };
+                            });
                           }
                         }} 
                       />
@@ -226,12 +233,20 @@ export default function ParametersPanel() {
                           setFriction(v[0]);
                           // Update scene body material
                           if (scene?.bodies) {
-                            const updatedBodies = scene.bodies.map((b: any) => 
-                              b.id === entity.segment_id 
-                                ? { ...b, material: { ...b.material, friction: v[0] } } 
-                                : b
-                            );
-                            updateSceneAndResimulate({ ...scene, bodies: updatedBodies });
+                            const frictionValue = v[0];
+                            updateSceneAndResimulate((prev: any | null) => {
+                              if (!prev?.bodies) {
+                                return prev;
+                              }
+                              const updatedBodies = prev.bodies.map((b: any) => {
+                                if (b.id !== entity.segment_id) {
+                                  return b;
+                                }
+                                const material = { ...(b.material ?? {}), friction: frictionValue };
+                                return { ...b, material };
+                              });
+                              return { ...prev, bodies: updatedBodies };
+                            });
                           }
                         }} 
                       />
@@ -253,12 +268,20 @@ export default function ParametersPanel() {
                           setRestitution(v[0]);
                           // Update scene body material
                           if (scene?.bodies) {
-                            const updatedBodies = scene.bodies.map((b: any) => 
-                              b.id === entity.segment_id 
-                                ? { ...b, material: { ...b.material, restitution: v[0] } } 
-                                : b
-                            );
-                            updateSceneAndResimulate({ ...scene, bodies: updatedBodies });
+                            const restitutionValue = v[0];
+                            updateSceneAndResimulate((prev: any | null) => {
+                              if (!prev?.bodies) {
+                                return prev;
+                              }
+                              const updatedBodies = prev.bodies.map((b: any) => {
+                                if (b.id !== entity.segment_id) {
+                                  return b;
+                                }
+                                const material = { ...(b.material ?? {}), restitution: restitutionValue };
+                                return { ...b, material };
+                              });
+                              return { ...prev, bodies: updatedBodies };
+                            });
                           }
                         }} 
                       />

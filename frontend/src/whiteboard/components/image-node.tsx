@@ -47,15 +47,15 @@ const RESIZE_HANDLES: Array<{
     style: CSSProperties;
     cursor: CSSProperties['cursor'];
 }> = [
-    { id: 'top-left', style: { top: -HANDLE_OFFSET, left: -HANDLE_OFFSET }, cursor: 'nwse-resize' },
-    { id: 'top', style: { top: -HANDLE_OFFSET, left: '50%', transform: 'translateX(-50%)' }, cursor: 'ns-resize' },
-    { id: 'top-right', style: { top: -HANDLE_OFFSET, right: -HANDLE_OFFSET }, cursor: 'nesw-resize' },
-    { id: 'right', style: { top: '50%', right: -HANDLE_OFFSET, transform: 'translateY(-50%)' }, cursor: 'ew-resize' },
-    { id: 'bottom-right', style: { bottom: -HANDLE_OFFSET, right: -HANDLE_OFFSET }, cursor: 'nwse-resize' },
-    { id: 'bottom', style: { bottom: -HANDLE_OFFSET, left: '50%', transform: 'translateX(-50%)' }, cursor: 'ns-resize' },
-    { id: 'bottom-left', style: { bottom: -HANDLE_OFFSET, left: -HANDLE_OFFSET }, cursor: 'nesw-resize' },
-    { id: 'left', style: { top: '50%', left: -HANDLE_OFFSET, transform: 'translateY(-50%)' }, cursor: 'ew-resize' },
-];
+        { id: 'top-left', style: { top: -HANDLE_OFFSET, left: -HANDLE_OFFSET }, cursor: 'nwse-resize' },
+        { id: 'top', style: { top: -HANDLE_OFFSET, left: '50%', transform: 'translateX(-50%)' }, cursor: 'ns-resize' },
+        { id: 'top-right', style: { top: -HANDLE_OFFSET, right: -HANDLE_OFFSET }, cursor: 'nesw-resize' },
+        { id: 'right', style: { top: '50%', right: -HANDLE_OFFSET, transform: 'translateY(-50%)' }, cursor: 'ew-resize' },
+        { id: 'bottom-right', style: { bottom: -HANDLE_OFFSET, right: -HANDLE_OFFSET }, cursor: 'nwse-resize' },
+        { id: 'bottom', style: { bottom: -HANDLE_OFFSET, left: '50%', transform: 'translateX(-50%)' }, cursor: 'ns-resize' },
+        { id: 'bottom-left', style: { bottom: -HANDLE_OFFSET, left: -HANDLE_OFFSET }, cursor: 'nesw-resize' },
+        { id: 'left', style: { top: '50%', left: -HANDLE_OFFSET, transform: 'translateY(-50%)' }, cursor: 'ew-resize' },
+    ];
 
 export default function ImageNode({ node, mode, camera }: ImageNodeProps) {
     const {
@@ -204,14 +204,22 @@ export default function ImageNode({ node, mode, camera }: ImageNodeProps) {
 
             const labelEntities = initResponse.initialization.entities
                 ? initResponse.initialization.entities.map((entity) => ({
-                      segment_id: entity.segment_id,
-                      label: entity.type,
-                      props: entity.props,
-                  }))
+                    segment_id: entity.segment_id,
+                    label: entity.type,
+                    props: entity.props,
+                }))
                 : undefined;
 
             const scaleMetersPerPx = typeof (scene as any)?.mapping?.scale_m_per_px === 'number'
                 ? (scene as any).mapping.scale_m_per_px
+                : null;
+
+            const sceneMeta = (initResponse.initialization as Record<string, any>)?.scene_meta;
+            const renderImageBase64 = typeof sceneMeta?.render_image_base64 === 'string'
+                ? sceneMeta.render_image_base64
+                : null;
+            const renderImageDataUrl = typeof renderImageBase64 === 'string' && renderImageBase64.length > 0
+                ? `data:image/png;base64,${renderImageBase64}`
                 : null;
 
             await loadSimulationRun({
@@ -232,6 +240,7 @@ export default function ImageNode({ node, mode, camera }: ImageNodeProps) {
                           entities: labelEntities,
                       }
                     : null,
+                renderImageDataUrl,
             });
 
             const width = Math.max(SIMULATION_BOX_MIN_WIDTH, node.bounds.width);
@@ -246,13 +255,13 @@ export default function ImageNode({ node, mode, camera }: ImageNodeProps) {
                 metadata: {
                     sourceImageNodeId: node.id,
                     conversion: {
-                            framesCount,
-                            imageWidth: width_px,
-                            imageHeight: height_px,
-                            conversationId: initResponse.conversation_id,
-                            imageId: initResponse.image_id,
-                            warnings: initResponse.initialization.warnings,
-                        },
+                        framesCount,
+                        imageWidth: width_px,
+                        imageHeight: height_px,
+                        conversationId: initResponse.conversation_id,
+                        imageId: initResponse.image_id,
+                        warnings: initResponse.initialization.warnings,
+                    },
                 },
             });
 
@@ -276,6 +285,7 @@ export default function ImageNode({ node, mode, camera }: ImageNodeProps) {
             setSelection([simNodeId]);
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Conversion failed';
+            console.error('[ImageNode] Convert to simulation failed', error);
             setConversionError(message);
         } finally {
             setIsConverting(false);
@@ -555,7 +565,7 @@ export default function ImageNode({ node, mode, camera }: ImageNodeProps) {
                 style={{ height: contentHeight }}
             >
                 {conversionError && (
-                    <div className="absolute left-2 right-2 top-2 z-20 rounded bg-destructive/90 px-2 py-1 text-xs text-destructive-foreground shadow">
+                    <div className="absolute left-2 right-2 top-2 z-20 rounded bg-destructive px-2 py-1 text-xs text-destructive-foreground shadow">
                         {conversionError}
                     </div>
                 )}
