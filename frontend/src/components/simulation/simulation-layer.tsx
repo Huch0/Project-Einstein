@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useCallback } from 'react';
+import { useEffect, useMemo, useRef, useCallback, useState } from 'react';
 import Matter from 'matter-js';
 import { useSimulation } from '@/simulation/SimulationContext';
 import { initializeMatterScene, enforcePulleyConstraints } from '@/simulation/matterRunner';
@@ -205,6 +205,20 @@ export function SimulationLayer({
     }>>([]);
     const isDragging = useRef(false);
     const animationFrameRef = useRef<number | null>(null);
+    
+    // Visual feedback state
+    const [hoveredBodyId, setHoveredBodyId] = useState<string | null>(null);
+    const [cursor, setCursor] = useState<string>('default');
+    
+    // Double-click activation state (for safe dragging)
+    const [activatedBodyId, setActivatedBodyId] = useState<string | null>(null);
+    const activatedBodyIdRef = useRef<string | null>(null);
+    const lastClickTimeRef = useRef<number>(0);
+    const lastClickedBodyRef = useRef<string | null>(null);
+    const DOUBLE_CLICK_DELAY = 300; // milliseconds
+    const activationTimestampRef = useRef<number>(0);
+    const ACTIVATION_FLASH_MS = 250; // visual flash duration
+    
     const destroyMatterScene = useCallback(() => {
         // Stop animation loop
         if (animationFrameRef.current !== null) {
@@ -246,10 +260,12 @@ export function SimulationLayer({
         scene, 
         playing, 
         renderImageDataUrl, 
-        normalizationReport, 
+        normalizationReport,
         simulationMode,
+        registerUpdateEntityCallback,
+        selectedEntityId,
         setSelectedEntityId,
-        registerUpdateEntityCallback 
+        editingEnabled,
     } = useSimulation();
     const currentFrame = frames[currentIndex];
     const globalChat = useGlobalChat();
@@ -277,7 +293,7 @@ export function SimulationLayer({
                 return;
             }
             
-            // Apply updates to Matter.js body
+            // Apply updates to Matter.js body immediately (Frontend)
             if (updates.position) {
                 // Scene coords (Y-up) → Matter.js coords (Y-down)
                 Matter.Body.setPosition(body, { 
@@ -305,7 +321,31 @@ export function SimulationLayer({
                 Matter.Body.setAngularVelocity(body, -updates.angularVelocity);
             }
             
-            console.log(`[SimulationLayer] Entity ${entityId} updated in Frontend`);
+            console.log(`[SimulationLayer] Entity ${entityId} updated in Frontend Matter.js`);
+            
+            // Debounced Backend sync (for persistence)
+            if (debouncedBackendSyncRef.current) {
+                const backendUpdates: any = {};
+                
+                if (updates.position) {
+                    backendUpdates.position_m = updates.position;
+                }
+                if (updates.mass !== undefined) {
+                    backendUpdates.mass_kg = updates.mass;
+                }
+                if (updates.friction !== undefined) {
+                    backendUpdates.material = { friction: updates.friction };
+                }
+                if (updates.velocity) {
+                    backendUpdates.velocity_m_s = updates.velocity;
+                }
+                
+                debouncedBackendSyncRef.current.debouncedUpdate({
+                    [entityId]: backendUpdates
+                });
+                
+                console.log(`[SimulationLayer] Debounced backend sync queued for ${entityId}`);
+            }
         };
         
         registerUpdateEntityCallback(callback);
@@ -681,140 +721,72 @@ export function SimulationLayer({
 
             matterRenderRef.current = render;
             Matter.Render.run(render);
-
-            // Add mouse constraint for interactive mode
-            if (simulationMode === 'interactive') {
-                const mouse = Matter.Mouse.create(render.canvas);
-                const mouseConstraint = Matter.MouseConstraint.create(built.engine, {
-                    mouse: mouse,
-                    constraint: {
-                        stiffness: 0.2,
-                        render: {
-                            visible: false,
-                        },
-                    },
-                    // CRITICAL: Allow mouse to interact with static bodies
-                    collisionFilter: {
-                        mask: 0xFFFFFFFF, // Interact with all collision groups
-                    }
-                });
-
-                // Override canStartDrag to allow static bodies
-                (mouseConstraint as any).canStartDrag = function(body: Matter.Body) {
-                    return true; // Allow dragging ALL bodies (static + dynamic)
-                };
-
-                // Track dragged body (mouseConstraint.body becomes null on enddrag)
-                let draggedBody: Matter.Body | null = null;
-
-                // Click to select entity
-                Matter.Events.on(mouseConstraint, 'mousedown', (event: any) => {
-                    const mouse = event.mouse;
-                    const bodies = Matter.Composite.allBodies(built.engine.world);
-                    
-                    // Find clicked body
-                    const clickedBody = bodies.find(body => 
-                        Matter.Bounds.contains(body.bounds, mouse.position) &&
-                        Matter.Vertices.contains(body.vertices, mouse.position)
-                    );
-                    
-                    if (clickedBody) {
-                        const bodyId = clickedBody.label || clickedBody.id?.toString() || 'unknown';
-                        console.log('[SimulationLayer] Body clicked:', bodyId);
-                        setSelectedEntityId(bodyId);
-                    } else {
-                        // Clicked empty space - deselect
-                        console.log('[SimulationLayer] Empty space clicked - deselecting');
-                        setSelectedEntityId(null);
-                    }
-                });
-
-                // Allow dragging of all bodies (static and dynamic)
-                Matter.Events.on(mouseConstraint, 'startdrag', (event: any) => {
-                    const body = event.body;
-                    if (!body) return;
-                    
-                    // Store reference to dragged body
-                    draggedBody = body;
-                    
-                    // Static bodies: Don't convert to dynamic (causes NaN)
-                    // Instead, mark them and handle position updates manually
-                    if (body.isStatic) {
-                        (body as any).__wasStatic = true;
-                        (body as any).__staticDragStart = { 
-                            x: body.position.x, 
-                            y: body.position.y,
-                            angle: body.angle
-                        };
-                        console.log(`[SimulationLayer] Static body ${body.label || body.id} drag initiated (will update manually)`);
-                    } else {
-                        console.log(`[SimulationLayer] Dynamic body ${body.label || body.id} dragging`);
-                    }
-                });
-
-                // Backend sync on drag end
-                Matter.Events.on(mouseConstraint, 'enddrag', async (event: any) => {
-                    // Use stored body reference (mouseConstraint.body is null here)
-                    const body = draggedBody;
-                    if (!body) {
-                        console.warn('[SimulationLayer] No dragged body stored');
-                        return;
-                    }
-
-                    const bodyId = body.label || body.id?.toString() || 'unknown';
-                    
-                    // For static bodies that were dragged
-                    if ((body as any).__wasStatic) {
-                        // Static bodies stay static, just clean up markers
-                        delete (body as any).__wasStatic;
-                        delete (body as any).__staticDragStart;
-                        console.log(`[SimulationLayer] Static body ${bodyId} drag completed at (${body.position.x.toFixed(2)}, ${body.position.y.toFixed(2)})`);
-                    }
-                    
-                    // Check if body has valid position
-                    if (!body.position || !Number.isFinite(body.position.x) || !Number.isFinite(body.position.y)) {
-                        console.error(`[SimulationLayer] Invalid body position for ${bodyId}:`, body.position);
-                        draggedBody = null;
-                        return;
-                    }
-
-                    // Matter.js position is in canvas pixels with Y-down
-                    const matterX = body.position.x;
-                    const matterY = body.position.y;
-                    
-                    // Scene coordinates: Y-up (invert Y from Matter.js)
-                    const sceneX = matterX;
-                    const sceneY = -matterY;
-                    
-                    const newPosition: [number, number] = [sceneX, sceneY];
-
-                    console.log(`[SimulationLayer] Body ${bodyId} dragged to (scene):`, newPosition, 
-                        `(canvas: ${matterX.toFixed(2)}, ${matterY.toFixed(2)})`);
-
-                    // Sync to backend (debounced)
-                    const conversationId = globalChat.activeBoxId;
-                    if (conversationId && debouncedBackendSyncRef.current) {
-                        try {
-                            await debouncedBackendSyncRef.current.flush();
-                            
-                            debouncedBackendSyncRef.current.debouncedUpdate({
-                                [bodyId]: { position_m: newPosition }
-                            });
-                        } catch (error) {
-                            console.error('[SimulationLayer] Backend sync failed:', error);
-                        }
-                    }
-                    
-                    // Clear stored reference
-                    draggedBody = null;
-                });
-
-                Matter.World.add(built.engine.world, mouseConstraint);
-                render.mouse = mouse;
-                matterMouseConstraintRef.current = mouseConstraint;
+            
+            // Visual feedback: Hover / select / activation highlighting
+            Matter.Events.on(render, 'afterRender', () => {
+                const canvas = render.canvas;
+                const context = render.context;
+                const bodies = Matter.Composite.allBodies(built.engine.world);
                 
-                console.log('[SimulationLayer] MouseConstraint added for interactive mode');
-            }
+                // Draw hover highlight
+                if (hoveredBodyId) {
+                    const hoveredBody = bodies.find(b => (b as any).label === hoveredBodyId);
+                    if (hoveredBody) {
+                        const isStatic = hoveredBody.isStatic;
+                        context.strokeStyle = isStatic ? '#3b82f6' : '#10b981'; // Blue for static, green for dynamic
+                        context.lineWidth = 2;
+                        context.beginPath();
+                        const vertices = hoveredBody.vertices;
+                        context.moveTo(vertices[0].x, vertices[0].y);
+                        for (let i = 1; i < vertices.length; i++) {
+                            context.lineTo(vertices[i].x, vertices[i].y);
+                        }
+                        context.closePath();
+                        context.stroke();
+                    }
+                }
+                
+                // Draw selected highlight (thicker)
+                if (selectedEntityId) {
+                    const selectedBody = bodies.find(b => (b as any).label === selectedEntityId);
+                    if (selectedBody) {
+                        context.strokeStyle = '#f59e0b'; // Orange for selected
+                        context.lineWidth = 3;
+                        context.beginPath();
+                        const vertices = selectedBody.vertices;
+                        context.moveTo(vertices[0].x, vertices[0].y);
+                        for (let i = 1; i < vertices.length; i++) {
+                            context.lineTo(vertices[i].x, vertices[i].y);
+                        }
+                        context.closePath();
+                        context.stroke();
+                    }
+                }
+
+                // Draw activation highlight (purple glow + short flash)
+                if (activatedBodyId) {
+                    const activatedBody = bodies.find(b => (b as any).label === activatedBodyId);
+                    if (activatedBody) {
+                        const now = performance.now();
+                        const elapsed = now - activationTimestampRef.current;
+                        const flashFactor = Math.max(0, 1 - elapsed / ACTIVATION_FLASH_MS);
+                        context.save();
+                        context.shadowColor = 'rgba(168,85,247,0.85)';
+                        context.shadowBlur = 10 + 10 * flashFactor;
+                        context.strokeStyle = '#a855f7';
+                        context.lineWidth = 4 + 2 * flashFactor;
+                        context.beginPath();
+                        const vertices = activatedBody.vertices;
+                        context.moveTo(vertices[0].x, vertices[0].y);
+                        for (let i = 1; i < vertices.length; i++) {
+                            context.lineTo(vertices[i].x, vertices[i].y);
+                        }
+                        context.closePath();
+                        context.stroke();
+                        context.restore();
+                    }
+                }
+            });
 
             if (frames.length > 0) {
                 applyFrameToMatter(frames[0]);
@@ -829,12 +801,243 @@ export function SimulationLayer({
         return () => {
             destroyMatterScene();
         };
-    }, [renderScene, destroyMatterScene, containerW, containerH, frames, applyFrameToMatter, simulationMode, globalChat.activeBoxId]);
+    }, [renderScene, destroyMatterScene, containerW, containerH, frames, applyFrameToMatter, playing, globalChat.activeBoxId]);
+
+    // Dynamic MouseConstraint management: Add when editing enabled + stopped, remove otherwise
+    useEffect(() => {
+        const engine = matterEngineRef.current;
+        const render = matterRenderRef.current;
+        
+        if (!engine || !render || !scene) {
+            return;
+        }
+
+        // Remove existing mouse constraint if any
+        const existingMouseConstraint = matterMouseConstraintRef.current;
+        if (existingMouseConstraint) {
+            Matter.World.remove(engine.world, existingMouseConstraint);
+            matterMouseConstraintRef.current = null;
+            console.log('[SimulationLayer] MouseConstraint removed');
+        }
+
+        // Add mouse constraint only when editing is enabled AND simulation is stopped
+        if (editingEnabled && !playing) {
+            const mouse = Matter.Mouse.create(render.canvas);
+            const mouseConstraint = Matter.MouseConstraint.create(engine, {
+                mouse: mouse,
+                constraint: {
+                    stiffness: 0.2,
+                    render: {
+                        visible: false,
+                    },
+                },
+                collisionFilter: {
+                    mask: 0xFFFFFFFF, // Interact with all collision groups
+                }
+            });
+
+            // Override canStartDrag to allow static bodies
+            (mouseConstraint as any).canStartDrag = function(body: Matter.Body) {
+                return true; // Allow dragging ALL bodies (static + dynamic)
+            };
+
+            // Track dragged body (mouseConstraint.body becomes null on enddrag)
+            let draggedBody: Matter.Body | null = null;
+
+            // Click / Double-click to select & activate entity for dragging
+            Matter.Events.on(mouseConstraint, 'mousedown', (event: any) => {
+                const mouse = event.mouse;
+                const bodies = Matter.Composite.allBodies(engine.world);
+                
+                // Find clicked body
+                const clickedBody = bodies.find(body => 
+                    Matter.Bounds.contains(body.bounds, mouse.position) &&
+                    Matter.Vertices.contains(body.vertices, mouse.position)
+                );
+                
+                if (clickedBody) {
+                    const bodyId = clickedBody.label || clickedBody.id?.toString() || 'unknown';
+                    const now = performance.now();
+                    const lastBody = lastClickedBodyRef.current;
+                    const lastTime = lastClickTimeRef.current;
+                    if (lastBody === bodyId && now - lastTime <= DOUBLE_CLICK_DELAY) {
+                        // Double-click detected → activate dragging
+                        setActivatedBodyId(bodyId);
+                        activatedBodyIdRef.current = bodyId;
+                        activationTimestampRef.current = now;
+                        setSelectedEntityId(bodyId);
+                        console.log('[SimulationLayer] Body double-click activated:', bodyId);
+                        // Reset memory so user must double-click again next time
+                        lastClickedBodyRef.current = null;
+                        lastClickTimeRef.current = 0;
+                    } else {
+                        // Single click: select only
+                        setSelectedEntityId(bodyId);
+                        setActivatedBodyId(null);
+                        activatedBodyIdRef.current = null;
+                        lastClickedBodyRef.current = bodyId;
+                        lastClickTimeRef.current = now;
+                        console.log('[SimulationLayer] Body single-click selected (awaiting double-click for activation):', bodyId);
+                    }
+                } else {
+                    // Clicked empty space - deselect
+                    console.log('[SimulationLayer] Empty space clicked - deselecting');
+                    setSelectedEntityId(null);
+                    setActivatedBodyId(null);
+                    activatedBodyIdRef.current = null;
+                    lastClickedBodyRef.current = null;
+                    lastClickTimeRef.current = 0;
+                }
+            });
+            
+            // Hover detection (mouse move)
+            Matter.Events.on(mouseConstraint, 'mousemove', (event: any) => {
+                const mouse = event.mouse;
+                const bodies = Matter.Composite.allBodies(engine.world);
+                
+                // Find hovered body
+                const hoveredBody = bodies.find(body => 
+                    Matter.Bounds.contains(body.bounds, mouse.position) &&
+                    Matter.Vertices.contains(body.vertices, mouse.position)
+                );
+                
+                if (hoveredBody) {
+                    const bodyId = hoveredBody.label || hoveredBody.id?.toString() || 'unknown';
+                    setHoveredBodyId(bodyId);
+                    setCursor('grab');
+                } else {
+                    setHoveredBodyId(null);
+                    setCursor('default');
+                }
+            });
+
+            // Allow dragging of all bodies (static and dynamic)
+            Matter.Events.on(mouseConstraint, 'startdrag', (event: any) => {
+                const body = event.body;
+                if (!body) return;
+                const bodyId = body.label || body.id?.toString() || 'unknown';
+                const isStatic = (body as Matter.Body).isStatic;
+                // For static bodies, require explicit double-click activation.
+                // For dynamic bodies, allow single-click drag (no activation required).
+                if (isStatic) {
+                    if (activatedBodyIdRef.current !== bodyId) {
+                        console.log('[SimulationLayer] Drag blocked (static body not activated):', bodyId);
+                        (mouseConstraint as any).body = null; // Cancel drag
+                        return;
+                    }
+                } else {
+                    // Dynamic body: implicitly mark as activated for consistent visuals
+                    setActivatedBodyId(bodyId);
+                    activatedBodyIdRef.current = bodyId;
+                    activationTimestampRef.current = performance.now();
+                }
+                
+                // Store reference to dragged body
+                draggedBody = body;
+                
+                // Static bodies: Don't convert to dynamic (causes NaN)
+                if (body.isStatic) {
+                    (body as any).__wasStatic = true;
+                    (body as any).__staticDragStart = { 
+                        x: body.position.x, 
+                        y: body.position.y,
+                        angle: body.angle
+                    };
+                    console.log(`[SimulationLayer] Static body ${body.label || body.id} drag initiated`);
+                } else {
+                    console.log(`[SimulationLayer] Dynamic body ${body.label || body.id} dragging`);
+                }
+            });
+
+            // Backend sync on drag end
+            Matter.Events.on(mouseConstraint, 'enddrag', async (event: any) => {
+                const body = draggedBody;
+                if (!body) {
+                    console.warn('[SimulationLayer] No dragged body stored');
+                    return;
+                }
+
+                const bodyId = body.label || body.id?.toString() || 'unknown';
+                
+                // For static bodies that were dragged
+                if ((body as any).__wasStatic) {
+                    delete (body as any).__wasStatic;
+                    delete (body as any).__staticDragStart;
+                    console.log(`[SimulationLayer] Static body ${bodyId} drag completed`);
+                }
+                
+                // Check if body has valid position
+                if (!body.position || !Number.isFinite(body.position.x) || !Number.isFinite(body.position.y)) {
+                    console.error(`[SimulationLayer] Invalid body position for ${bodyId}:`, body.position);
+                    draggedBody = null;
+                    return;
+                }
+
+                // Scene coordinates: Y-up (invert Y from Matter.js)
+                const sceneX = body.position.x;
+                const sceneY = -body.position.y;
+                const newPosition: [number, number] = [sceneX, sceneY];
+
+                console.log(`[SimulationLayer] Body ${bodyId} dragged to (scene):`, newPosition);
+
+                // Sync to backend (debounced)
+                const conversationId = globalChat.activeBoxId;
+                if (conversationId && debouncedBackendSyncRef.current) {
+                    try {
+                        await debouncedBackendSyncRef.current.flush();
+                        
+                        debouncedBackendSyncRef.current.debouncedUpdate({
+                            [bodyId]: { position_m: newPosition }
+                        });
+                    } catch (error) {
+                        console.error('[SimulationLayer] Backend sync failed:', error);
+                    }
+                }
+                
+                // Deactivate after drag (require new double-click for static; dynamic will re-activate on next drag)
+                if ((body as Matter.Body).isStatic) {
+                    setActivatedBodyId(null);
+                    activatedBodyIdRef.current = null;
+                }
+                draggedBody = null;
+            });
+
+            // While dragging a static body, manually update its position to the mouse
+            Matter.Events.on(mouseConstraint, 'mousemove', (event: any) => {
+                if (!draggedBody) return;
+                if (!(draggedBody as Matter.Body).isStatic) return;
+                // Only move if activated
+                const bodyId = draggedBody.label || (draggedBody as any).id?.toString() || 'unknown';
+                if (activatedBodyIdRef.current !== bodyId) return;
+                const mousePos = event.mouse.position;
+                // Preserve angle
+                Matter.Body.setPosition(draggedBody, { x: mousePos.x, y: mousePos.y });
+            });
+
+            Matter.World.add(engine.world, mouseConstraint);
+            render.mouse = mouse;
+            matterMouseConstraintRef.current = mouseConstraint;
+            
+            console.log('[SimulationLayer] MouseConstraint added (editing enabled + simulation stopped)');
+        } else {
+            console.log('[SimulationLayer] MouseConstraint not added (editing disabled or simulation playing)');
+        }
+
+        return () => {
+            // Cleanup mouse constraint when effect re-runs or unmounts
+            const mouseConstraint = matterMouseConstraintRef.current;
+            if (mouseConstraint && engine) {
+                Matter.World.remove(engine.world, mouseConstraint);
+                matterMouseConstraintRef.current = null;
+            }
+        };
+    }, [editingEnabled, playing, scene, globalChat.activeBoxId, setSelectedEntityId, setHoveredBodyId, setCursor, activatedBodyId]);
 
     // Initialize debounced backend sync
     useEffect(() => {
         const conversationId = globalChat.activeBoxId;
-        if (!conversationId || simulationMode !== 'interactive') {
+        // Only enable debounced backend sync when simulation exists and is stopped (editable)
+        if (!conversationId || playing) {
             debouncedBackendSyncRef.current = null;
             return;
         }
@@ -847,11 +1050,11 @@ export function SimulationLayer({
                 debouncedBackendSyncRef.current.flush().catch(console.error);
             }
         };
-    }, [globalChat.activeBoxId, simulationMode]);
+    }, [globalChat.activeBoxId, playing]);
 
-    // Interactive Mode: Real-time physics engine update loop
+    // Interactive Mode: Real-time physics engine update loop (allow drag updates when paused & editing)
     useEffect(() => {
-        if (simulationMode !== 'interactive' || !scene) {
+        if (!scene) {
             return;
         }
 
@@ -868,18 +1071,15 @@ export function SimulationLayer({
             const deltaTime = (currentTime - lastTime) / 1000; // Convert to seconds
             lastTime = currentTime;
 
-            // Update physics engine only if playing (automatic simulation)
-            // BUT always render to show drag interactions even when paused
             if (playing) {
-                Matter.Engine.update(engine, deltaTime * 1000); // Matter.js expects milliseconds
+                Matter.Engine.update(engine, deltaTime * 1000);
+            } else if (editingEnabled) {
+                // Fixed small step keeps constraint + drag stable
+                Matter.Engine.update(engine, 16); // ~60fps
+            }
 
-                // Enforce pulley constraints
-                if (pulleyConstraintsRef.current.length > 0) {
-                    enforcePulleyConstraints(pulleyConstraintsRef.current);
-                }
-            } else {
-                // When paused, still update engine with zero delta to process mouse interactions
-                Matter.Engine.update(engine, 0);
+            if (pulleyConstraintsRef.current.length > 0) {
+                enforcePulleyConstraints(pulleyConstraintsRef.current);
             }
 
             // Always render the current state (to show drag feedback)
@@ -896,11 +1096,11 @@ export function SimulationLayer({
                 animationFrameRef.current = null;
             }
         };
-    }, [simulationMode, playing, scene]);
+    }, [playing, scene, editingEnabled]);
 
-    // Playback Mode: Frame-based rendering
+    // Playback Mode: Frame-based rendering (when playing)
     useEffect(() => {
-        if (simulationMode !== 'playback') {
+        if (!playing) {
             return;
         }
 
@@ -910,7 +1110,7 @@ export function SimulationLayer({
         if (render) {
             Matter.Render.world(render);
         }
-    }, [simulationMode, currentFrame, applyFrameToMatter]);
+    }, [playing, currentFrame, applyFrameToMatter]);
 
     useEffect(() => {
         if (!activeTransform.hasMapping) {
@@ -949,11 +1149,10 @@ export function SimulationLayer({
             <div
                 ref={containerRef}
                 className="absolute inset-4 rounded-md bg-primary/5 overflow-hidden shadow-sm"
-                style={{ pointerEvents: enabled ? 'auto' : 'none' }}
-                onPointerDown={simulationMode === 'interactive' ? undefined : handlePointerDown}
-                onPointerMove={simulationMode === 'interactive' ? undefined : handlePointerMove}
-                onPointerUp={simulationMode === 'interactive' ? undefined : handlePointerUp}
-                onPointerCancel={simulationMode === 'interactive' ? undefined : handlePointerUp}
+                style={{ 
+                    pointerEvents: enabled ? 'auto' : 'none',
+                    cursor: (editingEnabled && !playing && scene) ? cursor : 'default'
+                }}
             >
                 {renderImageDataUrl && detectionFit && (
                     <img
@@ -972,12 +1171,13 @@ export function SimulationLayer({
                     <div className="absolute inset-0 bg-gradient-to-br from-background via-background to-muted/40 pointer-events-none" />
                 ) : null}
 
-                {/* Matter.js render host - MUST allow pointer events for interactive mode */}
+                {/* Matter.js canvas layer - enable pointer events when editing mode is enabled and simulation is stopped */}
                 <div 
                     ref={renderHostRef} 
                     className="absolute inset-0"
-                    style={{ 
-                        pointerEvents: simulationMode === 'interactive' ? 'auto' : 'none' 
+                    style={{
+                        pointerEvents: (editingEnabled && !playing && scene) ? 'auto' : 'none',
+                        zIndex: 10, // Above background image
                     }}
                 />
 
