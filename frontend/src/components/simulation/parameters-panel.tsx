@@ -68,7 +68,6 @@ export default function ParametersPanel() {
     updateConfig, resetSimulation, 
     playing, setPlaying, scene, labels,
     updateSceneAndResimulate,
-    simulationMode, setSimulationMode,
     selectedEntityId: contextSelectedEntityId,
     setSelectedEntityId: setContextSelectedEntityId,
     updateEntityCallback
@@ -374,29 +373,7 @@ export default function ParametersPanel() {
         <div className="flex items-center justify-between">
           <CardTitle className="font-headline text-lg">Controls & Parameters</CardTitle>
           <div className="flex gap-2">
-            {/* Simulation Mode Toggle */}
-            {scene && (
-              <div className="flex gap-1 rounded-md border bg-background p-1">
-                <Button 
-                  type="button" 
-                  variant={simulationMode === 'playback' ? 'default' : 'ghost'} 
-                  size="sm" 
-                  onClick={() => setSimulationMode('playback')}
-                  aria-pressed={simulationMode === 'playback'}
-                >
-                  📹 Playback
-                </Button>
-                <Button 
-                  type="button" 
-                  variant={simulationMode === 'interactive' ? 'default' : 'ghost'} 
-                  size="sm" 
-                  onClick={() => setSimulationMode('interactive')}
-                  aria-pressed={simulationMode === 'interactive'}
-                >
-                  🎮 Interactive
-                </Button>
-              </div>
-            )}
+            {/* Interactive editing is available when simulation is stopped; no separate mode toggle */}
             {/* Entity Scope Toggle */}
             {labels && labels.entities?.length ? (
               <div className="flex gap-1 rounded-md border bg-background p-1">
@@ -428,16 +405,16 @@ export default function ParametersPanel() {
                   <Button variant="outline" size="icon" aria-label="Pause" onClick={() => setPlaying(false)} disabled={!playing}>
                     <Pause className="h-4 w-4" />
                   </Button>
-                  <Button variant="outline" size="icon" aria-label="Step Forward" disabled={simulationMode === 'interactive'}>
+                  <Button variant="outline" size="icon" aria-label="Step Forward" disabled={playing}>
                     <StepForward className="h-4 w-4" />
                   </Button>
                   <Button variant="outline" size="icon" aria-label="Reset" onClick={() => resetSimulation()}>
                     <RotateCcw className="h-4 w-4" />
                   </Button>
                 </div>
-                {simulationMode === 'interactive' && (
+                {!playing && scene && (
                   <p className="text-xs text-muted-foreground">
-                    🎮 Interactive Mode: Drag objects to interact with the simulation
+                    🎮 Simulation stopped: Click objects to edit their parameters
                   </p>
                 )}
               </div>
@@ -636,13 +613,13 @@ export default function ParametersPanel() {
                         onValueChange={(v) => { 
                           const m = v[0];
                           
-                          if (simulationMode === 'interactive' && updateEntityCallback) {
+                          if (!playing && updateEntityCallback) {
                             // Interactive Mode: Update Frontend Matter.js immediately
+                            // Backend sync happens automatically via debounced callback
                             updateEntityCallback(entity.segment_id, { mass: m });
                             console.log(`[ParametersPanel] Interactive: Mass updated to ${m}`);
                             
-                            // TODO: Debounced Backend sync (resimulate=false)
-                            // For now, also update scene for consistency
+                            // Also update scene for consistency
                             if (scene?.bodies) {
                               updateSceneAndResimulate((prev: any | null) => {
                                 if (!prev?.bodies) return prev;
@@ -685,7 +662,7 @@ export default function ParametersPanel() {
                           setFriction(v[0]);
                           const frictionValue = v[0];
                           
-                          if (simulationMode === 'interactive' && updateEntityCallback) {
+                          if (!playing && updateEntityCallback) {
                             // Interactive Mode: Update Frontend Matter.js immediately
                             updateEntityCallback(entity.segment_id, { friction: frictionValue });
                             console.log(`[ParametersPanel] Interactive: Friction updated to ${frictionValue}`);
@@ -755,7 +732,7 @@ export default function ParametersPanel() {
                         }}
                         onValueCommit={(v) => {
                           // Sync to backend when user finishes dragging slider
-                          if (simulationMode === 'interactive') {
+                          if (!playing) {
                             syncMaterialToBackend(entity.segment_id, { restitution: v[0] }, false);
                           }
                         }}
