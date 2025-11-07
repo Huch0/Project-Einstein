@@ -32,12 +32,32 @@ const isPartialNumberInput = (value: string): boolean => {
   }
   return /[.,]$/.test(value);
 };
+const MAX_POSITION_DECIMALS = 4;
+const formatPositionText = (value: number): string =>
+  Number.isFinite(value) ? Number(value.toFixed(MAX_POSITION_DECIMALS)).toString() : '0';
 
-const DEFAULT_VELOCITY_STATE = {
+type VelocityState = {
+  magnitude: number;
+  angleDeg: number;
+  vxText: string;
+  vyText: string;
+};
+
+type PositionState = {
+  xText: string;
+  yText: string;
+};
+
+const DEFAULT_VELOCITY_STATE: VelocityState = {
   magnitude: 0,
   angleDeg: 0,
   vxText: '0',
   vyText: '0',
+};
+
+const DEFAULT_POSITION_STATE: PositionState = {
+  xText: '0',
+  yText: '0',
 };
 
 export default function ParametersPanel() {
@@ -54,9 +74,10 @@ export default function ParametersPanel() {
   
   // Physics parameters (must be at top level, not conditionally called)
   const [friction, setFriction] = useState(0.5);
-  const [entityRestitution, setEntityRestitution] = useState(0.3);
+  const [entityRestitution, setEntityRestitution] = useState(1);
   const [density, setDensity] = useState(1.0);
-  const [velocityState, setVelocityState] = useState(() => ({ ...DEFAULT_VELOCITY_STATE }));
+  const [velocityState, setVelocityState] = useState<VelocityState>(() => ({ ...DEFAULT_VELOCITY_STATE }));
+  const [positionState, setPositionState] = useState<PositionState>(() => ({ ...DEFAULT_POSITION_STATE }));
   const [gravityX, setGravityX] = useState(0);
   const [gravityY, setGravityY] = useState(gravity);
 
@@ -81,12 +102,16 @@ export default function ParametersPanel() {
   useEffect(() => {
     if (!selectedEntityId || !scene?.bodies) {
       setVelocityState({ ...DEFAULT_VELOCITY_STATE });
+      setPositionState({ ...DEFAULT_POSITION_STATE });
+      setEntityRestitution(1);
       return;
     }
 
     const body = scene.bodies.find((b: any) => b.id === selectedEntityId);
     if (!body) {
       setVelocityState({ ...DEFAULT_VELOCITY_STATE });
+      setPositionState({ ...DEFAULT_POSITION_STATE });
+      setEntityRestitution(1);
       return;
     }
 
@@ -100,6 +125,21 @@ export default function ParametersPanel() {
       vxText: formatVelocityText(vx),
       vyText: formatVelocityText(vy),
     });
+
+    const [px, py] = Array.isArray(body.position_m)
+      ? [Number(body.position_m[0]) || 0, Number(body.position_m[1]) || 0]
+      : [0, 0];
+    setPositionState({
+      xText: formatPositionText(px),
+      yText: formatPositionText(py),
+    });
+
+    const restitutionValue = Number((body.material as any)?.restitution);
+    if (Number.isFinite(restitutionValue)) {
+      setEntityRestitution(restitutionValue);
+    } else {
+      setEntityRestitution(1);
+    }
   }, [selectedEntityId, scene?.bodies]);
 
   const applyVelocityUpdate = useCallback(
@@ -201,6 +241,50 @@ export default function ParametersPanel() {
       });
     },
     [applyVelocityUpdate],
+  );
+
+  const handlePositionInput = useCallback(
+    (entityId: string, axis: 'x' | 'y', value: string) => {
+      let updatePayload: { x: number; y: number; formatted: PositionState } | null = null;
+
+      setPositionState((prev) => {
+        const next: PositionState =
+          axis === 'x'
+            ? { ...prev, xText: value }
+            : { ...prev, yText: value };
+
+        if (isPartialNumberInput(next.xText) || isPartialNumberInput(next.yText)) {
+          return next;
+        }
+
+        const x = Number.parseFloat(next.xText);
+        const y = Number.parseFloat(next.yText);
+        if (Number.isFinite(x) && Number.isFinite(y)) {
+          const formatted: PositionState = {
+            xText: formatPositionText(x),
+            yText: formatPositionText(y),
+          };
+          updatePayload = { x, y, formatted };
+          return formatted;
+        }
+
+        return next;
+      });
+
+      if (updatePayload) {
+        const { x, y } = updatePayload;
+        updateSceneAndResimulate((prevScene: any | null) => {
+          if (!prevScene?.bodies) {
+            return prevScene;
+          }
+          const updatedBodies = prevScene.bodies.map((b: any) =>
+            b.id === entityId ? { ...b, position_m: [x, y] } : b,
+          );
+          return { ...prevScene, bodies: updatedBodies };
+        });
+      }
+    },
+    [updateSceneAndResimulate],
   );
 
   return (
@@ -407,6 +491,48 @@ export default function ParametersPanel() {
 
                 return (
                   <div className="space-y-4">
+                    {/* Position Controls */}
+                    <div className="grid gap-3">
+                      <div className="flex justify-between items-center">
+                        <Label>Position (m)</Label>
+                        <span className="text-sm text-muted-foreground">
+                          [{positionState.xText}, {positionState.yText}]
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-1">
+                          <Label htmlFor={`position-x-${entity.segment_id}`} className="text-xs text-muted-foreground uppercase">
+                            x
+                          </Label>
+                          <Input
+                            id={`position-x-${entity.segment_id}`}
+                            type="number"
+                            step="0.01"
+                            inputMode="decimal"
+                            value={positionState.xText}
+                            onChange={(event) =>
+                              handlePositionInput(entity.segment_id, 'x', event.target.value)
+                            }
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label htmlFor={`position-y-${entity.segment_id}`} className="text-xs text-muted-foreground uppercase">
+                            y
+                          </Label>
+                          <Input
+                            id={`position-y-${entity.segment_id}`}
+                            type="number"
+                            step="0.01"
+                            inputMode="decimal"
+                            value={positionState.yText}
+                            onChange={(event) =>
+                              handlePositionInput(entity.segment_id, 'y', event.target.value)
+                            }
+                          />
+                        </div>
+                      </div>
+                    </div>
+
                     {/* Mass Parameter */}
                     <div className="grid gap-2">
                       <div className="flex justify-between items-center">

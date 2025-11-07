@@ -257,37 +257,6 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     console.log('[SimulationContext] reset complete, playing set to false');
   }, []);
 
-  const updateConfig = useCallback((partial: Partial<SimulationConfig>) => {
-    setConfig(prev => {
-      const next: SimulationConfig = { ...prev, ...partial };
-      if (partial.restitution !== undefined) {
-        const rest = partial.restitution;
-        if (typeof rest === 'number' && Number.isFinite(rest)) {
-          next.restitution = Math.min(Math.max(rest, 0), 1);
-        } else {
-          next.restitution = prev.restitution;
-        }
-      }
-      if (partial.friction !== undefined) {
-        const fr = partial.friction;
-        next.friction = typeof fr === 'number' && Number.isFinite(fr) && fr >= 0 ? fr : prev.friction;
-      }
-      if (partial.dt !== undefined) {
-        const dtCandidate = partial.dt;
-        next.dt = typeof dtCandidate === 'number' && Number.isFinite(dtCandidate) && dtCandidate > 0 ? dtCandidate : prev.dt;
-      }
-      if (partial.duration !== undefined) {
-        const durationCandidate = partial.duration;
-        next.duration = typeof durationCandidate === 'number' && Number.isFinite(durationCandidate) && durationCandidate > 0 ? durationCandidate : prev.duration;
-      }
-      if (partial.gravity !== undefined) {
-        const gravityCandidate = partial.gravity;
-        next.gravity = typeof gravityCandidate === 'number' && Number.isFinite(gravityCandidate) ? gravityCandidate : prev.gravity;
-      }
-      return next;
-    });
-  }, []);
-
   const performResimulation = useCallback(
     (sceneToRun: any | null) => {
       if (!sceneToRun) {
@@ -384,6 +353,70 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
       performResimulation(normalizationResult.scene);
     },
     [normalizeSceneForState, performResimulation],
+  );
+
+  const updateConfig = useCallback(
+    (partial: Partial<SimulationConfig>) => {
+      let shouldResimulate = false;
+
+      setConfig((prev) => {
+        const next: SimulationConfig = { ...prev, ...partial };
+
+        if (partial.restitution !== undefined) {
+          const rest = partial.restitution;
+          if (typeof rest === 'number' && Number.isFinite(rest)) {
+            next.restitution = Math.min(Math.max(rest, 0), 1);
+          } else {
+            next.restitution = prev.restitution;
+          }
+        }
+
+        if (partial.friction !== undefined) {
+          const fr = partial.friction;
+          next.friction = typeof fr === 'number' && Number.isFinite(fr) && fr >= 0 ? fr : prev.friction;
+        }
+
+        if (partial.dt !== undefined) {
+          const dtCandidate = partial.dt;
+          next.dt =
+            typeof dtCandidate === 'number' && Number.isFinite(dtCandidate) && dtCandidate > 0
+              ? dtCandidate
+              : prev.dt;
+        }
+
+        if (partial.duration !== undefined) {
+          const durationCandidate = partial.duration;
+          const sanitized =
+            typeof durationCandidate === 'number' && Number.isFinite(durationCandidate) && durationCandidate > 0
+              ? durationCandidate
+              : prev.duration;
+          if (sanitized !== prev.duration) {
+            shouldResimulate = true;
+          }
+          next.duration = sanitized;
+        }
+
+        if (partial.gravity !== undefined) {
+          const gravityCandidate = partial.gravity;
+          next.gravity =
+            typeof gravityCandidate === 'number' && Number.isFinite(gravityCandidate)
+              ? gravityCandidate
+              : prev.gravity;
+        }
+
+        return next;
+      });
+
+      if (shouldResimulate && scene) {
+        const normalization = normalizeSceneForState(scene);
+        if (normalization.scene) {
+          setScene(normalization.scene);
+          setNormalizationReport(normalization.report ?? null);
+          performResimulation(normalization.scene);
+        }
+      }
+    },
+    [scene, normalizeSceneForState, performResimulation, setNormalizationReport, setScene],
   );
 
   const parseAndBind = useCallback(async (file: File): Promise<DiagramParseResponse> => {

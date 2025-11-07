@@ -362,6 +362,32 @@ const isStaticLikeBody = (body: any): boolean => {
   return STATIC_LIKE_ID_PREFIXES.some((prefix) => idRaw.startsWith(prefix));
 };
 
+const ensureDynamicBodyDefaults = (body: any) => {
+  if (!body || typeof body !== 'object') {
+    return;
+  }
+
+  const typeRaw = typeof body.type === 'string' ? body.type.toLowerCase() : '';
+  if (typeRaw === 'static' || typeRaw === 'environment' || isStaticLikeBody(body)) {
+    return;
+  }
+
+  if (!body.material || typeof body.material !== 'object') {
+    body.material = {};
+  }
+
+  const material = body.material as Record<string, unknown>;
+  const restitutionRaw = typeof material.restitution === 'number'
+    ? material.restitution
+    : Number(material.restitution);
+
+  if (!Number.isFinite(restitutionRaw)) {
+    material.restitution = 1;
+  }
+};
+
+const CONTACT_SEPARATION_EPSILON = 5e-4;
+
 const getColliderHalfExtents = (body: any): { halfX: number; halfY: number } => {
   const collider = body?.collider;
   if (!collider || typeof collider !== 'object') {
@@ -617,6 +643,13 @@ export function normalizeSceneToImageBounds<TScene = any>(
   const margin = safeMargin(options?.margin_m ?? 0.02);
   const mode = options?.mode ?? 'translate-and-scale';
   const scaleVelocities = options?.scaleVelocities ?? false;
+
+  if (Array.isArray(sceneAny?.bodies)) {
+    for (const body of sceneAny.bodies) {
+      ensureDynamicBodyDefaults(body);
+    }
+  }
+
   const targets = pickBodiesForNormalization(sceneAny, options?.targetBodies ?? 'dynamic');
 
   if (targets.length === 0) {
@@ -763,7 +796,6 @@ export function normalizeSceneToImageBounds<TScene = any>(
 
   if (dynamicForSeparation.length > 0 && staticBodies.length > 0) {
     const maxIterations = 5;
-    const epsilon = 1e-4;
 
     for (let iteration = 0; iteration < maxIterations; iteration += 1) {
       let movedThisPass = false;
@@ -800,12 +832,12 @@ export function normalizeSceneToImageBounds<TScene = any>(
             const centerDynamicY = (dynamicAabb.minY + dynamicAabb.maxY) / 2;
             const centerStaticY = (staticAabb.minY + staticAabb.maxY) / 2;
             const direction = centerDynamicY >= centerStaticY ? 1 : -1;
-            resolveY = overlapY * direction + epsilon * direction;
+            resolveY = overlapY * direction + CONTACT_SEPARATION_EPSILON * direction;
           } else {
             const centerDynamicX = (dynamicAabb.minX + dynamicAabb.maxX) / 2;
             const centerStaticX = (staticAabb.minX + staticAabb.maxX) / 2;
             const direction = centerDynamicX >= centerStaticX ? 1 : -1;
-            resolveX = overlapX * direction + epsilon * direction;
+            resolveX = overlapX * direction + CONTACT_SEPARATION_EPSILON * direction;
           }
 
           if (resolveX === 0 && resolveY === 0) {
