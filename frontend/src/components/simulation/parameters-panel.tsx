@@ -289,17 +289,34 @@ export default function ParametersPanel() {
                         step={0.1} 
                         onValueChange={(v) => { 
                           const m = v[0];
-                          // Update scene body mass (universal approach only)
-                          if (scene?.bodies) {
-                            updateSceneAndResimulate((prev: any | null) => {
-                              if (!prev?.bodies) {
-                                return prev;
-                              }
-                              const updatedBodies = prev.bodies.map((b: any) =>
-                                b.id === entity.segment_id ? { ...b, mass_kg: m } : b,
-                              );
-                              return { ...prev, bodies: updatedBodies };
-                            });
+                          
+                          if (simulationMode === 'interactive' && updateEntityCallback) {
+                            // Interactive Mode: Update Frontend Matter.js immediately
+                            updateEntityCallback(entity.segment_id, { mass: m });
+                            console.log(`[ParametersPanel] Interactive: Mass updated to ${m}`);
+                            
+                            // TODO: Debounced Backend sync (resimulate=false)
+                            // For now, also update scene for consistency
+                            if (scene?.bodies) {
+                              updateSceneAndResimulate((prev: any | null) => {
+                                if (!prev?.bodies) return prev;
+                                const updatedBodies = prev.bodies.map((b: any) =>
+                                  b.id === entity.segment_id ? { ...b, mass_kg: m } : b,
+                                );
+                                return { ...prev, bodies: updatedBodies };
+                              });
+                            }
+                          } else {
+                            // Playback Mode: Update scene (backend resimulation)
+                            if (scene?.bodies) {
+                              updateSceneAndResimulate((prev: any | null) => {
+                                if (!prev?.bodies) return prev;
+                                const updatedBodies = prev.bodies.map((b: any) =>
+                                  b.id === entity.segment_id ? { ...b, mass_kg: m } : b,
+                                );
+                                return { ...prev, bodies: updatedBodies };
+                              });
+                            }
                           }
                         }} 
                       />
@@ -320,32 +337,43 @@ export default function ParametersPanel() {
                         disabled={isUpdating}
                         onValueChange={(v) => { 
                           setFriction(v[0]);
-                          // Update scene body material (local)
-                          if (scene?.bodies) {
-                            const frictionValue = v[0];
-                            updateSceneAndResimulate((prev: any | null) => {
-                              if (!prev?.bodies) {
-                                return prev;
-                              }
-                              const updatedBodies = prev.bodies.map((b: any) => {
-                                if (b.id !== entity.segment_id) {
-                                  return b;
-                                }
-                                const material = { ...(b.material ?? {}), friction: frictionValue };
-                                return { ...b, material };
+                          const frictionValue = v[0];
+                          
+                          if (simulationMode === 'interactive' && updateEntityCallback) {
+                            // Interactive Mode: Update Frontend Matter.js immediately
+                            updateEntityCallback(entity.segment_id, { friction: frictionValue });
+                            console.log(`[ParametersPanel] Interactive: Friction updated to ${frictionValue}`);
+                            
+                            // Also update scene for consistency
+                            if (scene?.bodies) {
+                              updateSceneAndResimulate((prev: any | null) => {
+                                if (!prev?.bodies) return prev;
+                                const updatedBodies = prev.bodies.map((b: any) => {
+                                  if (b.id !== entity.segment_id) return b;
+                                  const material = { ...(b.material ?? {}), friction: frictionValue };
+                                  return { ...b, material };
+                                });
+                                return { ...prev, bodies: updatedBodies };
                               });
-                              return { ...prev, bodies: updatedBodies };
-                            });
+                            }
+                          } else {
+                            // Playback Mode: Update scene (backend resimulation)
+                            if (scene?.bodies) {
+                              updateSceneAndResimulate((prev: any | null) => {
+                                if (!prev?.bodies) return prev;
+                                const updatedBodies = prev.bodies.map((b: any) => {
+                                  if (b.id !== entity.segment_id) return b;
+                                  const material = { ...(b.material ?? {}), friction: frictionValue };
+                                  return { ...b, material };
+                                });
+                                return { ...prev, bodies: updatedBodies };
+                              });
+                            }
                           }
-                        }}
-                        onValueCommit={(v) => {
-                          // Sync to backend when user finishes dragging slider
-                          if (simulationMode === 'interactive') {
-                            syncMaterialToBackend(entity.segment_id, { friction: v[0] }, false);
-                          }
-                        }}
+                        }} 
                       />
-                    </div>                    {/* Restitution Parameter */}
+                    </div>
+                    
                     {/* Restitution Parameter */}
                     <div className="grid gap-2">
                       <div className="flex justify-between items-center">
