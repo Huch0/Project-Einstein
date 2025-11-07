@@ -5,6 +5,8 @@ const { Engine, World, Bodies, Body, Constraint } = Matter;
 export interface MatterSimulationOptions {
     duration_s?: number;
     maxSteps?: number;
+    restitutionOverride?: number | null;
+    frictionOverride?: number | null;
 }
 
 interface BuiltScene {
@@ -29,6 +31,13 @@ const toVec2 = (value: unknown): [number, number] | null => {
         }
     }
     return null;
+};
+
+const clamp = (value: number, min: number, max: number) => {
+    if (!Number.isFinite(value)) return min;
+    if (value < min) return min;
+    if (value > max) return max;
+    return value;
 };
 
 const toMatterVec = (value: unknown): [number, number] | null => {
@@ -56,19 +65,23 @@ const fromMatterVelocity = (body: Matter.Body): [number, number] => [
     -body.velocity.y,
 ];
 
-function createBody(bodyDef: any): Matter.Body {
+function createBody(bodyDef: any, timeStep_s: number, overrides?: { restitution?: number | null; friction?: number | null }): Matter.Body {
     const renderSpace = bodyDef?.__renderSpace;
     const usesCanvasSpace = renderSpace === 'canvas';
     const scenePosition = toVec2(bodyDef?.position_m) ?? [0, 0];
     const matterX = scenePosition[0];
     const matterY = usesCanvasSpace ? scenePosition[1] : -scenePosition[1];
     const collider = bodyDef?.collider ?? null;
-    const materialFriction = bodyDef?.material?.friction;
-    const friction = typeof materialFriction === 'number' ? materialFriction : 0.0;
     const isStatic = bodyDef?.type === 'static';
     const isEnvironment = isStatic || ['surface', 'ground', 'ramp', 'rope', 'anchor'].includes(bodyDef?.id?.split('_')[0] ?? '');
+    const effectiveDt = Number.isFinite(timeStep_s) && timeStep_s > 0 ? timeStep_s : 0.016;
 
     const renderConfig = bodyDef?.render && typeof bodyDef.render === 'object' ? bodyDef.render : undefined;
+    const material = bodyDef?.material && typeof bodyDef.material === 'object' ? bodyDef.material : undefined;
+    const restitutionRaw = overrides?.restitution ?? material?.restitution;
+    const frictionRaw = overrides?.friction ?? material?.friction;
+    const restitution = clamp(typeof restitutionRaw === 'number' ? restitutionRaw : 1.0, 0, 1);
+    const surfaceFriction = clamp(typeof frictionRaw === 'number' ? frictionRaw : 0, 0, 1);
     const spriteConfig = renderConfig?.sprite && typeof renderConfig.sprite === 'object'
         ? {
               ...renderConfig.sprite,
@@ -111,9 +124,10 @@ function createBody(bodyDef: any): Matter.Body {
 
     const commonOpts: Matter.IBodyDefinition = {
         isStatic,
-        friction,
+        friction: surfaceFriction,
+        frictionStatic: surfaceFriction,
         frictionAir: 0.0,
-        restitution: 0.0,
+        restitution,
         label: bodyDef?.id ?? 'body',
         render: renderOptions,
     };
@@ -170,12 +184,18 @@ function createBody(bodyDef: any): Matter.Body {
 
         const initialVelocity = toVec2(bodyDef?.velocity_m_s);
         if (initialVelocity) {
-            Body.setVelocity(singleBody, usesCanvasSpace ? { x: initialVelocity[0], y: initialVelocity[1] } : { x: initialVelocity[0], y: -initialVelocity[1] });
+            const matterVelocity = usesCanvasSpace
+                ? { x: initialVelocity[0], y: initialVelocity[1] }
+                : { x: initialVelocity[0], y: -initialVelocity[1] };
+            Body.setVelocity(singleBody, matterVelocity);
+            singleBody.positionPrev.x = singleBody.position.x - matterVelocity.x * effectiveDt;
+            singleBody.positionPrev.y = singleBody.position.y - matterVelocity.y * effectiveDt;
         }
 
         const angularVelocity = typeof bodyDef?.angular_velocity_rad_s === 'number' ? bodyDef.angular_velocity_rad_s : undefined;
         if (typeof angularVelocity === 'number' && Number.isFinite(angularVelocity) && angularVelocity !== 0) {
             Body.setAngularVelocity(singleBody, -angularVelocity);
+            singleBody.anglePrev = singleBody.angle - (-angularVelocity) * effectiveDt;
         }
 
     } else if (isEnvironment) {
@@ -185,10 +205,16 @@ function createBody(bodyDef: any): Matter.Body {
     return singleBody;
 }
 
-export function initializeMatterScene(scene: any): BuiltScene {
+export function initializeMatterScene(scene: any, overrides?: { restitution?: number | null; friction?: number | null }): BuiltScene {
     const gravity = scene?.world?.gravity_m_s2 ?? 9.81;
+    const gvec = scene?.world?.gravity_vec_m_s2 as { x?: number; y?: number } | undefined;
+    const gx = typeof gvec?.x === 'number' && Number.isFinite(gvec.x) ? gvec.x : 0;
+    const gy = typeof gvec?.y === 'number' && Number.isFinite(gvec.y) ? gvec.y : gravity;
+    const timeStep = typeof scene?.world?.time_step_s === 'number' && scene.world.time_step_s > 0
+        ? scene.world.time_step_s
+        : 0.016;
     const engine = Engine.create({
-        gravity: { x: 0, y: gravity },
+        gravity: { x: gx, y: gy },
     });
 
     const bodyMap = new Map<string, Matter.Body>();
@@ -196,7 +222,7 @@ export function initializeMatterScene(scene: any): BuiltScene {
 
     for (const bodyDef of scene?.bodies ?? []) {
         if (!bodyDef?.id) continue;
-        const body = createBody(bodyDef);
+        const body = createBody(bodyDef, timeStep, overrides);
         bodyMap.set(bodyDef.id, body);
         World.add(engine.world, body);
     }
@@ -433,7 +459,17 @@ function snapshotFrame(time_s: number, bodyMap: Map<string, Matter.Body>) {
 }
 
 export function runMatterSimulation(scene: any, options?: MatterSimulationOptions) {
-    const { engine, bodyMap, pulleyConstraints } = initializeMatterScene(scene);
+    const restitutionOverride = options?.restitutionOverride != null
+        ? clamp(options.restitutionOverride, 0, 1)
+        : null;
+    const frictionOverride = options?.frictionOverride != null
+        ? Math.max(0, options.frictionOverride)
+        : null;
+    const materialOverrides = {
+        restitution: restitutionOverride,
+        friction: frictionOverride,
+    };
+    const { engine, bodyMap, pulleyConstraints } = initializeMatterScene(scene, materialOverrides);
     const dt = scene?.world?.time_step_s ?? 0.016;
     const duration = options?.duration_s ?? 5;
     const maxSteps = options?.maxSteps ?? 1000;

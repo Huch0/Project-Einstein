@@ -27,7 +27,7 @@ class WorldSettings(BaseModel):
 class Material(BaseModel):
   name: str = Field("default", description="Material identifier.")
   friction: float = Field(0.0, ge=0.0, description="Coefficient of kinetic friction (not yet applied for ideal pulley).")
-  restitution: float = Field(0.0, ge=0.0, le=1.0, description="Bounciness (unused in pulley v0).")
+  restitution: float = Field(1.0, ge=0.0, le=1.0, description="Bounciness (unused in pulley v0).")
 
 
 class Body(BaseModel):
