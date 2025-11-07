@@ -26,6 +26,69 @@ const toVec2 = (value: unknown): [number, number] | null => {
   return null;
 };
 
+const cloneSceneSnapshot = (source: any | null) => {
+  if (!source || typeof source !== 'object') {
+    return source;
+  }
+
+  const cloneBodies = Array.isArray(source.bodies)
+    ? source.bodies.map((body: any) => {
+        if (!body || typeof body !== 'object') {
+          return body;
+        }
+        const clonedBody: any = { ...body };
+        if (Array.isArray(body.position_m)) {
+          clonedBody.position_m = [...body.position_m];
+        }
+        if (Array.isArray(body.velocity_m_s)) {
+          clonedBody.velocity_m_s = [...body.velocity_m_s];
+        }
+        if (Array.isArray(body.vertices_world)) {
+          clonedBody.vertices_world = body.vertices_world.map((vert: any) =>
+            Array.isArray(vert) ? [...vert] : vert,
+          );
+        }
+        if (body.collider && typeof body.collider === 'object') {
+          clonedBody.collider = { ...body.collider };
+          if (Array.isArray(body.collider.vertices)) {
+            clonedBody.collider.vertices = body.collider.vertices.map((vert: any) =>
+              Array.isArray(vert) ? [...vert] : vert,
+            );
+          }
+          if (Array.isArray(body.collider.points_m)) {
+            clonedBody.collider.points_m = body.collider.points_m.map((vert: any) =>
+              Array.isArray(vert) ? [...vert] : vert,
+            );
+          }
+          if (Array.isArray(body.collider.polygon_m)) {
+            clonedBody.collider.polygon_m = body.collider.polygon_m.map((vert: any) =>
+              Array.isArray(vert) ? [...vert] : vert,
+            );
+          }
+        }
+        if (body.material && typeof body.material === 'object') {
+          clonedBody.material = { ...body.material };
+        }
+        return clonedBody;
+      })
+    : undefined;
+
+  const cloneConstraints = Array.isArray(source.constraints)
+    ? source.constraints.map((constraint: any) =>
+        constraint && typeof constraint === 'object' ? { ...constraint } : constraint,
+      )
+    : undefined;
+
+  return {
+    ...source,
+    world: source.world && typeof source.world === 'object' ? { ...source.world } : source.world,
+    mapping:
+      source.mapping && typeof source.mapping === 'object' ? { ...source.mapping } : source.mapping,
+    bodies: cloneBodies,
+    constraints: cloneConstraints,
+  };
+};
+
 interface SimulationRunPayload {
   frames: Array<{
     t: number;
@@ -46,6 +109,7 @@ interface SimulationRunPayload {
   imageSizePx?: { width: number; height: number } | null;
   scale_m_per_px?: number | null;
   labels?: { entities: Array<{ segment_id: string; label: string; props?: Record<string, unknown> }> } | null;
+  renderImageDataUrl?: string | null;
 }
 
 export interface SimulationConfig {
@@ -67,13 +131,15 @@ interface SimulationState extends SimulationConfig {
   setPlaying: (p: boolean) => void;
   setFrameIndex: (index: number) => void;
   updateConfig: (partial: Partial<SimulationConfig>) => void;
-  updateSceneAndResimulate: (sceneUpdates: any) => Promise<void>; // Universal scene update
+  updateSceneAndResimulate: (sceneUpdates: any | ((prev: any | null) => any | null)) => Promise<void>; // Universal scene update
   detections: DiagramParseDetection[];
   imageSizePx: { width: number; height: number } | null;
   scale_m_per_px: number | null;
   scene: any | null;
   labels: { entities: Array<{ segment_id: string; label: string; props?: Record<string, unknown> }> } | null;
   parseAndBind: (file: File) => Promise<DiagramParseResponse>;
+  loadSimulationRun: (payload: SimulationRunPayload) => Promise<void>;
+  renderImageDataUrl: string | null;
 }
 
 const SimulationContext = createContext<SimulationState | null>(null);
@@ -100,6 +166,7 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
   const [scale_m_per_px, setScale] = useState<number | null>(null);
   const [scene, setScene] = useState<any | null>(null);
   const [labels, setLabels] = useState<{ entities: Array<{ segment_id: string; label: string; props?: Record<string, unknown> }> } | null>(null);
+  const [renderImageDataUrl, setRenderImageDataUrl] = useState<string | null>(null);
 
   const resetSimulation = useCallback(() => {
     console.log('[SimulationContext] resetSimulation called');
@@ -114,27 +181,96 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     setConfig(prev => ({ ...prev, ...partial }));
   }, []);
 
-  // NEW: Update scene and re-run Matter.js simulation
-  const updateSceneAndResimulate = useCallback(async (sceneUpdates: any) => {
-    if (!scene) {
-      console.warn('[SimulationContext] No scene to update');
-      return;
-    }
+  const performResimulation = useCallback(
+    (sceneToRun: any | null) => {
+      if (!sceneToRun) {
+        console.warn('[SimulationContext] performResimulation skipped: no scene provided');
+        setFrames([]);
+        setPlaying(false);
+        return;
+      }
 
-    // TODO: Call backend API when available
-    // For now, just update local scene state
-    const updatedScene = { ...scene, ...sceneUpdates };
-    setScene(updatedScene);
-    
-    console.log('[SimulationContext] Scene updated, waiting for backend API to resimulate', updatedScene);
-    // Backend API call will go here:
-    // const response = await fetch('/api/simulation/update', {
-    //   method: 'POST',
-    //   body: JSON.stringify({ scene: updatedScene })
-    // });
-    // const { frames } = await response.json();
-    // setFrames(frames);
-  }, [scene]);
+      const requestId = ++loadRequestRef.current;
+      setPlaying(false);
+
+      try {
+        const duration = typeof config.duration === 'number' && config.duration > 0 ? config.duration : 5;
+        const { frames: matterFrames, dt: simDt } = runMatterSimulation(sceneToRun, { duration_s: duration });
+
+        if (requestId !== loadRequestRef.current) {
+          return;
+        }
+
+        const mappedFrames: SimulationFrame[] = matterFrames.map((frame) => ({
+          t: frame.t,
+          bodies: frame.bodies.map((body) => ({
+            id: body.id,
+            position_m: body.position_m,
+            velocity_m_s: body.velocity_m_s,
+            angle_rad: body.angle_rad,
+            angular_velocity_rad_s: body.angular_velocity_rad_s,
+            vertices_world: body.vertices_world,
+          })),
+        }));
+
+        setFrames(mappedFrames);
+        setCurrentIndex(0);
+        lastTimestamp.current = null;
+        setPlaying(mappedFrames.length > 0);
+
+        const dtFromScene =
+          typeof sceneToRun?.world?.time_step_s === 'number' && sceneToRun.world.time_step_s > 0
+            ? sceneToRun.world.time_step_s
+            : undefined;
+        const dtCandidate = dtFromScene ?? (typeof simDt === 'number' && simDt > 0 ? simDt : undefined);
+        if (dtCandidate) {
+          setConfig((prev) => ({ ...prev, dt: dtCandidate }));
+        }
+      } catch (error) {
+        console.error('[SimulationContext] performResimulation failed', error);
+      }
+    },
+    [config.duration],
+  );
+
+  // Update scene and immediately re-run Matter.js with the latest parameters
+  const updateSceneAndResimulate = useCallback(
+    async (sceneUpdates: any | ((prev: any | null) => any | null)) => {
+      let nextScene: any | null = null;
+
+  setScene((prevScene: any | null) => {
+        const base = cloneSceneSnapshot(prevScene);
+        const candidate =
+          typeof sceneUpdates === 'function'
+            ? sceneUpdates(base)
+            : sceneUpdates;
+
+        if (candidate === undefined) {
+          nextScene = base;
+          return base;
+        }
+
+        if (candidate === null) {
+          nextScene = null;
+          return null;
+        }
+
+        const clonedCandidate = cloneSceneSnapshot(candidate);
+        nextScene = clonedCandidate;
+        return clonedCandidate;
+      });
+
+      if (nextScene === null) {
+        console.warn('[SimulationContext] updateSceneAndResimulate cleared the scene');
+        setFrames([]);
+        setPlaying(false);
+        return;
+      }
+
+      performResimulation(nextScene);
+    },
+    [performResimulation],
+  );
 
   const parseAndBind = useCallback(async (file: File): Promise<DiagramParseResponse> => {
     // Reset state before parsing
@@ -203,9 +339,9 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
       friction: res.parameters.mu_k,
     }));
     // Optional: rerun analytic with new params
-    runAnalytic();
+    // runAnalytic();
     return res;
-  }, [runAnalytic]);
+  }, []);
 
   const loadSimulationRun = useCallback(async (payload: SimulationRunPayload) => {
     // eslint-disable-next-line no-console
@@ -223,6 +359,7 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     setImageSizePx(payload.imageSizePx ?? null);
     setScale(payload.scale_m_per_px ?? null);
     setLabels(payload.labels ?? null);
+  setRenderImageDataUrl(payload.renderImageDataUrl ?? null);
 
     const applyFrames = (framesToApply: SimulationFrame[], dtCandidate?: number) => {
       if (requestId !== loadRequestRef.current) {
@@ -460,6 +597,7 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     labels,
     parseAndBind,
     loadSimulationRun,
+    renderImageDataUrl,
   };
   return <SimulationContext.Provider value={value}>{children}</SimulationContext.Provider>;
 }

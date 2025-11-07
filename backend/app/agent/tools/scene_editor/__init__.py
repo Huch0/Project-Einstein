@@ -57,6 +57,86 @@ def _material_dict(
     return material or None
 
 
+def _clamp_block_to_image_bounds(
+    context: "ConversationContext",
+    position_m: tuple[float, float],
+    size_m: tuple[float, float],
+) -> tuple[list[float], tuple[float, float], list[str]]:
+    """Ensure rectangular blocks remain inside the uploaded image bounds."""
+
+    mapping = (context.scene_state or {}).get("mapping") or context.mapping or {}
+    image_meta = context.image_metadata or {}
+
+    origin = mapping.get("origin_px")
+    scale = float(mapping.get("scale_m_per_px") or 0.0)
+    width_px = float(image_meta.get("width_px") or 0.0)
+    height_px = float(image_meta.get("height_px") or 0.0)
+
+    if not origin or scale <= 0.0 or width_px <= 0.0 or height_px <= 0.0:
+        return [float(position_m[0]), float(position_m[1])], (
+            float(size_m[0]),
+            float(size_m[1]),
+        ), []
+
+    origin_x = float(origin[0])
+    origin_y = float(origin[1])
+    margin_px = 2.0
+
+    width_m = float(size_m[0])
+    height_m = float(size_m[1])
+
+    max_width_px = max(width_px - margin_px * 2.0, 2.0)
+    max_height_px = max(height_px - margin_px * 2.0, 2.0)
+
+    width_px_value = max(width_m / scale, 1e-6)
+    height_px_value = max(height_m / scale, 1e-6)
+    adjustments: list[str] = []
+
+    if width_px_value > max_width_px:
+        width_px_value = max_width_px
+        width_m = width_px_value * scale
+        adjustments.append("width_clamped")
+
+    if height_px_value > max_height_px:
+        height_px_value = max_height_px
+        height_m = height_px_value * scale
+        adjustments.append("height_clamped")
+
+    half_w_px = width_px_value / 2.0
+    half_h_px = height_px_value / 2.0
+
+    center_x_px = origin_x + float(position_m[0]) / scale
+    center_y_px = origin_y - float(position_m[1]) / scale
+
+    min_center_x = margin_px + half_w_px
+    max_center_x = width_px - margin_px - half_w_px
+    min_center_y = margin_px + half_h_px
+    max_center_y = height_px - margin_px - half_h_px
+
+    if min_center_x > max_center_x:
+        center_x_px = width_px / 2.0
+    else:
+        clamped_x = min(max(center_x_px, min_center_x), max_center_x)
+        if abs(clamped_x - center_x_px) > 1e-6:
+            adjustments.append("position_x_clamped")
+        center_x_px = clamped_x
+
+    if min_center_y > max_center_y:
+        center_y_px = height_px / 2.0
+    else:
+        clamped_y = min(max(center_y_px, min_center_y), max_center_y)
+        if abs(clamped_y - center_y_px) > 1e-6:
+            adjustments.append("position_y_clamped")
+        center_y_px = clamped_y
+
+    adjusted_position = [
+        (center_x_px - origin_x) * scale,
+        (origin_y - center_y_px) * scale,
+    ]
+
+    return adjusted_position, (width_m, height_m), adjustments
+
+
 # ---------------------------------------------------------------------------
 # Pydantic models shared by tools
 # ---------------------------------------------------------------------------
@@ -162,14 +242,20 @@ async def create_block(input_data: CreateBlockInput) -> SceneEditOutput:
         density=input_data.density_kg_m3,
     )
 
+    position_adjusted, size_adjusted, adjustments = _clamp_block_to_image_bounds(
+        context,
+        tuple(input_data.position_m),
+        tuple(input_data.size_m),
+    )
+
     body: dict[str, Any] = {
         "id": body_id,
         "type": input_data.body_type,
-        "position_m": list(input_data.position_m),
+        "position_m": position_adjusted,
         "collider": {
             "type": "rectangle",
-            "width_m": input_data.size_m[0],
-            "height_m": input_data.size_m[1],
+            "width_m": size_adjusted[0],
+            "height_m": size_adjusted[1],
         },
         "notes": input_data.notes,
     }
@@ -183,12 +269,18 @@ async def create_block(input_data: CreateBlockInput) -> SceneEditOutput:
     if material:
         body["material"] = material
 
+    if adjustments:
+        body.setdefault("meta", {})["image_boundary_adjustments"] = adjustments
+
     context.apply_scene_updates(bodies={body_id: body})
     scene = _snapshot_after_update(context, note=f"create_block:{body_id}")
     logger.info("[scene_editor] Created block %s", body_id)
+    message = f"Block '{body_id}' created"
+    if adjustments:
+        message += f" (clamped: {', '.join(adjustments)})"
     return SceneEditOutput(
         scene=scene,
-        message=f"Block '{body_id}' created",
+        message=message,
         updated_body_ids=[body_id],
     )
 
@@ -236,12 +328,36 @@ async def modify_block(input_data: ModifyBlockInput) -> SceneEditOutput:
     if not material:
         body.pop("material", None)
 
+    adjustments: list[str] = []
+    collider = body.get("collider", {})
+    if collider.get("type") == "rectangle":
+        position_tuple = tuple(body.get("position_m", (0.0, 0.0)))  # type: ignore[arg-type]
+        size_tuple = (
+            float(collider.get("width_m") or 0.0),
+            float(collider.get("height_m") or 0.0),
+        )
+        position_adjusted, size_adjusted, adjustments = _clamp_block_to_image_bounds(
+            context,
+            (float(position_tuple[0]), float(position_tuple[1])),
+            size_tuple,
+        )
+        body["position_m"] = position_adjusted
+        collider["width_m"], collider["height_m"] = size_adjusted
+
+    if adjustments:
+        body.setdefault("meta", {})["image_boundary_adjustments"] = adjustments
+    elif isinstance(body.get("meta"), dict):
+        body["meta"].pop("image_boundary_adjustments", None)  # type: ignore[index]
+
     context.apply_scene_updates(bodies={input_data.body_id: body})
     scene = _snapshot_after_update(context, note=f"modify_block:{input_data.body_id}")
     logger.info("[scene_editor] Modified block %s", input_data.body_id)
+    message = f"Block '{input_data.body_id}' updated"
+    if adjustments:
+        message += f" (clamped: {', '.join(adjustments)})"
     return SceneEditOutput(
         scene=scene,
-        message=f"Block '{input_data.body_id}' updated",
+        message=message,
         updated_body_ids=[input_data.body_id],
     )
 

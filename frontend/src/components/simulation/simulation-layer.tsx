@@ -5,7 +5,6 @@ import { initializeMatterScene } from '@/simulation/matterRunner';
 import {
     computeCanvasTransform,
     sceneMetersToCanvas,
-    canvasToSceneMeters,
     createBoundingTransform,
     normalizeSceneMapping,
     sceneMetersToImagePixels,
@@ -42,6 +41,148 @@ const toVec2 = (value: unknown): [number, number] | null => {
     return null;
 };
 
+const convertLength = (value: unknown, metersToPixels: number): number | undefined => {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return undefined;
+    return num * metersToPixels;
+};
+
+const convertVelocity = (value: unknown, metersToPixels: number): [number, number] | undefined => {
+    const tuple = toVec2(value);
+    if (!tuple) return undefined;
+    return [tuple[0] * metersToPixels, -tuple[1] * metersToPixels];
+};
+
+const convertSceneForRender = (scene: any, transform: ReturnType<typeof computeCanvasTransform>) => {
+    if (!scene || typeof scene !== 'object') {
+        return scene;
+    }
+
+    const scale = transform.metersToPixels;
+
+    const projectPoint = (point: unknown): [number, number] | null => {
+        const tuple = toVec2(point);
+        if (!tuple) return null;
+        return sceneMetersToCanvas(tuple, transform);
+    };
+
+    const cloneBody = (body: any) => {
+        if (!body || typeof body !== 'object') {
+            return body;
+        }
+        const position = projectPoint(body.position_m);
+        const velocity = convertVelocity(body.velocity_m_s, scale);
+        const angularVelocity = Number(body.angular_velocity_rad_s);
+        const collider = body.collider && typeof body.collider === 'object' ? { ...body.collider } : undefined;
+        if (collider) {
+            if (typeof collider.width_m === 'number') {
+                collider.width_m = convertLength(collider.width_m, scale) ?? collider.width_m;
+            }
+            if (typeof collider.height_m === 'number') {
+                collider.height_m = convertLength(collider.height_m, scale) ?? collider.height_m;
+            }
+            if (typeof collider.radius_m === 'number') {
+                collider.radius_m = convertLength(collider.radius_m, scale) ?? collider.radius_m;
+            }
+            if (Array.isArray(collider.points_m)) {
+                collider.points_m = collider.points_m.map((point: unknown) => projectPoint(point) ?? [0, 0]);
+            }
+            if (Array.isArray(collider.polygon_m)) {
+                collider.polygon_m = collider.polygon_m.map((point: unknown) => projectPoint(point) ?? [0, 0]);
+            }
+            if (Array.isArray(collider.vertices)) {
+                collider.vertices = collider.vertices.map((point: unknown) => projectPoint(point) ?? [0, 0]);
+            }
+        }
+
+        const render = body.render && typeof body.render === 'object' ? { ...body.render } : undefined;
+
+        return {
+            ...body,
+            position_m: position ?? body.position_m,
+            velocity_m_s: velocity ?? body.velocity_m_s,
+            angular_velocity_rad_s: Number.isFinite(angularVelocity) ? angularVelocity : body.angular_velocity_rad_s,
+            collider,
+            render,
+            __renderSpace: 'canvas',
+        };
+    };
+
+    const projectAnchor = (value: unknown): { x: number; y: number; __canvas: true } | undefined => {
+        const tuple = toVec2(value);
+        if (!tuple) return undefined;
+        const [x, y] = tuple;
+        return { x: x * scale, y: -y * scale, __canvas: true };
+    };
+
+    const cloneConstraint = (constraint: any) => {
+        if (!constraint || typeof constraint !== 'object') {
+            return constraint;
+        }
+        const next: any = { ...constraint };
+        const ropeKeys = ['rope_length_m', 'length_m', 'rest_length_m'];
+        for (const key of ropeKeys) {
+            if (key in next) {
+                const converted = convertLength(next[key], scale);
+                if (typeof converted === 'number') {
+                    next[key] = converted;
+                }
+            }
+        }
+
+        const anchorKeys = [
+            'anchor_a',
+            'anchorA',
+            'anchor_a_m',
+            'anchorA_m',
+            'point_a',
+            'pointA',
+            'point_a_m',
+            'pointA_m',
+            'offset_a',
+            'offsetA',
+            'offset_a_m',
+            'offsetA_m',
+            'anchor_b',
+            'anchorB',
+            'anchor_b_m',
+            'anchorB_m',
+            'point_b',
+            'pointB',
+            'point_b_m',
+            'pointB_m',
+            'offset_b',
+            'offsetB',
+            'offset_b_m',
+            'offsetB_m',
+        ];
+
+        for (const key of anchorKeys) {
+            if (key in next) {
+                const projected = projectAnchor(next[key]);
+                if (projected) {
+                    next[key] = projected;
+                }
+            }
+        }
+
+        if ('pulley_anchor_m' in next) {
+            const projected = projectPoint(next.pulley_anchor_m);
+            if (projected) {
+                next.pulley_anchor_m = { x: projected[0], y: projected[1], __canvas: true };
+            }
+        }
+
+        return next;
+    };
+
+    return {
+        ...scene,
+        bodies: Array.isArray(scene.bodies) ? scene.bodies.map(cloneBody) : scene.bodies,
+        constraints: Array.isArray(scene.constraints) ? scene.constraints.map(cloneConstraint) : scene.constraints,
+    };
+};
+
 export function SimulationLayer({
     objectPosition,
     onObjectPositionChange,
@@ -72,53 +213,8 @@ export function SimulationLayer({
 
         matterBodyMapRef.current = new Map();
     }, []);
-    const { frames, currentIndex, detections, imageSizePx, scale_m_per_px, scene, playing } = useSimulation();
+    const { frames, currentIndex, detections, imageSizePx, scale_m_per_px, scene, playing, renderImageDataUrl } = useSimulation();
     const currentFrame = frames[currentIndex];
-
-    const applyFrameToMatter = useCallback((frame: any) => {
-        if (!frame) return;
-        const bodyMap = matterBodyMapRef.current;
-        if (!bodyMap || bodyMap.size === 0) return;
-
-        const updateBody = (id: string, positionValue: unknown, angleValue: unknown, velocityValue: unknown, angularVelocityValue: unknown) => {
-            const matterBody = bodyMap.get(id);
-            if (!matterBody) return;
-
-            const position = toVec2(positionValue);
-            if (position) {
-                Matter.Body.setPosition(matterBody, { x: position[0], y: -position[1] });
-            }
-
-            if (typeof angleValue === 'number' && Number.isFinite(angleValue)) {
-                Matter.Body.setAngle(matterBody, -angleValue);
-            }
-
-            if (Array.isArray(velocityValue) && velocityValue.length >= 2) {
-                const vx = Number(velocityValue[0]);
-                const vy = Number(velocityValue[1]);
-                if (Number.isFinite(vx) && Number.isFinite(vy)) {
-                    Matter.Body.setVelocity(matterBody, { x: vx, y: -vy });
-                }
-            }
-
-            if (typeof angularVelocityValue === 'number' && Number.isFinite(angularVelocityValue)) {
-                Matter.Body.setAngularVelocity(matterBody, -angularVelocityValue);
-            }
-        };
-
-        if (Array.isArray(frame?.bodies)) {
-            for (const body of frame.bodies) {
-                updateBody(body?.id ?? 'body', body?.position_m, body?.angle_rad, body?.velocity_m_s, body?.angular_velocity_rad_s);
-            }
-            return;
-        }
-
-        if (frame?.positions && typeof frame.positions === 'object') {
-            for (const [id, pos] of Object.entries(frame.positions as Record<string, unknown>)) {
-                updateBody(id, pos, 0, undefined, undefined);
-            }
-        }
-    }, []);
 
     const clamp = (value: number, min: number, max: number) =>
         Math.min(Math.max(value, min), max);
@@ -264,6 +360,56 @@ export function SimulationLayer({
     const activeTransform = fallbackTransform ?? mappingTransform;
     const metersToPx = activeTransform.metersToPixels;
 
+    const renderScene = useMemo(() => {
+        if (!scene) {
+            return null;
+        }
+        return convertSceneForRender(scene, activeTransform);
+    }, [scene, activeTransform]);
+
+    const applyFrameToMatter = useCallback((frame: any) => {
+        if (!frame) return;
+        const bodyMap = matterBodyMapRef.current;
+        if (!bodyMap || bodyMap.size === 0) return;
+
+        const updateBody = (id: string, positionValue: unknown, angleValue: unknown, velocityValue: unknown, angularVelocityValue: unknown) => {
+            const matterBody = bodyMap.get(id);
+            if (!matterBody) return;
+
+            const scenePosition = toVec2(positionValue);
+            if (scenePosition) {
+                const [xPx, yPx] = sceneMetersToCanvas(scenePosition, activeTransform);
+                Matter.Body.setPosition(matterBody, { x: xPx, y: yPx });
+            }
+
+            if (typeof angleValue === 'number' && Number.isFinite(angleValue)) {
+                Matter.Body.setAngle(matterBody, -angleValue);
+            }
+
+            const velocity = convertVelocity(velocityValue, metersToPx);
+            if (velocity) {
+                Matter.Body.setVelocity(matterBody, { x: velocity[0], y: velocity[1] });
+            }
+
+            if (typeof angularVelocityValue === 'number' && Number.isFinite(angularVelocityValue)) {
+                Matter.Body.setAngularVelocity(matterBody, -angularVelocityValue);
+            }
+        };
+
+        if (Array.isArray(frame?.bodies)) {
+            for (const body of frame.bodies) {
+                updateBody(body?.id ?? 'body', body?.position_m, body?.angle_rad, body?.velocity_m_s, body?.angular_velocity_rad_s);
+            }
+            return;
+        }
+
+        if (frame?.positions && typeof frame.positions === 'object') {
+            for (const [id, pos] of Object.entries(frame.positions as Record<string, unknown>)) {
+                updateBody(id, pos, 0, undefined, undefined);
+            }
+        }
+    }, [activeTransform, metersToPx]);
+
     const bodyMetadata = useMemo(() => {
         if (!scene || !Array.isArray((scene as any)?.bodies)) {
             return new Map<string, any>();
@@ -365,7 +511,7 @@ export function SimulationLayer({
 
     useEffect(() => {
         const renderHost = renderHostRef.current;
-        if (!scene || !renderHost) {
+        if (!renderScene || !renderHost) {
             return;
         }
 
@@ -383,7 +529,7 @@ export function SimulationLayer({
         destroyMatterScene();
 
         try {
-            const built = initializeMatterScene(scene);
+            const built = initializeMatterScene(renderScene);
             matterEngineRef.current = built.engine;
             matterBodyMapRef.current = built.bodyMap;
 
@@ -402,17 +548,10 @@ export function SimulationLayer({
             render.canvas.style.width = '100%';
             render.canvas.style.height = '100%';
 
-            const topLeftScene = canvasToSceneMeters([0, 0], activeTransform);
-            const bottomRightScene = canvasToSceneMeters([width, height], activeTransform);
-            const minXScene = Math.min(topLeftScene[0], bottomRightScene[0]);
-            const maxXScene = Math.max(topLeftScene[0], bottomRightScene[0]);
-            const minMatterY = Math.min(-topLeftScene[1], -bottomRightScene[1]);
-            const maxMatterY = Math.max(-topLeftScene[1], -bottomRightScene[1]);
-
-            render.bounds.min.x = minXScene;
-            render.bounds.max.x = maxXScene;
-            render.bounds.min.y = minMatterY;
-            render.bounds.max.y = maxMatterY;
+            render.bounds.min.x = 0;
+            render.bounds.max.x = width;
+            render.bounds.min.y = 0;
+            render.bounds.max.y = height;
             render.options.hasBounds = true;
             render.options.wireframes = false;
 
@@ -432,7 +571,7 @@ export function SimulationLayer({
         return () => {
             destroyMatterScene();
         };
-    }, [scene, destroyMatterScene, containerW, containerH, metersToPx, activeTransform, frames, applyFrameToMatter]);
+    }, [renderScene, destroyMatterScene, containerW, containerH, frames, applyFrameToMatter]);
 
     useEffect(() => {
         if (!currentFrame) return;
@@ -486,6 +625,19 @@ export function SimulationLayer({
                 onPointerUp={handlePointerUp}
                 onPointerCancel={handlePointerUp}
             >
+                {renderImageDataUrl && detectionFit && (
+                    <img
+                        src={renderImageDataUrl}
+                        alt="Scene reference"
+                        className="absolute pointer-events-none select-none"
+                        style={{
+                            left: detectionFit.offsetX,
+                            top: detectionFit.offsetY,
+                            width: (imageSizePx?.width ?? containerW) * detectionFit.scale,
+                            height: (imageSizePx?.height ?? containerH) * detectionFit.scale,
+                        }}
+                    />
+                )}
                 <div className="absolute inset-0 bg-gradient-to-br from-background via-background to-muted/40 pointer-events-none" />
 
                 <div ref={renderHostRef} className="absolute inset-0 pointer-events-none" />

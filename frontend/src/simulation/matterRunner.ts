@@ -34,6 +34,10 @@ const toVec2 = (value: unknown): [number, number] | null => {
 const toMatterVec = (value: unknown): [number, number] | null => {
     const tuple = toVec2(value);
     if (!tuple) return null;
+    const usesCanvasSpace = !!(value && typeof value === 'object' && '__canvas' in (value as Record<string, unknown>));
+    if (usesCanvasSpace) {
+        return [tuple[0], tuple[1]];
+    }
     return [tuple[0], -tuple[1]];
 };
 
@@ -53,13 +57,57 @@ const fromMatterVelocity = (body: Matter.Body): [number, number] => [
 ];
 
 function createBody(bodyDef: any): Matter.Body {
+    const renderSpace = bodyDef?.__renderSpace;
+    const usesCanvasSpace = renderSpace === 'canvas';
     const scenePosition = toVec2(bodyDef?.position_m) ?? [0, 0];
-    const [matterX, matterY] = [scenePosition[0], -scenePosition[1]];
+    const matterX = scenePosition[0];
+    const matterY = usesCanvasSpace ? scenePosition[1] : -scenePosition[1];
     const collider = bodyDef?.collider ?? null;
     const materialFriction = bodyDef?.material?.friction;
     const friction = typeof materialFriction === 'number' ? materialFriction : 0.0;
     const isStatic = bodyDef?.type === 'static';
     const isEnvironment = isStatic || ['surface', 'ground', 'ramp', 'rope', 'anchor'].includes(bodyDef?.id?.split('_')[0] ?? '');
+
+    const renderConfig = bodyDef?.render && typeof bodyDef.render === 'object' ? bodyDef.render : undefined;
+    const spriteConfig = renderConfig?.sprite && typeof renderConfig.sprite === 'object'
+        ? {
+              ...renderConfig.sprite,
+              xScale: Number.isFinite((renderConfig.sprite as any).xScale)
+                  ? (renderConfig.sprite as any).xScale
+                  : 1,
+              yScale: Number.isFinite((renderConfig.sprite as any).yScale)
+                  ? (renderConfig.sprite as any).yScale
+                  : 1,
+              xOffset: Number.isFinite((renderConfig.sprite as any).xOffset)
+                  ? (renderConfig.sprite as any).xOffset
+                  : 0,
+              yOffset: Number.isFinite((renderConfig.sprite as any).yOffset)
+                  ? (renderConfig.sprite as any).yOffset
+                  : 0,
+          }
+        : undefined;
+    const fillStyle = typeof renderConfig?.fillStyle === 'string'
+        ? renderConfig.fillStyle
+        : isEnvironment
+            ? 'rgba(120, 120, 140, 0.175)'
+            : '#3b82f6';
+    const strokeStyle = typeof renderConfig?.strokeStyle === 'string'
+        ? renderConfig.strokeStyle
+        : isEnvironment
+            ? 'rgba(255,255,255,0.35)'
+            : '#111827';
+    const lineWidth = typeof renderConfig?.lineWidth === 'number'
+        ? renderConfig.lineWidth
+        : isEnvironment ? 1 : 2;
+
+    const renderOptions: Matter.IBodyRenderOptions = {
+        fillStyle,
+        strokeStyle,
+        lineWidth,
+    };
+    if (spriteConfig) {
+        renderOptions.sprite = spriteConfig as any;
+    }
 
     const commonOpts: Matter.IBodyDefinition = {
         isStatic,
@@ -67,11 +115,7 @@ function createBody(bodyDef: any): Matter.Body {
         frictionAir: 0.0,
         restitution: 0.0,
         label: bodyDef?.id ?? 'body',
-        render: {
-            fillStyle: isEnvironment ? 'rgba(120, 120, 140, 0.175)' : '#3b82f6',
-            strokeStyle: isEnvironment ? 'rgba(255,255,255,0.35)' : '#111827',
-            lineWidth: isEnvironment ? 1 : 2,
-        },
+        render: renderOptions,
     };
 
     let body: Matter.Body | Matter.Body[];
@@ -89,13 +133,13 @@ function createBody(bodyDef: any): Matter.Body {
         body = Bodies.rectangle(matterX, matterY, width, height, rectOptions);
     } else if (collider?.type === 'polygon' && Array.isArray(collider.vertices) && collider.vertices.length >= 3) {
         const baseScene = toVec2(bodyDef?.position_m) ?? [0, 0];
-        const baseMatter = [baseScene[0], -baseScene[1]] as [number, number];
+        const baseMatter = usesCanvasSpace ? [baseScene[0], baseScene[1]] as [number, number] : [baseScene[0], -baseScene[1]] as [number, number];
         const localVerts = (collider.vertices as Array<unknown>)
             .map((vert) => {
                 const tuple = toVec2(vert);
                 if (!tuple) return null;
                 const vx = tuple[0];
-                const vy = -tuple[1];
+                const vy = usesCanvasSpace ? tuple[1] : -tuple[1];
                 return { x: vx - baseMatter[0], y: vy - baseMatter[1] };
             })
             .filter((vert): vert is { x: number; y: number } => Boolean(vert));
@@ -123,6 +167,17 @@ function createBody(bodyDef: any): Matter.Body {
             const fallbackMass = Math.max(Number(bodyDef?.mass_default_kg ?? 1), 0.1);
             Body.setMass(singleBody, fallbackMass);
         }
+
+        const initialVelocity = toVec2(bodyDef?.velocity_m_s);
+        if (initialVelocity) {
+            Body.setVelocity(singleBody, usesCanvasSpace ? { x: initialVelocity[0], y: initialVelocity[1] } : { x: initialVelocity[0], y: -initialVelocity[1] });
+        }
+
+        const angularVelocity = typeof bodyDef?.angular_velocity_rad_s === 'number' ? bodyDef.angular_velocity_rad_s : undefined;
+        if (typeof angularVelocity === 'number' && Number.isFinite(angularVelocity) && angularVelocity !== 0) {
+            Body.setAngularVelocity(singleBody, -angularVelocity);
+        }
+
     } else if (isEnvironment) {
         Body.setDensity(singleBody, 0.001);
     }
@@ -162,7 +217,8 @@ export function initializeMatterScene(scene: any): BuiltScene {
 
         if (typeKey === 'ideal_fixed_pulley') {
             const anchorScene = toVec2(constraintDef?.pulley_anchor_m);
-            const anchor = anchorScene ? [anchorScene[0], -anchorScene[1]] as [number, number] : null;
+            const usesCanvasAnchor = !!(constraintDef?.pulley_anchor_m && typeof constraintDef.pulley_anchor_m === 'object' && '__canvas' in (constraintDef.pulley_anchor_m as Record<string, unknown>));
+            const anchor = anchorScene ? [anchorScene[0], usesCanvasAnchor ? anchorScene[1] : -anchorScene[1]] as [number, number] : null;
             const ropeLength = Number(constraintDef?.rope_length_m);
             const bodyA = bodyMap.get(constraintDef?.body_a ?? '');
             const bodyB = bodyMap.get(constraintDef?.body_b ?? '');

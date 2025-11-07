@@ -733,7 +733,10 @@ async def _handle_agent_mode(
         "segments_count": len(context.segments),
         "entities_count": len(context.entities),
         "has_scene": context.scene is not None,
-        "frames_count": len(context.frames)
+        "frames_count": len(context.frames),
+        "scene": context.scene,
+        "mapping": context.mapping,
+        "image": context.image_metadata,
     }
     
     return final_message, tool_calls_made, state_snapshot
@@ -1072,8 +1075,15 @@ async def _stream_agent_mode(
                     "segments_count": len(context.segments),
                     "entities_count": len(context.entities),
                     "has_scene": context.scene is not None,
-                    "frames_count": len(context.frames)
+                    "frames_count": len(context.frames),
                 }
+
+                if context.scene:
+                    state_snapshot["scene"] = context.scene
+                if context.mapping:
+                    state_snapshot["mapping"] = context.mapping
+                if context.image_metadata:
+                    state_snapshot.setdefault("image", context.image_metadata)
                 
                 # Include full simulation data for visualization
                 if tool_name == "simulate_physics" and result:
