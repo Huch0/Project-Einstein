@@ -288,7 +288,7 @@ export default function ParametersPanel() {
   );
 
   return (
-    <Card className="h-full flex flex-col">
+    <Card className="h-full flex flex-col min-h-0">
       <CardHeader className="space-y-4">
         {/* Simulation Box Selector */}
         <div className="space-y-2">
@@ -324,8 +324,8 @@ export default function ParametersPanel() {
           ) : null}
         </div>
       </CardHeader>
-      <CardContent className="flex-1 overflow-hidden p-0">
-        <ScrollArea className="h-full px-6 py-4">
+      <CardContent className="flex-1 overflow-hidden p-0 min-h-0">
+        <ScrollArea type="auto" className="h-full px-6 py-4">
           {!scene ? (
             <div className="flex items-center justify-center text-sm text-muted-foreground py-8">
               Upload an image to enable Controls & Parameters.
