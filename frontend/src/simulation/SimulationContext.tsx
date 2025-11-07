@@ -150,6 +150,9 @@ export interface SimulationConfig {
   restitution: number;
 }
 
+// Editing mode for interactive object manipulation
+export type EditingMode = 'disabled' | 'enabled';
+
 // Entity update callback type (for Frontend Matter.js body updates)
 export type UpdateEntityCallback = (
   entityId: string, 
@@ -168,6 +171,11 @@ interface SimulationState extends SimulationConfig {
   currentIndex: number;
   simulationMode: SimulationMode;
   setSimulationMode: (mode: SimulationMode) => void;
+  
+  // Editing mode (for interactive object manipulation)
+  editingEnabled: boolean;
+  setEditingEnabled: (enabled: boolean) => void;
+  
   acceleration?: number;
   tension?: number;
   staticCondition?: boolean;
@@ -209,6 +217,7 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
   const [playing, setPlaying] = useState(false);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [simulationMode, setSimulationMode] = useState<SimulationMode>('playback');
+  const [editingEnabled, setEditingEnabled] = useState(false);
   const [acceleration, setAcceleration] = useState<number | undefined>();
   const [tension, setTension] = useState<number | undefined>();
   const [staticCondition, setStaticCondition] = useState<boolean | undefined>();
@@ -780,6 +789,8 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     currentIndex,
     simulationMode,
     setSimulationMode,
+    editingEnabled,
+    setEditingEnabled,
     acceleration,
     tension,
     staticCondition,
