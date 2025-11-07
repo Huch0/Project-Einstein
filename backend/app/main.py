@@ -5,9 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .models.settings import settings
 from .routers import unified_chat  # Unified Ask/Agent chat router
-from .routers import diagram as diagram_router
-from .routers import init_sim  # v0.5: Automated initialization
-from .routers import run_sim   # v0.5: Simulation execution
+from app.routers import diagram, init_sim, run_sim, unified_chat, simulation_update
 
 app = FastAPI(title="Project Einstein API", version="0.5.0")
 
@@ -29,8 +27,11 @@ app.include_router(unified_chat.router)
 app.include_router(init_sim.router)  # Automated initialization
 app.include_router(run_sim.router)   # Simulation execution
 
+# v1.0 Interactive Mode Support
+app.include_router(simulation_update.router)  # Scene batch update
+
 # Legacy diagram endpoint (kept for compatibility)
-app.include_router(diagram_router.router)
+app.include_router(diagram.router)
 
 
 @app.get("/health", tags=["health"])
