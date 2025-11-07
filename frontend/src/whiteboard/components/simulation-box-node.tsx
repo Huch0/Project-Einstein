@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
-import { GripHorizontal, Trash2, Upload, MessageSquare, FlaskConical } from 'lucide-react';
+import { GripHorizontal, Trash2, Upload, MessageSquare, FlaskConical, Edit3 } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 import { useWhiteboardStore } from '@/whiteboard/context';
@@ -84,6 +84,8 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
         resetSimulation,
         updateConfig,
         setFrameIndex,
+        editingEnabled,
+        setEditingEnabled,
     } = useSimulation();
 
     // Local state for playback speed (multiplier on playback cadence)
@@ -544,6 +546,26 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
                         </button>
                     )}
                      */}
+                    {/* Edit Objects Button */}
+                    <button
+                        type="button"
+                        className={cn(
+                            "rounded p-1 transition-colors bg-background",
+                            editingEnabled 
+                                ? "text-primary hover:bg-primary/20" 
+                                : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                        )}
+                        onClick={() => {
+                            console.log('[SimulationBox] Toggle editing mode:', !editingEnabled);
+                            setEditingEnabled(!editingEnabled);
+                        }}
+                        aria-label="Toggle editing mode"
+                        title={editingEnabled ? "Editing enabled (click objects to edit)" : "Enable editing mode"}
+                        data-node-action="true"
+                        disabled={playing}
+                    >
+                        <Edit3 className="h-3.5 w-3.5" />
+                    </button>
                     {/* Remove Box */}
                     <button
                         type="button"
