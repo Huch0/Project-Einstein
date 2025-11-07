@@ -1,0 +1,205 @@
+/**
+ * Test fixtures for development
+ * Provides sample simulation data for quick testing
+ */
+
+// Sample pulley system image (simple SVG as data URL)
+export const SAMPLE_PULLEY_IMAGE = `data:image/svg+xml;base64,${btoa(`
+<svg width="800" height="600" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background -->
+  <rect width="800" height="600" fill="#f8f9fa"/>
+  
+  <!-- Pulley wheel -->
+  <circle cx="400" cy="150" r="40" fill="none" stroke="#333" stroke-width="4"/>
+  <circle cx="400" cy="150" r="8" fill="#333"/>
+  
+  <!-- Ropes -->
+  <line x1="360" y1="150" x2="360" y2="450" stroke="#666" stroke-width="3"/>
+  <line x1="440" y1="150" x2="440" y2="400" stroke="#666" stroke-width="3"/>
+  
+  <!-- Mass A (left, heavier) -->
+  <rect x="330" y="450" width="60" height="60" fill="#e74c3c" stroke="#c0392b" stroke-width="2"/>
+  <text x="360" y="485" font-family="Arial" font-size="20" fill="white" text-anchor="middle">5kg</text>
+  
+  <!-- Mass B (right, lighter) -->
+  <rect x="410" y="400" width="60" height="60" fill="#3498db" stroke="#2980b9" stroke-width="2"/>
+  <text x="440" y="435" font-family="Arial" font-size="20" fill="white" text-anchor="middle">3kg</text>
+  
+  <!-- Support beam -->
+  <rect x="350" y="130" width="100" height="10" fill="#7f8c8d"/>
+  
+  <!-- Labels -->
+  <text x="400" y="50" font-family="Arial" font-size="24" fill="#333" text-anchor="middle" font-weight="bold">Atwood Machine</text>
+  <text x="280" y="490" font-family="Arial" font-size="14" fill="#666">Mass A</text>
+  <text x="480" y="440" font-family="Arial" font-size="14" fill="#666">Mass B</text>
+</svg>
+`)}`;
+
+// Sample simulation scene data (matching the image above)
+export const SAMPLE_PULLEY_SCENE = {
+  version: "0.4.0",
+  world: {
+    gravity_m_s2: 9.81,
+    time_step_s: 0.016
+  },
+  mapping: {
+    origin_px: [400, 300],
+    scale_m_per_px: 0.01
+  },
+  bodies: [
+    {
+      id: "mass_a",
+      type: "dynamic" as const,
+      mass_kg: 5.0,
+      position_m: [-0.4, 1.5],
+      velocity_m_s: [0, 0],
+      collider: {
+        type: "rectangle" as const,
+        width_m: 0.6,
+        height_m: 0.6
+      },
+      material: {
+        friction: 0.5,
+        restitution: 0.0
+      }
+    },
+    {
+      id: "mass_b",
+      type: "dynamic" as const,
+      mass_kg: 3.0,
+      position_m: [0.4, 1.0],
+      velocity_m_s: [0, 0],
+      collider: {
+        type: "rectangle" as const,
+        width_m: 0.6,
+        height_m: 0.6
+      },
+      material: {
+        friction: 0.5,
+        restitution: 0.0
+      }
+    },
+    {
+      id: "pulley",
+      type: "static" as const,
+      mass_kg: 0.1,
+      position_m: [0, -1.5],
+      velocity_m_s: [0, 0],
+      collider: {
+        type: "circle" as const,
+        radius_m: 0.4
+      },
+      material: {
+        friction: 0.0,
+        restitution: 0.0
+      }
+    }
+  ],
+  constraints: [
+    {
+      type: "rope" as const,
+      body_a: "mass_a",
+      body_b: "mass_b",
+      length_m: 4.0,
+      stiffness: 1.0
+    }
+  ]
+};
+
+import type { DiagramParseDetection } from '@/lib/api';
+
+// Detection boxes for the sample image
+export const SAMPLE_DETECTIONS: DiagramParseDetection[] = [
+  {
+    id: "1",
+    label: "Mass A (5kg)",
+    bbox_px: [330, 450, 60, 60] as [number, number, number, number],
+    polygon_px: [
+      [330, 450],
+      [390, 450],
+      [390, 510],
+      [330, 510],
+    ] as Array<[number, number]>
+  },
+  {
+    id: "2",
+    label: "Mass B (3kg)",
+    bbox_px: [410, 400, 60, 60] as [number, number, number, number],
+    polygon_px: [
+      [410, 400],
+      [470, 400],
+      [470, 460],
+      [410, 460],
+    ] as Array<[number, number]>
+  },
+  {
+    id: "3",
+    label: "Pulley",
+    bbox_px: [360, 110, 80, 80] as [number, number, number, number],
+    polygon_px: [
+      [360, 150],
+      [380, 120],
+      [420, 120],
+      [440, 150],
+      [420, 180],
+      [380, 180],
+    ] as Array<[number, number]>
+  }
+];
+
+// Entity labels
+export const SAMPLE_LABELS = {
+  entities: [
+    {
+      segment_id: "1",
+      label: "mass",
+      props: {
+        mass_guess_kg: 5.0,
+        material: "iron"
+      }
+    },
+    {
+      segment_id: "2",
+      label: "mass",
+      props: {
+        mass_guess_kg: 3.0,
+        material: "aluminum"
+      }
+    },
+    {
+      segment_id: "3",
+      label: "pulley",
+      props: {
+        wheel_radius_m: 0.4,
+        friction_coefficient: 0.0
+      }
+    }
+  ]
+};
+
+// Image metadata
+export const SAMPLE_IMAGE_SIZE = {
+  width: 800,
+  height: 600
+};
+
+export const SAMPLE_SCALE = 0.01; // 1cm per pixel
+
+/**
+ * Create a complete test simulation payload
+ */
+export function createTestSimulationPayload() {
+  return {
+    scene: SAMPLE_PULLEY_SCENE,
+    detections: SAMPLE_DETECTIONS,
+    imageSizePx: SAMPLE_IMAGE_SIZE,
+    scale_m_per_px: SAMPLE_SCALE,
+    labels: SAMPLE_LABELS,
+    renderImageDataUrl: SAMPLE_PULLEY_IMAGE,
+    frames: [], // Empty - will be generated by Matter.js
+    meta: {
+      simulation_time_s: 5.0,
+      time_step_s: 0.016
+    }
+  };
+}
