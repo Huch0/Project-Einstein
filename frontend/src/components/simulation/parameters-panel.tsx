@@ -6,9 +6,10 @@ import { Label } from '@/components/ui/label';
 import { Slider } from '@/components/ui/slider';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Play, Pause, StepForward, RotateCcw, Box } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useCallback, useEffect } from 'react';
 import { useSimulation } from '@/simulation/SimulationContext';
 import { useGlobalChat } from '@/contexts/global-chat-context';
+import { updateBody } from '@/lib/simulation-api';
 import {
   Select,
   SelectContent,
@@ -16,6 +17,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { useToast } from '@/hooks/use-toast';
 
 type Scope = 'global' | 'entity';
 
@@ -24,17 +26,72 @@ export default function ParametersPanel() {
     gravity, dt, 
     updateConfig, resetSimulation, 
     playing, setPlaying, scene, labels,
-    updateSceneAndResimulate
+    updateSceneAndResimulate,
+    simulationMode, setSimulationMode,
+    selectedEntityId: contextSelectedEntityId,
+    setSelectedEntityId: setContextSelectedEntityId,
+    updateEntityCallback
   } = useSimulation();
   const globalChat = useGlobalChat();
+  const { toast } = useToast();
   const [scope, setScope] = useState<Scope>('global');
   const [selectedBoxId, setSelectedBoxId] = useState<string | null>(null);
   const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
+  const [isUpdating, setIsUpdating] = useState(false);
+  
+  // Sync Context selectedEntityId to local state
+  useEffect(() => {
+    if (contextSelectedEntityId !== null && contextSelectedEntityId !== selectedEntityId) {
+      console.log('[ParametersPanel] Entity selected from SimulationLayer:', contextSelectedEntityId);
+      setSelectedEntityId(contextSelectedEntityId);
+      setScope('entity'); // Auto-switch to entity scope
+    }
+  }, [contextSelectedEntityId, selectedEntityId]);
+  
+  // Sync local selectedEntityId to Context
+  const handleEntitySelect = useCallback((entityId: string) => {
+    setSelectedEntityId(entityId);
+    setContextSelectedEntityId(entityId);
+  }, [setContextSelectedEntityId]);
   
   // Physics parameters (must be at top level, not conditionally called)
   const [friction, setFriction] = useState(0.5);
   const [restitution, setRestitution] = useState(0.3);
   const [density, setDensity] = useState(1.0);
+
+  // Backend sync helper for material updates
+  const syncMaterialToBackend = useCallback(async (
+    bodyId: string,
+    material: { friction?: number; restitution?: number },
+    resimulate: boolean = false
+  ) => {
+    const conversationId = selectedBoxId || globalChat.activeBoxId;
+    if (!conversationId) {
+      console.warn('[ParametersPanel] No conversation ID for backend sync');
+      return;
+    }
+
+    setIsUpdating(true);
+    try {
+      await updateBody(conversationId, bodyId, { material }, resimulate);
+      
+      if (resimulate) {
+        toast({
+          title: '✅ Material Updated',
+          description: `Body ${bodyId} material synced with resimulation`,
+        });
+      }
+    } catch (error) {
+      console.error('[ParametersPanel] Backend sync failed:', error);
+      toast({
+        title: '⚠️ Sync Failed',
+        description: 'Material changes saved locally only',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsUpdating(false);
+    }
+  }, [selectedBoxId, globalChat.activeBoxId, toast]);
 
   // Get simulation boxes from GlobalChatContext
   const simulationBoxes = useMemo(() => {
@@ -83,12 +140,38 @@ export default function ParametersPanel() {
 
         <div className="flex items-center justify-between">
           <CardTitle className="font-headline text-lg">Controls & Parameters</CardTitle>
-          {labels && labels.entities?.length ? (
-            <div className="flex gap-1 rounded-md border bg-background p-1">
-              <Button type="button" variant={scope === 'global' ? 'default' : 'ghost'} size="sm" onClick={() => setScope('global')} aria-pressed={scope==='global'}>Global</Button>
-              <Button type="button" variant={scope === 'entity' ? 'default' : 'ghost'} size="sm" onClick={() => setScope('entity')} aria-pressed={scope==='entity'} disabled={entities.length === 0}>Entity</Button>
-            </div>
-          ) : null}
+          <div className="flex gap-2">
+            {/* Simulation Mode Toggle */}
+            {scene && (
+              <div className="flex gap-1 rounded-md border bg-background p-1">
+                <Button 
+                  type="button" 
+                  variant={simulationMode === 'playback' ? 'default' : 'ghost'} 
+                  size="sm" 
+                  onClick={() => setSimulationMode('playback')}
+                  aria-pressed={simulationMode === 'playback'}
+                >
+                  📹 Playback
+                </Button>
+                <Button 
+                  type="button" 
+                  variant={simulationMode === 'interactive' ? 'default' : 'ghost'} 
+                  size="sm" 
+                  onClick={() => setSimulationMode('interactive')}
+                  aria-pressed={simulationMode === 'interactive'}
+                >
+                  🎮 Interactive
+                </Button>
+              </div>
+            )}
+            {/* Entity Scope Toggle */}
+            {labels && labels.entities?.length ? (
+              <div className="flex gap-1 rounded-md border bg-background p-1">
+                <Button type="button" variant={scope === 'global' ? 'default' : 'ghost'} size="sm" onClick={() => setScope('global')} aria-pressed={scope==='global'}>Global</Button>
+                <Button type="button" variant={scope === 'entity' ? 'default' : 'ghost'} size="sm" onClick={() => setScope('entity')} aria-pressed={scope==='entity'} disabled={entities.length === 0}>Entity</Button>
+              </div>
+            ) : null}
+          </div>
         </div>
       </CardHeader>
       <CardContent className="flex-1 overflow-hidden p-0">
@@ -112,13 +195,18 @@ export default function ParametersPanel() {
                   <Button variant="outline" size="icon" aria-label="Pause" onClick={() => setPlaying(false)} disabled={!playing}>
                     <Pause className="h-4 w-4" />
                   </Button>
-                  <Button variant="outline" size="icon" aria-label="Step Forward">
+                  <Button variant="outline" size="icon" aria-label="Step Forward" disabled={simulationMode === 'interactive'}>
                     <StepForward className="h-4 w-4" />
                   </Button>
                   <Button variant="outline" size="icon" aria-label="Reset" onClick={() => resetSimulation()}>
                     <RotateCcw className="h-4 w-4" />
                   </Button>
                 </div>
+                {simulationMode === 'interactive' && (
+                  <p className="text-xs text-muted-foreground">
+                    🎮 Interactive Mode: Drag objects to interact with the simulation
+                  </p>
+                )}
               </div>
               <div className="space-y-6">{scope === 'global' && (
             <>
@@ -162,7 +250,7 @@ export default function ParametersPanel() {
               {/* Entity Selector */}
               <div className="space-y-2">
                 <Label>Select Entity</Label>
-                <Select value={selectedEntityId ?? ''} onValueChange={setSelectedEntityId}>
+                <Select value={selectedEntityId ?? ''} onValueChange={handleEntitySelect}>
                   <SelectTrigger>
                     <SelectValue placeholder="Select an entity..." />
                   </SelectTrigger>
@@ -221,17 +309,18 @@ export default function ParametersPanel() {
                     <div className="grid gap-2">
                       <div className="flex justify-between items-center">
                         <Label htmlFor={`friction-${entity.segment_id}`}>Friction</Label>
-                        <span className="text-sm text-muted-foreground">{(sceneBody?.material?.friction ?? friction).toFixed(2)}</span>
+                        <span className="text-sm text-muted-foreground">{friction.toFixed(2)}</span>
                       </div>
                       <Slider 
                         id={`friction-${entity.segment_id}`}
-                        value={[sceneBody?.material?.friction ?? friction]} 
+                        value={[friction]} 
                         min={0} 
                         max={1} 
-                        step={0.01} 
+                        step={0.05} 
+                        disabled={isUpdating}
                         onValueChange={(v) => { 
                           setFriction(v[0]);
-                          // Update scene body material
+                          // Update scene body material (local)
                           if (scene?.bodies) {
                             const frictionValue = v[0];
                             updateSceneAndResimulate((prev: any | null) => {
@@ -248,25 +337,31 @@ export default function ParametersPanel() {
                               return { ...prev, bodies: updatedBodies };
                             });
                           }
-                        }} 
+                        }}
+                        onValueCommit={(v) => {
+                          // Sync to backend when user finishes dragging slider
+                          if (simulationMode === 'interactive') {
+                            syncMaterialToBackend(entity.segment_id, { friction: v[0] }, false);
+                          }
+                        }}
                       />
-                    </div>
-
+                    </div>                    {/* Restitution Parameter */}
                     {/* Restitution Parameter */}
                     <div className="grid gap-2">
                       <div className="flex justify-between items-center">
-                        <Label htmlFor={`restitution-${entity.segment_id}`}>Restitution (Bounciness)</Label>
-                        <span className="text-sm text-muted-foreground">{(sceneBody?.material?.restitution ?? restitution).toFixed(2)}</span>
+                        <Label htmlFor={`restitution-${entity.segment_id}`}>Restitution (Bounce)</Label>
+                        <span className="text-sm text-muted-foreground">{restitution.toFixed(2)}</span>
                       </div>
                       <Slider 
                         id={`restitution-${entity.segment_id}`}
-                        value={[sceneBody?.material?.restitution ?? restitution]} 
+                        value={[restitution]} 
                         min={0} 
                         max={1} 
-                        step={0.01} 
+                        step={0.05} 
+                        disabled={isUpdating}
                         onValueChange={(v) => { 
                           setRestitution(v[0]);
-                          // Update scene body material
+                          // Update scene body material (local)
                           if (scene?.bodies) {
                             const restitutionValue = v[0];
                             updateSceneAndResimulate((prev: any | null) => {
@@ -283,11 +378,15 @@ export default function ParametersPanel() {
                               return { ...prev, bodies: updatedBodies };
                             });
                           }
-                        }} 
+                        }}
+                        onValueCommit={(v) => {
+                          // Sync to backend when user finishes dragging slider
+                          if (simulationMode === 'interactive') {
+                            syncMaterialToBackend(entity.segment_id, { restitution: v[0] }, false);
+                          }
+                        }}
                       />
-                    </div>
-
-                    {/* Density Parameter */}
+                    </div>                    {/* Density Parameter */}
                     <div className="grid gap-2">
                       <div className="flex justify-between items-center">
                         <Label htmlFor={`density-${entity.segment_id}`}>Density (kg/m³)</Label>
