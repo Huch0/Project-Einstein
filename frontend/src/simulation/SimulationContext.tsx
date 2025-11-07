@@ -112,6 +112,8 @@ interface SimulationRunPayload {
   renderImageDataUrl?: string | null;
 }
 
+export type SimulationMode = 'playback' | 'interactive';
+
 export interface SimulationConfig {
   // Universal physics config (not pulley-specific)
   gravity: number;
@@ -120,10 +122,24 @@ export interface SimulationConfig {
   duration: number;
 }
 
+// Entity update callback type (for Frontend Matter.js body updates)
+export type UpdateEntityCallback = (
+  entityId: string, 
+  updates: {
+    position?: [number, number];
+    mass?: number;
+    friction?: number;
+    velocity?: [number, number];
+    angularVelocity?: number;
+  }
+) => void;
+
 interface SimulationState extends SimulationConfig {
   frames: SimulationFrame[];
   playing: boolean;
   currentIndex: number;
+  simulationMode: SimulationMode;
+  setSimulationMode: (mode: SimulationMode) => void;
   acceleration?: number;
   tension?: number;
   staticCondition?: boolean;
@@ -140,6 +156,14 @@ interface SimulationState extends SimulationConfig {
   parseAndBind: (file: File) => Promise<DiagramParseResponse>;
   loadSimulationRun: (payload: SimulationRunPayload) => Promise<void>;
   renderImageDataUrl: string | null;
+  
+  // Entity selection (for click-to-edit)
+  selectedEntityId: string | null;
+  setSelectedEntityId: (id: string | null) => void;
+  
+  // Frontend entity update (for Interactive Mode)
+  updateEntityCallback: UpdateEntityCallback | null;
+  registerUpdateEntityCallback: (callback: UpdateEntityCallback) => void;
 }
 
 const SimulationContext = createContext<SimulationState | null>(null);
@@ -154,6 +178,7 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
   const [frames, setFrames] = useState<SimulationFrame[]>([]);
   const [playing, setPlaying] = useState(false);
   const [currentIndex, setCurrentIndex] = useState(0);
+  const [simulationMode, setSimulationMode] = useState<SimulationMode>('playback');
   const [acceleration, setAcceleration] = useState<number | undefined>();
   const [tension, setTension] = useState<number | undefined>();
   const [staticCondition, setStaticCondition] = useState<boolean | undefined>();
@@ -167,6 +192,16 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
   const [scene, setScene] = useState<any | null>(null);
   const [labels, setLabels] = useState<{ entities: Array<{ segment_id: string; label: string; props?: Record<string, unknown> }> } | null>(null);
   const [renderImageDataUrl, setRenderImageDataUrl] = useState<string | null>(null);
+  
+  // Entity selection state
+  const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
+  
+  // Frontend entity update callback (registered by SimulationLayer)
+  const [updateEntityCallback, setUpdateEntityCallback] = useState<UpdateEntityCallback | null>(null);
+  
+  const registerUpdateEntityCallback = useCallback((callback: UpdateEntityCallback) => {
+    setUpdateEntityCallback(() => callback);
+  }, []);
 
   const resetSimulation = useCallback(() => {
     console.log('[SimulationContext] resetSimulation called');
@@ -582,6 +617,8 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     frames,
     playing,
     currentIndex,
+    simulationMode,
+    setSimulationMode,
     acceleration,
     tension,
     staticCondition,
@@ -597,6 +634,15 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     labels,
     parseAndBind,
     loadSimulationRun,
+    renderImageDataUrl,
+    
+    // Entity selection
+    selectedEntityId,
+    setSelectedEntityId,
+    
+    // Frontend entity update
+    updateEntityCallback,
+    registerUpdateEntityCallback,
   };
   return <SimulationContext.Provider value={value}>{children}</SimulationContext.Provider>;
 }
