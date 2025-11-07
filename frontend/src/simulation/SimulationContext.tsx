@@ -597,7 +597,6 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     labels,
     parseAndBind,
     loadSimulationRun,
-    renderImageDataUrl,
   };
   return <SimulationContext.Provider value={value}>{children}</SimulationContext.Provider>;
 }
