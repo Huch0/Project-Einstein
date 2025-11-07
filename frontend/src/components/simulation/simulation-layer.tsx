@@ -638,7 +638,9 @@ export function SimulationLayer({
                         }}
                     />
                 )}
-                <div className="absolute inset-0 bg-gradient-to-br from-background via-background to-muted/40 pointer-events-none" />
+                {!renderImageDataUrl ? (
+                    <div className="absolute inset-0 bg-gradient-to-br from-background via-background to-muted/40 pointer-events-none" />
+                ) : null}
 
                 <div ref={renderHostRef} className="absolute inset-0 pointer-events-none" />
 
