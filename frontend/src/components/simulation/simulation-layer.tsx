@@ -213,11 +213,35 @@ export function SimulationLayer({
 
         matterBodyMapRef.current = new Map();
     }, []);
-    const { frames, currentIndex, detections, imageSizePx, scale_m_per_px, scene, playing, renderImageDataUrl } = useSimulation();
+    const { frames, currentIndex, detections, imageSizePx, scale_m_per_px, scene, playing, renderImageDataUrl, normalizationReport } = useSimulation();
     const currentFrame = frames[currentIndex];
 
     const clamp = (value: number, min: number, max: number) =>
         Math.min(Math.max(value, min), max);
+
+    const computeClampRect = useCallback((width: number, height: number) => {
+        if (width <= 0 || height <= 0) {
+            return { minX: 0, maxX: width, minY: 0, maxY: height };
+        }
+        const imgW = imageSizePx?.width ?? width;
+        const imgH = imageSizePx?.height ?? height;
+        if (!imgW || !imgH) {
+            return { minX: 0, maxX: width, minY: 0, maxY: height };
+        }
+        const scale = Math.min(width / imgW, height / imgH);
+        const renderW = imgW * scale;
+        const renderH = imgH * scale;
+        const offsetX = (width - renderW) / 2;
+        const offsetY = (height - renderH) / 2;
+        const minX = Number.isFinite(offsetX) ? offsetX : 0;
+        const minY = Number.isFinite(offsetY) ? offsetY : 0;
+        const maxX = Number.isFinite(renderW) ? minX + renderW : width;
+        const maxY = Number.isFinite(renderH) ? minY + renderH : height;
+        if (maxX <= minX || maxY <= minY) {
+            return { minX: 0, maxX: width, minY: 0, maxY: height };
+        }
+        return { minX, maxX, minY, maxY };
+    }, [imageSizePx]);
 
     useEffect(() => {
         const container = containerRef.current;
@@ -229,12 +253,13 @@ export function SimulationLayer({
             onObjectPositionChange({ x: rect.width / 2, y: rect.height / 2 });
             return;
         }
-        const clampedX = clamp(objectPosition.x, 0, rect.width);
-        const clampedY = clamp(objectPosition.y, 0, rect.height);
+        const bounds = computeClampRect(rect.width, rect.height);
+        const clampedX = clamp(objectPosition.x, bounds.minX, bounds.maxX);
+        const clampedY = clamp(objectPosition.y, bounds.minY, bounds.maxY);
         if (clampedX !== objectPosition.x || clampedY !== objectPosition.y) {
             onObjectPositionChange({ x: clampedX, y: clampedY });
         }
-    }, [objectPosition, onObjectPositionChange, dimensions.width, dimensions.height]);
+    }, [objectPosition, onObjectPositionChange, dimensions.width, dimensions.height, computeClampRect]);
 
     const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
         if (!enabled) return;
@@ -248,8 +273,11 @@ export function SimulationLayer({
         if (!area) return;
 
         const rect = area.getBoundingClientRect();
-        const x = clamp(event.clientX - rect.left, 0, rect.width);
-        const y = clamp(event.clientY - rect.top, 0, rect.height);
+        const bounds = computeClampRect(rect.width, rect.height);
+        const rawX = event.clientX - rect.left;
+        const rawY = event.clientY - rect.top;
+        const x = clamp(rawX, bounds.minX, bounds.maxX);
+        const y = clamp(rawY, bounds.minY, bounds.maxY);
         onObjectPositionChange({ x, y });
     };
 
@@ -607,7 +635,7 @@ export function SimulationLayer({
                 console.warn('[SimulationLayer] mapping delta exceeds tolerance', payload);
             } else {
                 // eslint-disable-next-line no-console
-                console.debug('[SimulationLayer] mapping delta', payload);
+                // console.debug('[SimulationLayer] mapping delta', payload);
             }
         }
     }, [activeTransform, bodyPoints, scene]);
@@ -659,6 +687,15 @@ export function SimulationLayer({
                 {bodyPoints.length === 0 && !playing ? (
                     <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground pointer-events-none">
                         Simulation frames will appear here once available.
+                    </div>
+                ) : null}
+                {normalizationReport && normalizationReport.applied ? (
+                    <div className="absolute top-2 right-2 pointer-events-none text-[11px] font-medium text-muted-foreground">
+                        <span className="rounded bg-muted/70 px-2 py-1 shadow-sm backdrop-blur">
+                            Normalized scene delta=({normalizationReport.translation_m[0].toFixed(2)}m,
+                            {normalizationReport.translation_m[1].toFixed(2)}m)
+                            {normalizationReport.scale ? ` x${normalizationReport.scale.toFixed(2)}` : ''}
+                        </span>
                     </div>
                 ) : null}
                 {bodyPoints.map((body) => {

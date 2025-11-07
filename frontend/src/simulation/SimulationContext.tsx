@@ -3,6 +3,12 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, ReactNode } from 'react';
 import type { SimulationFrame } from '@/simulation/types';
 import { runMatterSimulation } from '@/simulation/matterRunner';
+import {
+  normalizeSceneMapping,
+  normalizeSceneToImageBounds,
+  type SceneNormalizationReport,
+  type NormalizedSceneMapping,
+} from '@/simulation/coords';
 import { parseDiagram, type DiagramParseDetection, type DiagramParseResponse } from '@/lib/api';
 
 const toVec2 = (value: unknown): [number, number] | null => {
@@ -89,6 +95,27 @@ const cloneSceneSnapshot = (source: any | null) => {
   };
 };
 
+const fallbackMappingFromScale = (
+  image: { width: number; height: number } | null | undefined,
+  scale: number | null | undefined,
+): NormalizedSceneMapping | null => {
+  if (!image) return null;
+  if (typeof scale !== 'number' || !Number.isFinite(scale) || scale <= 0) {
+    return null;
+  }
+  return {
+    origin_px: [image.width / 2, image.height / 2],
+    scale_m_per_px: scale,
+  };
+};
+
+type SceneNormalizationOverrides = {
+  imageSize?: { width: number; height: number } | null;
+  scale?: number | null;
+  mode?: 'translate-only' | 'translate-and-scale';
+  targetBodies?: 'dynamic' | 'all';
+};
+
 interface SimulationRunPayload {
   frames: Array<{
     t: number;
@@ -118,6 +145,7 @@ export interface SimulationConfig {
   dt: number; // integrator dt for playback
   friction: number; // default friction coefficient
   duration: number;
+  restitution: number;
 }
 
 interface SimulationState extends SimulationConfig {
@@ -140,6 +168,7 @@ interface SimulationState extends SimulationConfig {
   parseAndBind: (file: File) => Promise<DiagramParseResponse>;
   loadSimulationRun: (payload: SimulationRunPayload) => Promise<void>;
   renderImageDataUrl: string | null;
+  normalizationReport: SceneNormalizationReport | null;
 }
 
 const SimulationContext = createContext<SimulationState | null>(null);
@@ -150,6 +179,7 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     dt: 0.02,
     friction: 0.5,
     duration: 2,
+    restitution: 1,
   });
   const [frames, setFrames] = useState<SimulationFrame[]>([]);
   const [playing, setPlaying] = useState(false);
@@ -167,6 +197,56 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
   const [scene, setScene] = useState<any | null>(null);
   const [labels, setLabels] = useState<{ entities: Array<{ segment_id: string; label: string; props?: Record<string, unknown> }> } | null>(null);
   const [renderImageDataUrl, setRenderImageDataUrl] = useState<string | null>(null);
+  const [normalizationReport, setNormalizationReport] = useState<SceneNormalizationReport | null>(null);
+
+  const normalizeSceneForState = useCallback(
+    (sceneInput: any | null, overrides?: SceneNormalizationOverrides) => {
+      if (!sceneInput) {
+        return { scene: null as any, report: null as SceneNormalizationReport | null };
+      }
+
+      const mode = overrides?.mode ?? 'translate-and-scale';
+      const image = overrides?.imageSize ?? imageSizePx;
+      const scaleOverride = overrides?.scale ?? scale_m_per_px;
+      const cloned = cloneSceneSnapshot(sceneInput);
+      const existingMapping = normalizeSceneMapping((cloned as any)?.mapping);
+      const mapping: NormalizedSceneMapping | null = existingMapping ?? fallbackMappingFromScale(image, scaleOverride);
+
+      if (!image || !mapping) {
+        const bodies = Array.isArray((cloned as any)?.bodies) ? (cloned as any).bodies : [];
+        const ids = bodies
+          .map((body: any): string | null => (typeof body?.id === 'string' ? body.id : null))
+          .filter((candidate: string | null): candidate is string => typeof candidate === 'string' && candidate.length > 0);
+
+        const fallbackReport: SceneNormalizationReport = {
+          applied: false,
+          translation_m: [0, 0],
+          scale: undefined,
+          adjustedBodyIds: ids,
+          mode,
+          warnings: ['Normalization skipped: missing mapping or image dimensions.'],
+        };
+
+        return { scene: cloned, report: fallbackReport };
+      }
+
+      if (!existingMapping) {
+        (cloned as any).mapping = {
+          origin_px: [...mapping.origin_px],
+          scale_m_per_px: mapping.scale_m_per_px,
+        };
+      }
+
+      const result = normalizeSceneToImageBounds(cloned, mapping, image, {
+        margin_m: 0.02,
+        mode,
+        targetBodies: overrides?.targetBodies ?? 'dynamic',
+      });
+
+      return { scene: result.scene, report: result.report };
+    },
+    [imageSizePx, scale_m_per_px],
+  );
 
   const resetSimulation = useCallback(() => {
     console.log('[SimulationContext] resetSimulation called');
@@ -178,7 +258,34 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const updateConfig = useCallback((partial: Partial<SimulationConfig>) => {
-    setConfig(prev => ({ ...prev, ...partial }));
+    setConfig(prev => {
+      const next: SimulationConfig = { ...prev, ...partial };
+      if (partial.restitution !== undefined) {
+        const rest = partial.restitution;
+        if (typeof rest === 'number' && Number.isFinite(rest)) {
+          next.restitution = Math.min(Math.max(rest, 0), 1);
+        } else {
+          next.restitution = prev.restitution;
+        }
+      }
+      if (partial.friction !== undefined) {
+        const fr = partial.friction;
+        next.friction = typeof fr === 'number' && Number.isFinite(fr) && fr >= 0 ? fr : prev.friction;
+      }
+      if (partial.dt !== undefined) {
+        const dtCandidate = partial.dt;
+        next.dt = typeof dtCandidate === 'number' && Number.isFinite(dtCandidate) && dtCandidate > 0 ? dtCandidate : prev.dt;
+      }
+      if (partial.duration !== undefined) {
+        const durationCandidate = partial.duration;
+        next.duration = typeof durationCandidate === 'number' && Number.isFinite(durationCandidate) && durationCandidate > 0 ? durationCandidate : prev.duration;
+      }
+      if (partial.gravity !== undefined) {
+        const gravityCandidate = partial.gravity;
+        next.gravity = typeof gravityCandidate === 'number' && Number.isFinite(gravityCandidate) ? gravityCandidate : prev.gravity;
+      }
+      return next;
+    });
   }, []);
 
   const performResimulation = useCallback(
@@ -195,7 +302,10 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
 
       try {
         const duration = typeof config.duration === 'number' && config.duration > 0 ? config.duration : 5;
-        const { frames: matterFrames, dt: simDt } = runMatterSimulation(sceneToRun, { duration_s: duration });
+        const { frames: matterFrames, dt: simDt } = runMatterSimulation(sceneToRun, {
+          duration_s: duration,
+          restitutionOverride: config.restitution,
+        });
 
         if (requestId !== loadRequestRef.current) {
           return;
@@ -230,15 +340,18 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
         console.error('[SimulationContext] performResimulation failed', error);
       }
     },
-    [config.duration],
+  [config.duration, config.restitution],
   );
 
   // Update scene and immediately re-run Matter.js with the latest parameters
   const updateSceneAndResimulate = useCallback(
     async (sceneUpdates: any | ((prev: any | null) => any | null)) => {
-      let nextScene: any | null = null;
+      let normalizationResult: { scene: any | null; report: SceneNormalizationReport | null } = {
+        scene: null,
+        report: null,
+      };
 
-  setScene((prevScene: any | null) => {
+      setScene((prevScene: any | null) => {
         const base = cloneSceneSnapshot(prevScene);
         const candidate =
           typeof sceneUpdates === 'function'
@@ -246,30 +359,31 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
             : sceneUpdates;
 
         if (candidate === undefined) {
-          nextScene = base;
-          return base;
+          normalizationResult = normalizeSceneForState(base);
+          return normalizationResult.scene;
         }
 
         if (candidate === null) {
-          nextScene = null;
+          normalizationResult = { scene: null, report: null };
           return null;
         }
 
-        const clonedCandidate = cloneSceneSnapshot(candidate);
-        nextScene = clonedCandidate;
-        return clonedCandidate;
+        normalizationResult = normalizeSceneForState(candidate);
+        return normalizationResult.scene;
       });
 
-      if (nextScene === null) {
+      if (!normalizationResult.scene) {
         console.warn('[SimulationContext] updateSceneAndResimulate cleared the scene');
+        setNormalizationReport(null);
         setFrames([]);
         setPlaying(false);
         return;
       }
 
-      performResimulation(nextScene);
+      setNormalizationReport(normalizationResult.report ?? null);
+      performResimulation(normalizationResult.scene);
     },
-    [performResimulation],
+    [normalizeSceneForState, performResimulation],
   );
 
   const parseAndBind = useCallback(async (file: File): Promise<DiagramParseResponse> => {
@@ -282,7 +396,12 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     setDetections(res.detections);
     setImageSizePx({ width: res.image.width_px, height: res.image.height_px });
     setScale(res.mapping.scale_m_per_px);
-    setScene(res.scene as any);
+  const normalization = normalizeSceneForState(res.scene ?? null, {
+      imageSize: { width: res.image.width_px, height: res.image.height_px },
+      scale: typeof res.mapping?.scale_m_per_px === 'number' ? res.mapping.scale_m_per_px : null,
+    });
+    setScene(normalization.scene);
+    setNormalizationReport(normalization.report);
     if (res.labels && Array.isArray(res.labels.entities)) {
       setLabels(res.labels as any);
     } else {
@@ -354,7 +473,12 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     setCurrentIndex(0);
     lastTimestamp.current = null;
 
-    setScene(payload.scene ?? null);
+    const normalization = normalizeSceneForState(payload.scene ?? null, {
+      imageSize: payload.imageSizePx ?? null,
+      scale: payload.scale_m_per_px ?? null,
+    });
+    setScene(normalization.scene);
+    setNormalizationReport(normalization.report);
     setDetections(payload.detections ?? []);
     setImageSizePx(payload.imageSizePx ?? null);
     setScale(payload.scale_m_per_px ?? null);
@@ -440,7 +564,11 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     if (payload.scene) {
       try {
         const duration = payload.meta?.simulation_time_s ?? 5;
-        const localResult = runMatterSimulation(payload.scene, { duration_s: duration });
+        const sceneForSimulation = normalization.scene ?? payload.scene;
+        const localResult = runMatterSimulation(sceneForSimulation, {
+          duration_s: duration,
+          restitutionOverride: config.restitution,
+        });
         const localFrames: SimulationFrame[] = localResult.frames.map(frame => ({
           t: frame.t,
           bodies: frame.bodies.map(body => ({
@@ -598,6 +726,7 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     parseAndBind,
     loadSimulationRun,
     renderImageDataUrl,
+    normalizationReport,
   };
   return <SimulationContext.Provider value={value}>{children}</SimulationContext.Provider>;
 }

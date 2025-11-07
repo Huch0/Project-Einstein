@@ -5,8 +5,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import { Slider } from '@/components/ui/slider';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Play, Pause, StepForward, RotateCcw, Box } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { Play, Pause, StepForward, RotateCcw } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSimulation } from '@/simulation/SimulationContext';
 import { useGlobalChat } from '@/contexts/global-chat-context';
 import {
@@ -16,12 +16,33 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { Input } from '@/components/ui/input';
 
 type Scope = 'global' | 'entity';
 
+const normalizeAngleDeg = (value: number): number => ((value % 360) + 360) % 360;
+const degToRad = (deg: number): number => (deg * Math.PI) / 180;
+const radToDeg = (rad: number): number => (rad * 180) / Math.PI;
+const MAX_VELOCITY_DECIMALS = 4;
+const formatVelocityText = (value: number): string =>
+  Number.isFinite(value) ? Number(value.toFixed(MAX_VELOCITY_DECIMALS)).toString() : '0';
+const isPartialNumberInput = (value: string): boolean => {
+  if (value === '' || value === '-' || value === '+' || value === '.' || value === ',') {
+    return true;
+  }
+  return /[.,]$/.test(value);
+};
+
+const DEFAULT_VELOCITY_STATE = {
+  magnitude: 0,
+  angleDeg: 0,
+  vxText: '0',
+  vyText: '0',
+};
+
 export default function ParametersPanel() {
   const { 
-    gravity, dt, 
+    gravity, dt, restitution, duration,
     updateConfig, resetSimulation, 
     playing, setPlaying, scene, labels,
     updateSceneAndResimulate
@@ -33,8 +54,11 @@ export default function ParametersPanel() {
   
   // Physics parameters (must be at top level, not conditionally called)
   const [friction, setFriction] = useState(0.5);
-  const [restitution, setRestitution] = useState(0.3);
+  const [entityRestitution, setEntityRestitution] = useState(0.3);
   const [density, setDensity] = useState(1.0);
+  const [velocityState, setVelocityState] = useState(() => ({ ...DEFAULT_VELOCITY_STATE }));
+  const [gravityX, setGravityX] = useState(0);
+  const [gravityY, setGravityY] = useState(gravity);
 
   // Get simulation boxes from GlobalChatContext
   const simulationBoxes = useMemo(() => {
@@ -53,6 +77,131 @@ export default function ParametersPanel() {
     // TODO: Fetch from selectedBox.conversationId context
     return labels?.entities ?? [];
   }, [labels, selectedBox]);
+
+  useEffect(() => {
+    if (!selectedEntityId || !scene?.bodies) {
+      setVelocityState({ ...DEFAULT_VELOCITY_STATE });
+      return;
+    }
+
+    const body = scene.bodies.find((b: any) => b.id === selectedEntityId);
+    if (!body) {
+      setVelocityState({ ...DEFAULT_VELOCITY_STATE });
+      return;
+    }
+
+    const vx = Number(body.velocity_m_s?.[0]) || 0;
+    const vy = Number(body.velocity_m_s?.[1]) || 0;
+    const magnitude = Math.hypot(vx, vy);
+    const angleDeg = normalizeAngleDeg(radToDeg(Math.atan2(vy, vx)));
+    setVelocityState({
+      magnitude,
+      angleDeg,
+      vxText: formatVelocityText(vx),
+      vyText: formatVelocityText(vy),
+    });
+  }, [selectedEntityId, scene?.bodies]);
+
+  const applyVelocityUpdate = useCallback(
+    (entityId: string, vx: number, vy: number) => {
+      updateSceneAndResimulate((prev: any | null) => {
+        if (!prev?.bodies) {
+          return prev;
+        }
+
+        let changed = false;
+        const updatedBodies = prev.bodies.map((b: any) => {
+          if (b.id !== entityId) {
+            return b;
+          }
+
+          const prevVx = Number(b.velocity_m_s?.[0]) || 0;
+          const prevVy = Number(b.velocity_m_s?.[1]) || 0;
+          if (Math.abs(prevVx - vx) < 1e-6 && Math.abs(prevVy - vy) < 1e-6) {
+            return b;
+          }
+
+          changed = true;
+          return { ...b, velocity_m_s: [vx, vy] };
+        });
+
+        return changed ? { ...prev, bodies: updatedBodies } : prev;
+      });
+    },
+    [updateSceneAndResimulate],
+  );
+
+  const handleVelocityMagnitudeChange = useCallback(
+    (entityId: string, magnitude: number) => {
+      setVelocityState((prev) => {
+        const angleRad = degToRad(prev.angleDeg);
+        const vx = magnitude * Math.cos(angleRad);
+        const vy = magnitude * Math.sin(angleRad);
+        const nextState = {
+          magnitude,
+          angleDeg: prev.angleDeg,
+          vxText: formatVelocityText(vx),
+          vyText: formatVelocityText(vy),
+        };
+        applyVelocityUpdate(entityId, vx, vy);
+        return nextState;
+      });
+    },
+    [applyVelocityUpdate],
+  );
+
+  const handleVelocityAngleChange = useCallback(
+    (entityId: string, angleDeg: number) => {
+      setVelocityState((prev) => {
+        const normalized = normalizeAngleDeg(angleDeg);
+        const angleRad = degToRad(normalized);
+        const vx = prev.magnitude * Math.cos(angleRad);
+        const vy = prev.magnitude * Math.sin(angleRad);
+        const nextState = {
+          magnitude: prev.magnitude,
+          angleDeg: normalized,
+          vxText: formatVelocityText(vx),
+          vyText: formatVelocityText(vy),
+        };
+        applyVelocityUpdate(entityId, vx, vy);
+        return nextState;
+      });
+    },
+    [applyVelocityUpdate],
+  );
+
+  const handleVelocityComponentInput = useCallback(
+    (entityId: string, component: 'vx' | 'vy', value: string) => {
+      setVelocityState((prev) => {
+        const next = {
+          ...prev,
+          vxText: component === 'vx' ? value : prev.vxText,
+          vyText: component === 'vy' ? value : prev.vyText,
+        };
+
+        if (isPartialNumberInput(next.vxText) || isPartialNumberInput(next.vyText)) {
+          return next;
+        }
+
+        const vx = Number.parseFloat(next.vxText);
+        const vy = Number.parseFloat(next.vyText);
+        if (Number.isFinite(vx) && Number.isFinite(vy)) {
+          const magnitude = Math.hypot(vx, vy);
+          const angleDeg = normalizeAngleDeg(radToDeg(Math.atan2(vy, vx)));
+          applyVelocityUpdate(entityId, vx, vy);
+          return {
+            magnitude,
+            angleDeg,
+            vxText: formatVelocityText(vx),
+            vyText: formatVelocityText(vy),
+          };
+        }
+
+        return next;
+      });
+    },
+    [applyVelocityUpdate],
+  );
 
   return (
     <Card className="h-full flex flex-col">
@@ -148,12 +297,83 @@ export default function ParametersPanel() {
                   }} 
                 />
               </div>
+                            <div className="grid gap-2">
+                              <div className="flex justify-between items-center">
+                                <Label>Gravity Vector (x,y)</Label>
+                                <span className="text-sm text-muted-foreground">[{gravityX.toFixed(2)}, {gravityY.toFixed(2)}]</span>
+                              </div>
+                              <div className="flex gap-2">
+                                <Slider
+                                  id="gravity-x"
+                                  value={[gravityX]}
+                                  min={-20}
+                                  max={20}
+                                  step={0.1}
+                                  onValueChange={(v) => {
+                                    const gx = v[0];
+                                    setGravityX(gx);
+                                    if (scene) {
+                                      updateSceneAndResimulate((prev: any | null) => {
+                                        if (!prev) return prev;
+                                        const world = { ...(prev.world ?? {}), gravity_vec_m_s2: { x: gx, y: gravityY } };
+                                        return { ...prev, world };
+                                      });
+                                    }
+                                  }}
+                                />
+                                <Slider
+                                  id="gravity-y"
+                                  value={[gravityY]}
+                                  min={-20}
+                                  max={20}
+                                  step={0.1}
+                                  onValueChange={(v) => {
+                                    const gy = v[0];
+                                    setGravityY(gy);
+                                    if (scene) {
+                                      updateSceneAndResimulate((prev: any | null) => {
+                                        if (!prev) return prev;
+                                        const world = { ...(prev.world ?? {}), gravity_vec_m_s2: { x: gravityX, y: gy } };
+                                        return { ...prev, world };
+                                      });
+                                    }
+                                  }}
+                                />
+                              </div>
+                            </div>
               <div className="grid gap-2">
                 <div className="flex justify-between items-center">
                   <Label htmlFor="timestep">Time Step (dt)</Label>
                   <span className="text-sm text-muted-foreground">{dt.toFixed(3)} s</span>
                 </div>
                 <Slider id="timestep" value={[dt]} min={0.001} max={0.1} step={0.001} onValueChange={(v) => { updateConfig({ dt: v[0] }); }} />
+              </div>
+              <div className="grid gap-2">
+                <div className="flex justify-between items-center">
+                  <Label htmlFor="duration">Duration (s)</Label>
+                  <span className="text-sm text-muted-foreground">{duration.toFixed(1)}</span>
+                </div>
+                <Slider id="duration" value={[duration]} min={1} max={10} step={0.5} onValueChange={(v) => { updateConfig({ duration: v[0] as number }); }} />
+              </div>
+              <div className="grid gap-2">
+                <div className="flex justify-between items-center">
+                  <Label htmlFor="global-restitution">Restitution</Label>
+                  <span className="text-sm text-muted-foreground">{restitution.toFixed(2)}</span>
+                </div>
+                <Slider
+                  id="global-restitution"
+                  value={[restitution]}
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  onValueChange={(v) => {
+                    const r = v[0];
+                    updateConfig({ restitution: r });
+                    if (scene) {
+                      updateSceneAndResimulate((prev: any | null) => prev);
+                    }
+                  }}
+                />
               </div>
             </>
           )}
@@ -256,16 +476,16 @@ export default function ParametersPanel() {
                     <div className="grid gap-2">
                       <div className="flex justify-between items-center">
                         <Label htmlFor={`restitution-${entity.segment_id}`}>Restitution (Bounciness)</Label>
-                        <span className="text-sm text-muted-foreground">{(sceneBody?.material?.restitution ?? restitution).toFixed(2)}</span>
+                        <span className="text-sm text-muted-foreground">{(sceneBody?.material?.restitution ?? entityRestitution).toFixed(2)}</span>
                       </div>
                       <Slider 
                         id={`restitution-${entity.segment_id}`}
-                        value={[sceneBody?.material?.restitution ?? restitution]} 
+                        value={[sceneBody?.material?.restitution ?? entityRestitution]} 
                         min={0} 
                         max={1} 
                         step={0.01} 
                         onValueChange={(v) => { 
-                          setRestitution(v[0]);
+                          setEntityRestitution(v[0]);
                           // Update scene body material
                           if (scene?.bodies) {
                             const restitutionValue = v[0];
@@ -287,6 +507,71 @@ export default function ParametersPanel() {
                       />
                     </div>
 
+                    {/* Velocity Vector */}
+                    <div className="grid gap-2">
+                      <div className="flex justify-between items-center">
+                        <Label htmlFor={`velocity-mag-${entity.segment_id}`}>Velocity Magnitude (m/s)</Label>
+                        <span className="text-sm text-muted-foreground">{velocityState.magnitude.toFixed(2)}</span>
+                      </div>
+                      <Slider
+                        id={`velocity-mag-${entity.segment_id}`}
+                        value={[velocityState.magnitude]}
+                        min={0}
+                        max={20}
+                        step={0.1}
+                        onValueChange={(v) => {
+                          if (!selectedEntityId) return;
+                          handleVelocityMagnitudeChange(entity.segment_id, v[0]);
+                        }}
+                      />
+                      <div className="flex justify-between items-center">
+                        <Label htmlFor={`velocity-angle-${entity.segment_id}`}>Velocity Angle (deg)</Label>
+                        <span className="text-sm text-muted-foreground">{velocityState.angleDeg.toFixed(0)}°</span>
+                      </div>
+                      <Slider
+                        id={`velocity-angle-${entity.segment_id}`}
+                        value={[velocityState.angleDeg]}
+                        min={0}
+                        max={359}
+                        step={1}
+                        onValueChange={(v) => {
+                          if (!selectedEntityId) return;
+                          handleVelocityAngleChange(entity.segment_id, v[0]);
+                        }}
+                      />
+                      <div className="grid gap-3">
+                        <Label>Velocity Components (m/s)</Label>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="space-y-1">
+                            <Label htmlFor={`velocity-vx-${entity.segment_id}`} className="text-xs text-muted-foreground uppercase">vx</Label>
+                            <Input
+                              id={`velocity-vx-${entity.segment_id}`}
+                              type="number"
+                              step="0.1"
+                              inputMode="decimal"
+                              value={velocityState.vxText}
+                              onChange={(event) =>
+                                handleVelocityComponentInput(entity.segment_id, 'vx', event.target.value)
+                              }
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <Label htmlFor={`velocity-vy-${entity.segment_id}`} className="text-xs text-muted-foreground uppercase">vy</Label>
+                            <Input
+                              id={`velocity-vy-${entity.segment_id}`}
+                              type="number"
+                              step="0.1"
+                              inputMode="decimal"
+                              value={velocityState.vyText}
+                              onChange={(event) =>
+                                handleVelocityComponentInput(entity.segment_id, 'vy', event.target.value)
+                              }
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
                     {/* Density Parameter */}
                     <div className="grid gap-2">
                       <div className="flex justify-between items-center">
@@ -304,6 +589,33 @@ export default function ParametersPanel() {
                           // TODO: Density affects mass calculation - needs more complex update
                           console.log('[ParametersPanel] Density update not yet implemented');
                         }} 
+                      />
+                    </div>
+
+                    {/* Angular Velocity */}
+                    <div className="grid gap-2">
+                      <div className="flex justify-between items-center">
+                        <Label htmlFor={`angvel-${entity.segment_id}`}>Angular Velocity (rad/s)</Label>
+                        <span className="text-sm text-muted-foreground">{(sceneBody?.angular_velocity_rad_s ?? 0).toFixed(2)}</span>
+                      </div>
+                      <Slider
+                        id={`angvel-${entity.segment_id}`}
+                        value={[sceneBody?.angular_velocity_rad_s ?? 0]}
+                        min={-10}
+                        max={10}
+                        step={0.1}
+                        onValueChange={(v) => {
+                          const av = v[0];
+                          if (scene?.bodies) {
+                            updateSceneAndResimulate((prev: any | null) => {
+                              if (!prev?.bodies) return prev;
+                              const updatedBodies = prev.bodies.map((b: any) =>
+                                b.id === entity.segment_id ? { ...b, angular_velocity_rad_s: av } : b,
+                              );
+                              return { ...prev, bodies: updatedBodies };
+                            });
+                          }
+                        }}
                       />
                     </div>
                   </div>
