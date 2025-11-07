@@ -664,7 +664,16 @@ export function SimulationLayer({
                             visible: false,
                         },
                     },
+                    // CRITICAL: Allow mouse to interact with static bodies
+                    collisionFilter: {
+                        mask: 0xFFFFFFFF, // Interact with all collision groups
+                    }
                 });
+
+                // Override canStartDrag to allow static bodies
+                (mouseConstraint as any).canStartDrag = function(body: Matter.Body) {
+                    return true; // Allow dragging ALL bodies (static + dynamic)
+                };
 
                 // Track dragged body (mouseConstraint.body becomes null on enddrag)
                 let draggedBody: Matter.Body | null = null;
@@ -699,30 +708,16 @@ export function SimulationLayer({
                     // Store reference to dragged body
                     draggedBody = body;
                     
-                    // If static body, temporarily make it dynamic for dragging
+                    // Static bodies: Don't convert to dynamic (causes NaN)
+                    // Instead, mark them and handle position updates manually
                     if (body.isStatic) {
-                        // 1. Save current state (to prevent NaN issues)
-                        const savedState = {
-                            position: { x: body.position.x, y: body.position.y },
-                            angle: body.angle,
-                        };
-                        
-                        // 2. Convert to dynamic
-                        Matter.Body.setStatic(body, false);
-                        
-                        // 3. Immediately restore position/angle (workaround Matter.js bug)
-                        Matter.Body.setPosition(body, savedState.position);
-                        Matter.Body.setAngle(body, savedState.angle);
-                        
-                        // 4. Set mass and zero velocity
-                        Matter.Body.setMass(body, 1); // Temporary mass for dragging
-                        Matter.Body.setVelocity(body, { x: 0, y: 0 });
-                        Matter.Body.setAngularVelocity(body, 0);
-                        
-                        // 5. Mark as temporarily dynamic
                         (body as any).__wasStatic = true;
-                        
-                        console.log(`[SimulationLayer] Static body ${body.label || body.id} made draggable`);
+                        (body as any).__staticDragStart = { 
+                            x: body.position.x, 
+                            y: body.position.y,
+                            angle: body.angle
+                        };
+                        console.log(`[SimulationLayer] Static body ${body.label || body.id} drag initiated (will update manually)`);
                     } else {
                         console.log(`[SimulationLayer] Dynamic body ${body.label || body.id} dragging`);
                     }
@@ -739,11 +734,12 @@ export function SimulationLayer({
 
                     const bodyId = body.label || body.id?.toString() || 'unknown';
                     
-                    // Restore static state if it was originally static
+                    // For static bodies that were dragged
                     if ((body as any).__wasStatic) {
-                        Matter.Body.setStatic(body, true);
+                        // Static bodies stay static, just clean up markers
                         delete (body as any).__wasStatic;
-                        console.log(`[SimulationLayer] Static state restored for ${bodyId}`);
+                        delete (body as any).__staticDragStart;
+                        console.log(`[SimulationLayer] Static body ${bodyId} drag completed at (${body.position.x.toFixed(2)}, ${body.position.y.toFixed(2)})`);
                     }
                     
                     // Check if body has valid position
