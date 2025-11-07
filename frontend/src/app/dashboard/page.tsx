@@ -64,67 +64,90 @@ export default function DashboardPage() {
         };
     }, []);
 
-    const horizontalResizeHint = shouldStackPanels
-        ? 'Drag handle to adjust panel height'
-        : 'Drag handle to adjust width';
+    const horizontalResizeHint = 'Drag handle to adjust width';
     const verticalResizeHint = 'Drag handle to adjust height';
 
     return (
         <GlobalChatProvider>
-            <div className="flex min-h-screen flex-col bg-muted/10">
-                <ResizablePanelGroup direction="vertical" className="flex-1 overflow-hidden border-t bg-background">
-                    <ResizablePanel defaultSize={65} minSize={20}>
-                        <ResizablePanelGroup
-                            direction={shouldStackPanels ? 'vertical' : 'horizontal'}
-                        >
-                            <ResizablePanel
-                                defaultSize={shouldStackPanels ? 60 : 65}
-                                minSize={shouldStackPanels ? 40 : 35}
+            <div className="flex h-screen flex-col overflow-hidden bg-muted/10">
+                {shouldStackPanels ? (
+                    <ResizablePanelGroup direction="vertical" className="flex-1 min-h-0 overflow-hidden border-t bg-background">
+                        <ResizablePanel defaultSize={45} minSize={30}>
+                            <PaneShell
+                                title="Simulation Canvas"
+                                hint={verticalResizeHint}
+                                headerClassName="px-2 py-3 sm:px-3"
+                                bodyClassName="flex-1 min-h-0 overflow-hidden p-0"
                             >
-                                <PaneShell
-                                    title="Simulation Canvas"
-                                    hint={horizontalResizeHint}
-                                    headerClassName="px-2 py-3 sm:px-3"
-                                    bodyClassName="flex-1 min-h-0 overflow-hidden p-0"
-                                >
-                                    <SimulationWrapper className="gap-0 m-0 p-0" />
-                                </PaneShell>
-                            </ResizablePanel>
-                            <ResizableHandle
-                                withHandle
-                                aria-label={
-                                    shouldStackPanels
-                                        ? 'Resize simulation canvas and chat vertically'
-                                        : 'Resize simulation canvas and chat horizontally'
-                                }
-                            />
-                            <ResizablePanel
-                                defaultSize={shouldStackPanels ? 40 : 35}
-                                minSize={shouldStackPanels ? 30 : 25}
+                                <SimulationWrapper className="gap-0 m-0 p-0" />
+                            </PaneShell>
+                        </ResizablePanel>
+                        <ResizableHandle withHandle aria-label="Resize simulation canvas and assistant chat" />
+                        <ResizablePanel defaultSize={30} minSize={20}>
+                            <PaneShell
+                                title="Assistant Chat"
+                                hint={verticalResizeHint}
+                                headerClassName="px-2 py-3 sm:px-3"
+                                bodyClassName="flex-1 min-h-0"
                             >
-                                <PaneShell
-                                    title="Assistant Chat"
-                                    hint={horizontalResizeHint}
-                                    headerClassName="px-2 py-3 sm:px-3"
-                                    bodyClassName="flex-1 min-h-0"
-                                >
-                                    <ChatPanel padding="flush" />
-                                </PaneShell>
-                            </ResizablePanel>
-                        </ResizablePanelGroup>
-                    </ResizablePanel>
-                    <ResizableHandle withHandle aria-label="Resize simulation controls section" />
-                    <ResizablePanel defaultSize={35} minSize={20}>
-                        <PaneShell
-                            title="Simulation Controls"
-                            hint={verticalResizeHint}
-                            headerClassName="px-2 py-3 sm:px-3"
-                            bodyClassName="flex-1 min-h-0 overflow-hidden"
-                        >
-                            <ControlPane />
-                        </PaneShell>
-                    </ResizablePanel>
-                </ResizablePanelGroup>
+                                <ChatPanel padding="flush" />
+                            </PaneShell>
+                        </ResizablePanel>
+                        <ResizableHandle withHandle aria-label="Resize assistant chat and simulation controls" />
+                        <ResizablePanel defaultSize={25} minSize={20}>
+                            <PaneShell
+                                title="Simulation Controls"
+                                hint={verticalResizeHint}
+                                headerClassName="px-2 py-3 sm:px-3"
+                                bodyClassName="flex-1 min-h-0 overflow-hidden"
+                            >
+                                <ControlPane />
+                            </PaneShell>
+                        </ResizablePanel>
+                    </ResizablePanelGroup>
+                ) : (
+                    <ResizablePanelGroup direction="horizontal" className="flex-1 min-h-0 overflow-hidden border-t bg-background">
+                        <ResizablePanel defaultSize={65} minSize={45}>
+                            <ResizablePanelGroup direction="vertical" className="h-full min-h-0">
+                                <ResizablePanel defaultSize={60} minSize={35}>
+                                    <PaneShell
+                                        title="Simulation Canvas"
+                                        hint={verticalResizeHint}
+                                        headerClassName="px-2 py-3 sm:px-3"
+                                        bodyClassName="flex-1 min-h-0 overflow-hidden p-0"
+                                    >
+                                        <SimulationWrapper className="gap-0 m-0 p-0" />
+                                    </PaneShell>
+                                </ResizablePanel>
+                                <ResizableHandle withHandle aria-label="Resize simulation canvas and simulation controls" />
+                                <ResizablePanel defaultSize={40} minSize={25}>
+                                    <PaneShell
+                                        title="Simulation Controls"
+                                        hint={verticalResizeHint}
+                                        headerClassName="px-2 py-3 sm:px-3"
+                                        bodyClassName="flex-1 min-h-0 overflow-hidden"
+                                    >
+                                        <ControlPane />
+                                    </PaneShell>
+                                </ResizablePanel>
+                            </ResizablePanelGroup>
+                        </ResizablePanel>
+                        <ResizableHandle
+                            withHandle
+                            aria-label="Resize main simulation area and assistant chat"
+                        />
+                        <ResizablePanel defaultSize={35} minSize={25}>
+                            <PaneShell
+                                title="Assistant Chat"
+                                hint={horizontalResizeHint}
+                                headerClassName="px-2 py-3 sm:px-3"
+                                bodyClassName="flex-1 min-h-0"
+                            >
+                                <ChatPanel padding="flush" />
+                            </PaneShell>
+                        </ResizablePanel>
+                    </ResizablePanelGroup>
+                )}
             </div>
         </GlobalChatProvider>
     );

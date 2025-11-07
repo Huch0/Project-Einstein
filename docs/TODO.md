@@ -1,14 +1,8 @@
 # Project Einstein – TODO (v0.3 Agent Architecture)# Project Einstein – 작업 TODO (ko)
 
-
-
 This document tracks the migration from monolithic pipeline to tool-based agent orchestration system for GPT-5.이 문서는 엔티티 라이브러리 확장(v0.2)과 빌더 레지스트리 도입 작업의 진행상황을 추적합니다. 스키마는 OpenAPI 문서를 단일 출처로 유지합니다.
 
-
-
 ## 완료됨 ✅## 완료됨 ✅
-
-
 
 ### Phase 0: Foundation (Completed)- 권위 지침 갱신 (.github/instructions)
 
@@ -32,15 +26,17 @@ This document tracks the migration from monolithic pipeline to tool-based agent 
 
   - app/sim/registry.py: 리졸버 규칙 및 build_scene_v2 엔트리 구현
 
+- ✅ Frontend scene normalization pipeline (translate/scale, letterbox-aware clamps, normalization badge) replacing direct clamping drift
+
 ## 진행 중 🚧- 라우터 통합
 
-  - app/routers/diagram.py: v0.2 라벨 envelope({version, entities[{segment_id, type, props}]}) 생성
+- app/routers/diagram.py: v0.2 라벨 envelope({version, entities[{segment_id, type, props}]}) 생성
 
 ### Phase 1: Tool Implementation (Current Focus)  - v2 레지스트리 빌드를 우선 시도하고 실패 시 v1 빌더로 폴백
 
 Create tool wrappers around existing pipeline stages with strict JSON contracts.- 테스트 초안 추가 (단위 검증)
 
-  - backend/tests/test_registry_pulley.py: 리졸버 결정성, v0.2 빌드, v0.1 호환성 확인
+- backend/tests/test_registry_pulley.py: 리졸버 결정성, v0.2 빌드, v0.1 호환성 확인
 
 #### Backend Structure- 수동 실행 검증
 
@@ -132,8 +128,6 @@ Create tool wrappers around existing pipeline stages with strict JSON contracts.
 
 - [ ] Unit test: mock scene → validate frame structure  - scene.kind, frames 구조(positions vs bodies), id 키(m1/m2) 확인
 
-
-
 #### Tool 6: `analyze_simulation`- 수정/대응 계획 체크리스트
 
 - [ ] Create `agent/tools/analyze_results.py`  - [ ] 재생 직전 1프레임에 “정합 검사(예상 px vs 디텍션 센터 px)”를 수행하고, 오차가 임계값 초과 시 보정(ox/oy/s) 재계산
@@ -160,8 +154,6 @@ Create tool wrappers around existing pipeline stages with strict JSON contracts.
 
   - [ ] Error handling with user-friendly messages  - massA/massB 자동 매핑 실패 시에도 UI로 바꿀 수 있으며, 바꾼 뒤엔 위 AC를 만족
 
-
-
 - [ ] Create `agent/agent_context.py`## 참고 파일 📚
 
   - [ ] ConversationContext class (conversation_id, segments, entities, scene, frames)
@@ -185,6 +177,7 @@ Create tool wrappers around existing pipeline stages with strict JSON contracts.
   - [ ] Tool result processing + context update
 
 ### Phase 3: Testing & Validation
+
 - [ ] Tool unit tests (6 tools × 2-3 tests each = ~15 tests)
 - [ ] Agent integration tests
   - [ ] Multi-turn conversation: upload image → segment → label → validate → build → simulate
@@ -195,6 +188,7 @@ Create tool wrappers around existing pipeline stages with strict JSON contracts.
   - [ ] Verify: agent orchestrates correct tool sequence without user intervention
 
 ### Phase 4: Migration & Documentation
+
 - [ ] Keep `/diagram/parse` for backward compatibility
   - [ ] Add deprecation notice in docstring
   - [ ] Redirect to agent tools internally (optional)
@@ -210,6 +204,7 @@ Create tool wrappers around existing pipeline stages with strict JSON contracts.
 ## 진행 예정 ⏭️
 
 ### Builder Extensions (Post-Agent)
+
 - [ ] `ramp.block_v0` builder
   - 1 mass + ramp, friction/gravity, analytic fallback
 - [ ] `pendulum.single_v0` builder
@@ -218,6 +213,7 @@ Create tool wrappers around existing pipeline stages with strict JSON contracts.
   - Spring constant/natural length force model
 
 ### Advanced Features
+
 - [ ] OpenAPI 3.0 spec for agent tools
   - Define all tool schemas in `docs/agent-tools.v0.3.openapi.yaml`
 - [ ] Agent prompt engineering
@@ -236,10 +232,13 @@ Create tool wrappers around existing pipeline stages with strict JSON contracts.
 ## 알려진 이슈 🐞
 
 ### (Resolved) Alignment Bug
-Previously: Cyan simulation patches not following green detection boxes → **FIXED by Matter.js + polygon calibration**
+
+Previously: Cyan simulation patches not following green detection boxes → __FIXED by Matter.js + polygon calibration__
 
 ### Current Issues
+
 None critical. Monitor:
+
 - Matter.js constraint error (~0.001m acceptable)
 - Tool call timeout (10s limit for SAM/GPT)
 - OpenAI API rate limits
@@ -247,44 +246,52 @@ None critical. Monitor:
 ## 참고 파일 📚
 
 ### Core Documentation
-- **Instruction**: `.github/instructions/instruction.instructions.md` (v0.3 agent architecture)
-- **OpenAPI** (upcoming): `docs/agent-tools.v0.3.openapi.yaml`
+
+- __Instruction__: `.github/instructions/instruction.instructions.md` (v0.3 agent architecture)
+- __OpenAPI__ (upcoming): `docs/agent-tools.v0.3.openapi.yaml`
 
 ### Backend
-- **Physics**: `app/sim/physics/matter_bridge.py`, `app/sim/physics/analytic.py`
-- **Builders**: `app/sim/builders/pulley_single_fixed_v0.py`
-- **Registry**: `app/sim/registry.py`
-- **Schemas**: `app/sim/schema.py`
-- **Routes**: `app/routers/diagram.py` (monolithic, to be wrapped)
-- **Agent** (upcoming): `app/agent/tools/*.py`, `app/agent/tool_registry.py`
+
+- __Physics__: `app/sim/physics/matter_bridge.py`, `app/sim/physics/analytic.py`
+- __Builders__: `app/sim/builders/pulley_single_fixed_v0.py`
+- __Registry__: `app/sim/registry.py`
+- __Schemas__: `app/sim/schema.py`
+- __Routes__: `app/routers/diagram.py` (monolithic, to be wrapped)
+- __Agent__ (upcoming): `app/agent/tools/*.py`, `app/agent/tool_registry.py`
 
 ### Frontend
-- **Simulation**: `src/components/simulation/simulation-layer.tsx` (polygon rendering)
-- **Context**: `src/lib/SimulationContext.tsx` (state management)
-- **API**: `src/lib/api.ts` (DiagramParseDetection)
+
+- __Simulation__: `src/components/simulation/simulation-layer.tsx` (polygon rendering)
+- __Context__: `src/lib/SimulationContext.tsx` (state management)
+- __API__: `src/lib/api.ts` (DiagramParseDetection)
 
 ### Tests
-- **Registry**: `tests/test_registry_pulley.py`
-- **Agent** (upcoming): `tests/test_agent_tools.py`
+
+- __Registry__: `tests/test_registry_pulley.py`
+- __Agent__ (upcoming): `tests/test_agent_tools.py`
 
 ## Acceptance Criteria (v0.3) 🎯
 
 ### Phase 1 (Tool Implementation)
+
 - ✅ Each tool callable independently with valid JSON I/O
 - ✅ Tool unit tests pass (mock inputs → validate outputs)
 - ✅ Existing `/diagram/parse` tests still green
 
 ### Phase 2 (Agent Endpoint)
+
 - ✅ `POST /agent/chat` orchestrates full pipeline through natural language
 - ✅ Multi-turn conversation maintains state correctly
 - ✅ User can correct intermediate results (labels, scene params)
 
 ### Phase 3 (End-to-End)
+
 - ✅ Upload pulley diagram → chat "simulate this" → get frames + analysis
 - ✅ Error handling: missing entities → agent asks clarifying questions
 - ✅ Iterative refinement: user edits label → scene updates correctly
 
 ### Phase 4 (Migration)
+
 - ✅ Backward compatibility: old API clients still work
 - ✅ Documentation updated: OpenAPI spec, README, tutorial
 - ✅ Frontend uses agent chat for new workflows
