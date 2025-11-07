@@ -363,7 +363,7 @@ export function initializeMatterScene(scene: any): BuiltScene {
     return { engine, bodyMap, pulleyConstraints };
 }
 
-function enforcePulleyConstraints(constraints: BuiltScene['pulleyConstraints']) {
+export function enforcePulleyConstraints(constraints: BuiltScene['pulleyConstraints']) {
     for (const pulley of constraints) {
         const { bodyA, bodyB, anchor, totalLength } = pulley;
         const pA = bodyA.position;
