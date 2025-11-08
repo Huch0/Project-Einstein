@@ -237,6 +237,7 @@ export function createDebouncedBatchUpdate(
     bodies: {},
     constraints: {},
   };
+  let lastResponse: BatchSceneUpdateResponse | null = null;
 
   const flush = async (): Promise<BatchSceneUpdateResponse | null> => {
     if (timeoutId) {
@@ -252,12 +253,14 @@ export function createDebouncedBatchUpdate(
     const updates = { ...pendingUpdates };
     pendingUpdates = { bodies: {}, constraints: {} };
 
-    return batchUpdateScene({
+    const resp = await batchUpdateScene({
       conversation_id: conversationId,
       body_updates: updates.bodies,
       constraint_updates: updates.constraints,
       resimulate: false,
     });
+    lastResponse = resp;
+    return resp;
   };
 
   const debouncedUpdate = (
@@ -278,7 +281,7 @@ export function createDebouncedBatchUpdate(
     timeoutId = setTimeout(flush, delay);
   };
 
-  return { debouncedUpdate, flush };
+  return { debouncedUpdate, flush, getLastResponse: () => lastResponse };
 }
 
 /**
