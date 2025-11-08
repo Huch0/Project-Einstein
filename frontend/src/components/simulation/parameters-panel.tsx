@@ -70,7 +70,13 @@ export default function ParametersPanel() {
     updateSceneAndResimulate,
     selectedEntityId: contextSelectedEntityId,
     setSelectedEntityId: setContextSelectedEntityId,
-    updateEntityCallback
+    updateEntityCallback,
+    editingEnabled,
+    setEditingEnabled,
+    hasEverPlayed,
+    frames,
+    currentIndex,
+    setFrameIndex,
   } = useSimulation();
   const globalChat = useGlobalChat();
   const { toast } = useToast();
@@ -79,14 +85,17 @@ export default function ParametersPanel() {
   const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
   const [isUpdating, setIsUpdating] = useState(false);
   
-  // Sync Context selectedEntityId to local state
+  // Sync Context selectedEntityId to local state and auto-switch to entity scope
   useEffect(() => {
     if (contextSelectedEntityId !== null && contextSelectedEntityId !== selectedEntityId) {
-      console.log('[ParametersPanel] Entity selected from SimulationLayer:', contextSelectedEntityId);
       setSelectedEntityId(contextSelectedEntityId);
-      setScope('entity'); // Auto-switch to entity scope
+      
+      // Auto-switch to entity scope only if entities are available
+      if (labels?.entities && labels.entities.length > 0) {
+        setScope('entity');
+      }
     }
-  }, [contextSelectedEntityId, selectedEntityId]);
+  }, [contextSelectedEntityId, selectedEntityId, labels?.entities]);
   
   // Sync local selectedEntityId to Context
   const handleEntitySelect = useCallback((entityId: string) => {
@@ -150,21 +159,125 @@ export default function ParametersPanel() {
 
   // Get entities from selected box or fallback to current scene
   const entities = useMemo(() => {
-    // For now, use labels.entities as before
-    // TODO: Fetch from selectedBox.conversationId context
-    return labels?.entities ?? [];
+    const entitiesList = labels?.entities ?? [];
+    
+    // Debug: Log entities to see actual structure
+    if (entitiesList.length > 0) {
+      console.log('[ParametersPanel] 📋 Entities structure:', entitiesList);
+    }
+    
+    return entitiesList;
   }, [labels, selectedBox]);
+  
+  // SIMPLIFIED: Use body.id directly as entity ID (no complex mapping needed)
+  // The scene.bodies already have the correct IDs that should be used for entity selection
+  const bodyIdToSegmentId = useMemo(() => {
+    const mapping = new Map<string, string>();
+    
+    if (scene?.bodies && entities.length > 0) {
+      console.group('[ParametersPanel] � Entity Mapping Debug');
+      console.log('Scene bodies:', scene.bodies.map((b: any) => ({ 
+        id: b.id, 
+        label: b.label,
+        type: b.type 
+      })));
+      console.log('Entities:', entities.map(e => ({ 
+        segment_id: e.segment_id, 
+        label: e.label, 
+        props: e.props 
+      })));
+      
+      // Try to establish mapping
+      scene.bodies.forEach((body: any) => {
+        const entity = entities.find(e => {
+          // Check all possible matching strategies
+          if (e.segment_id === body.id) return true;
+          if (e.props && (e.props as any).body_id === body.id) return true;
+          if (e.props && (e.props as any).id === body.id) return true;
+          return false;
+        });
+        
+        if (entity) {
+          mapping.set(body.id, entity.segment_id);
+        }
+      });
+      
+      console.log('Mapping result:', Object.fromEntries(mapping));
+      console.groupEnd();
+    }
+    
+    return mapping;
+  }, [scene?.bodies, entities]);
+  
+  // SIMPLIFIED: Direct ID usage (prefer body.id over complex normalization)
+  const normalizedSelectedEntityId = useMemo(() => {
+    if (!selectedEntityId) return null;
+    
+    // STRATEGY 1: Direct body.id usage (most common case)
+    // If the selectedEntityId exists as a body.id in scene, use it directly
+    if (scene?.bodies?.some((b: any) => b.id === selectedEntityId)) {
+      console.log('[ParametersPanel] ✅ Using body.id directly:', selectedEntityId);
+      return selectedEntityId;
+    }
+    
+    // STRATEGY 2: Check if it's already a valid segment_id
+    if (entities.some(e => e.segment_id === selectedEntityId)) {
+      console.log('[ParametersPanel] ✅ Using segment_id:', selectedEntityId);
+      return selectedEntityId;
+    }
+    
+    // STRATEGY 3: Try mapping (fallback)
+    const segmentId = bodyIdToSegmentId.get(selectedEntityId);
+    if (segmentId) {
+      console.log('[ParametersPanel] ✅ Using mapped segment_id:', segmentId);
+      return segmentId;
+    }
+    
+    // STRATEGY 4: No mapping found, use as-is
+    console.warn('[ParametersPanel] ⚠️ No mapping found, using ID as-is:', selectedEntityId);
+    return selectedEntityId;
+  }, [selectedEntityId, entities, bodyIdToSegmentId, scene?.bodies]);
+  
+  // Validate selectedEntityId exists in scene or entities
+  useEffect(() => {
+    if (!selectedEntityId) return;
+    
+    const normalized = normalizedSelectedEntityId;
+    
+    // Check if it exists in scene bodies
+    const inScene = scene?.bodies?.some((b: any) => b.id === normalized);
+    
+    // Check if it exists in entities
+    const inEntities = entities.some(e => e.segment_id === normalized);
+    
+    if (!inScene && !inEntities && entities.length > 0) {
+      console.group('[ParametersPanel] 🔍 Entity Validation');
+      console.warn('Selected body ID:', selectedEntityId);
+      console.warn('Normalized ID:', normalized);
+      console.warn('In scene bodies:', inScene);
+      console.warn('In entities:', inEntities);
+      console.table([
+        { type: 'Scene Bodies', ids: scene?.bodies?.map((b: any) => b.id).join(', ') },
+        { type: 'Entities', ids: entities.map(e => e.segment_id).join(', ') },
+        { type: 'Mapping', ids: Array.from(bodyIdToSegmentId.entries()).map(([k,v]) => `${k}→${v}`).join(', ') }
+      ]);
+      console.groupEnd();
+    }
+  }, [selectedEntityId, entities, normalizedSelectedEntityId, bodyIdToSegmentId, scene?.bodies]);
 
   useEffect(() => {
-    if (!selectedEntityId || !scene?.bodies) {
+    if (!normalizedSelectedEntityId || !scene?.bodies) {
       setVelocityState({ ...DEFAULT_VELOCITY_STATE });
       setPositionState({ ...DEFAULT_POSITION_STATE });
       setEntityRestitution(1);
       return;
     }
 
-    const body = scene.bodies.find((b: any) => b.id === selectedEntityId);
+    // SIMPLIFIED: Direct body.id lookup (normalizedSelectedEntityId is already the body.id)
+    const body = scene.bodies.find((b: any) => b.id === normalizedSelectedEntityId);
+    
     if (!body) {
+      console.warn(`[ParametersPanel] Body not found for ID: ${normalizedSelectedEntityId}`);
       setVelocityState({ ...DEFAULT_VELOCITY_STATE });
       setPositionState({ ...DEFAULT_POSITION_STATE });
       setEntityRestitution(1);
@@ -196,7 +309,7 @@ export default function ParametersPanel() {
     } else {
       setEntityRestitution(1);
     }
-  }, [selectedEntityId, scene?.bodies]);
+  }, [normalizedSelectedEntityId, scene?.bodies]);
 
   const applyVelocityUpdate = useCallback(
     (entityId: string, vx: number, vy: number) => {
@@ -375,10 +488,10 @@ export default function ParametersPanel() {
           <div className="flex gap-2">
             {/* Interactive editing is available when simulation is stopped; no separate mode toggle */}
             {/* Entity Scope Toggle */}
-            {labels && labels.entities?.length ? (
+            {labels && scene?.bodies?.length ? (
               <div className="flex gap-1 rounded-md border bg-background p-1">
                 <Button type="button" variant={scope === 'global' ? 'default' : 'ghost'} size="sm" onClick={() => setScope('global')} aria-pressed={scope==='global'}>Global</Button>
-                <Button type="button" variant={scope === 'entity' ? 'default' : 'ghost'} size="sm" onClick={() => setScope('entity')} aria-pressed={scope==='entity'} disabled={entities.length === 0}>Entity</Button>
+                <Button type="button" variant={scope === 'entity' ? 'default' : 'ghost'} size="sm" onClick={() => setScope('entity')} aria-pressed={scope==='entity'} disabled={!scene?.bodies || scene.bodies.length === 0}>Entity</Button>
               </div>
             ) : null}
           </div>
@@ -398,24 +511,136 @@ export default function ParametersPanel() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="space-y-4">
                 <h3 className="font-medium text-sm text-muted-foreground">Simulation Controls</h3>
-                <div className="grid grid-cols-4 gap-2">
-                  <Button variant="outline" size="icon" aria-label="Play" onClick={() => { setPlaying(true); }} disabled={playing}>
+                <div className="grid grid-cols-5 gap-2">
+                  <Button 
+                    variant="outline" 
+                    size="icon" 
+                    aria-label="Play" 
+                    onClick={() => { 
+                      setEditingEnabled(false); // Disable editing when playing
+                      setPlaying(true); 
+                    }} 
+                    disabled={playing || editingEnabled}
+                    title={editingEnabled ? "Disable Edit mode to play" : "Play simulation"}
+                  >
                     <Play className="h-4 w-4" />
                   </Button>
-                  <Button variant="outline" size="icon" aria-label="Pause" onClick={() => setPlaying(false)} disabled={!playing}>
+                  <Button 
+                    variant="outline" 
+                    size="icon" 
+                    aria-label="Pause" 
+                    onClick={() => setPlaying(false)} 
+                    disabled={!playing}
+                  >
                     <Pause className="h-4 w-4" />
                   </Button>
-                  <Button variant="outline" size="icon" aria-label="Step Forward" disabled={playing}>
+                  <Button 
+                    variant="outline" 
+                    size="icon" 
+                    aria-label="Step Forward" 
+                    disabled={playing || editingEnabled}
+                    title="Step forward one frame"
+                  >
                     <StepForward className="h-4 w-4" />
                   </Button>
-                  <Button variant="outline" size="icon" aria-label="Reset" onClick={() => resetSimulation()}>
+                  <Button 
+                    variant="outline" 
+                    size="icon" 
+                    aria-label="Reset" 
+                    onClick={() => {
+                      resetSimulation();
+                      setEditingEnabled(false); // Reset also disables editing
+                    }}
+                  >
                     <RotateCcw className="h-4 w-4" />
                   </Button>
+                  <Button 
+                    variant={editingEnabled ? "default" : "outline"} 
+                    size="icon" 
+                    aria-label="Edit Mode" 
+                    onClick={() => {
+                      console.log('[ParametersPanel] 🖊️ Edit button clicked:', {
+                        currentEditingEnabled: editingEnabled,
+                        playing,
+                        hasEverPlayed,
+                      });
+                      
+                      if (editingEnabled) {
+                        console.log('[ParametersPanel] → Disabling edit mode');
+                        setEditingEnabled(false);
+                      } else {
+                        console.log('[ParametersPanel] → Enabling edit mode (stopping simulation)');
+                        setPlaying(false); // Stop simulation before editing
+                        setEditingEnabled(true);
+                      }
+                    }}
+                    disabled={playing || hasEverPlayed}
+                    title={
+                      playing 
+                        ? "Stop simulation to edit" 
+                        : hasEverPlayed 
+                          ? "Reset simulation to enable editing" 
+                          : editingEnabled 
+                            ? "Editing enabled" 
+                            : "Enable edit mode"
+                    }
+                  >
+                    <Box className="h-4 w-4" />
+                  </Button>
                 </div>
-                {!playing && scene && (
-                  <p className="text-xs text-muted-foreground">
-                    🎮 Simulation stopped: Click objects to edit their parameters
+                {editingEnabled && !playing && scene && (
+                  <p className="text-xs text-green-600 dark:text-green-400 font-medium">
+                    ✏️ Edit Mode: Click objects to select, double-click to drag
                   </p>
+                )}
+                {playing && (
+                  <p className="text-xs text-blue-600 dark:text-blue-400 font-medium">
+                    ▶️ Simulation running
+                  </p>
+                )}
+                {!playing && !editingEnabled && hasEverPlayed && scene && (
+                  <p className="text-xs text-amber-600 dark:text-amber-400 font-medium">
+                    ⏸️ Paused: Press Reset to enable editing, or Play to continue
+                  </p>
+                )}
+                {!playing && !editingEnabled && !hasEverPlayed && scene && (
+                  <p className="text-xs text-muted-foreground">
+                    🎮 Ready: Press Play to run simulation or Edit to modify objects
+                  </p>
+                )}
+                
+                {/* Timeline Scrubber */}
+                {frames.length > 0 && (
+                  <div className="grid gap-2 pt-2 border-t">
+                    <div className="flex justify-between items-center">
+                      <Label htmlFor="timeline" className="text-xs font-medium">Timeline</Label>
+                      <span className="text-xs text-muted-foreground">
+                        Frame {currentIndex + 1} / {frames.length}
+                        {frames[currentIndex]?.t !== undefined && ` (${frames[currentIndex].t.toFixed(2)}s)`}
+                      </span>
+                    </div>
+                    <Slider
+                      id="timeline"
+                      value={[currentIndex]}
+                      min={0}
+                      max={Math.max(0, frames.length - 1)}
+                      step={1}
+                      onValueChange={(v) => {
+                        if (!playing) {
+                          setFrameIndex(v[0]);
+                        }
+                      }}
+                      disabled={playing}
+                      className="cursor-pointer"
+                    />
+                    <div className="flex justify-between text-[10px] text-muted-foreground">
+                      <span>0.00s</span>
+                      <span>{frames.length > 0 && frames[frames.length - 1]?.t !== undefined 
+                        ? `${frames[frames.length - 1].t.toFixed(2)}s` 
+                        : `${duration.toFixed(2)}s`}
+                      </span>
+                    </div>
+                  </div>
                 )}
               </div>
               <div className="space-y-6">{scope === 'global' && (
@@ -526,19 +751,29 @@ export default function ParametersPanel() {
               </div>
             </>
           )}
-          {scope === 'entity' && entities.length > 0 && (
+          {scope === 'entity' && scene?.bodies && scene.bodies.length > 0 && (
             <>
               {/* Entity Selector */}
               <div className="space-y-2">
                 <Label>Select Entity</Label>
-                <Select value={selectedEntityId ?? ''} onValueChange={handleEntitySelect}>
+                <Select 
+                  value={normalizedSelectedEntityId || undefined} 
+                  onValueChange={handleEntitySelect}
+                >
                   <SelectTrigger>
-                    <SelectValue placeholder="Select an entity..." />
+                    <SelectValue placeholder="Select an entity...">
+                      {normalizedSelectedEntityId && (() => {
+                        // Display the body.id or segment_id
+                        const body = scene?.bodies?.find((b: any) => b.id === normalizedSelectedEntityId);
+                        return body?.id || normalizedSelectedEntityId;
+                      })()}
+                    </SelectValue>
                   </SelectTrigger>
                   <SelectContent>
-                    {entities.map((entity) => (
-                      <SelectItem key={entity.segment_id} value={entity.segment_id}>
-                        {entity.label} (ID: {entity.segment_id})
+                    {/* List all scene bodies as selectable entities */}
+                    {scene?.bodies?.map((body: any) => (
+                      <SelectItem key={body.id} value={body.id}>
+                        {body.id} {body.label ? `(${body.label})` : ''}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -546,13 +781,31 @@ export default function ParametersPanel() {
               </div>
 
               {/* Entity Parameters */}
-              {selectedEntityId && (() => {
-                const entity = entities.find(e => e.segment_id === selectedEntityId);
-                if (!entity) return null;
+              {normalizedSelectedEntityId && (() => {
+                // SIMPLIFIED: Find body directly by normalizedSelectedEntityId
+                // This works whether normalizedSelectedEntityId is a body.id or segment_id
+                const sceneBody = scene?.bodies?.find((b: any) => b.id === normalizedSelectedEntityId);
                 
-                // Get mass from scene.bodies (pure universal approach)
-                const sceneBody = scene?.bodies?.find((b: any) => b.id === entity.segment_id);
-                const currentMass = sceneBody?.mass_kg ?? 3.0; // Default 3kg if not found
+                if (!sceneBody) {
+                  console.warn(`[ParametersPanel] ⚠️ No scene body found for ID: ${normalizedSelectedEntityId}`);
+                  return (
+                    <div className="text-sm text-muted-foreground py-4">
+                      Selected entity not found in scene bodies.
+                      <div className="text-xs mt-2">
+                        Selected ID: <code>{normalizedSelectedEntityId}</code>
+                      </div>
+                    </div>
+                  );
+                }
+                
+                // Try to find matching entity for metadata (optional)
+                const entity = entities.find(e => e.segment_id === normalizedSelectedEntityId) || {
+                  segment_id: normalizedSelectedEntityId,
+                  label: sceneBody.label || 'Unknown',
+                  props: {}
+                };
+                
+                const currentMass = sceneBody?.mass_kg ?? 3.0;
 
                 return (
                   <div className="space-y-4">
