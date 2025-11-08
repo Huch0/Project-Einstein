@@ -68,6 +68,9 @@ export default function ParametersPanel() {
     updateConfig, resetSimulation, 
     playing, setPlaying, scene, labels,
     updateSceneAndResimulate,
+    updateBodyLocal,
+    sceneModified,
+    setSceneModified,
     selectedEntityId: contextSelectedEntityId,
     setSelectedEntityId: setContextSelectedEntityId,
     updateEntityCallback,
@@ -486,6 +489,11 @@ export default function ParametersPanel() {
         <div className="flex items-center justify-between">
           <CardTitle className="font-headline text-lg">Controls & Parameters</CardTitle>
           <div className="flex gap-2">
+            {sceneModified && !playing && (
+              <span className="text-xs px-2 py-1 rounded bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 border border-amber-300/60">
+                Edited
+              </span>
+            )}
             {/* Interactive editing is available when simulation is stopped; no separate mode toggle */}
             {/* Entity Scope Toggle */}
             {labels && scene?.bodies?.length ? (
@@ -870,10 +878,12 @@ export default function ParametersPanel() {
                             // Interactive Mode: Update Frontend Matter.js immediately
                             // Backend sync happens automatically via debounced callback
                             updateEntityCallback(entity.segment_id, { mass: m });
-                            console.log(`[ParametersPanel] Interactive: Mass updated to ${m}`);
-                            
-                            // Also update scene for consistency
-                            if (scene?.bodies) {
+                            // Optimistic local scene mutation (no resim during edit mode)
+                            if (editingEnabled) {
+                              updateBodyLocal(entity.segment_id, { mass_kg: m });
+                              setSceneModified(true);
+                            } else if (scene?.bodies) {
+                              // If not in edit mode, apply & resim immediately
                               updateSceneAndResimulate((prev: any | null) => {
                                 if (!prev?.bodies) return prev;
                                 const updatedBodies = prev.bodies.map((b: any) =>
@@ -918,10 +928,10 @@ export default function ParametersPanel() {
                           if (!playing && updateEntityCallback) {
                             // Interactive Mode: Update Frontend Matter.js immediately
                             updateEntityCallback(entity.segment_id, { friction: frictionValue });
-                            console.log(`[ParametersPanel] Interactive: Friction updated to ${frictionValue}`);
-                            
-                            // Also update scene for consistency
-                            if (scene?.bodies) {
+                            if (editingEnabled) {
+                              updateBodyLocal(entity.segment_id, { material: { ...(sceneBody.material ?? {}), friction: frictionValue } });
+                              setSceneModified(true);
+                            } else if (scene?.bodies) {
                               updateSceneAndResimulate((prev: any | null) => {
                                 if (!prev?.bodies) return prev;
                                 const updatedBodies = prev.bodies.map((b: any) => {
@@ -966,8 +976,11 @@ export default function ParametersPanel() {
                         onValueChange={(v) => { 
                           setEntityRestitution(v[0]);
                           // Update scene body material
-                          if (scene?.bodies) {
-                            const restitutionValue = v[0];
+                          const restitutionValue = v[0];
+                          if (editingEnabled) {
+                            updateBodyLocal(entity.segment_id, { material: { ...(sceneBody.material ?? {}), restitution: restitutionValue } });
+                            setSceneModified(true);
+                          } else if (scene?.bodies) {
                             updateSceneAndResimulate((prev: any | null) => {
                               if (!prev?.bodies) {
                                 return prev;
@@ -1006,7 +1019,22 @@ export default function ParametersPanel() {
                         step={0.1}
                         onValueChange={(v) => {
                           if (!selectedEntityId) return;
-                          handleVelocityMagnitudeChange(entity.segment_id, v[0]);
+                          if (editingEnabled) {
+                            // Optimistic only in edit mode
+                            const angleRad = degToRad(velocityState.angleDeg);
+                            const vx = v[0] * Math.cos(angleRad);
+                            const vy = v[0] * Math.sin(angleRad);
+                            updateBodyLocal(entity.segment_id, { velocity_m_s: [vx, vy] });
+                            setVelocityState(prev => ({
+                              ...prev,
+                              magnitude: v[0],
+                              vxText: formatVelocityText(vx),
+                              vyText: formatVelocityText(vy),
+                            }));
+                            setSceneModified(true);
+                          } else {
+                            handleVelocityMagnitudeChange(entity.segment_id, v[0]);
+                          }
                         }}
                       />
                       <div className="flex justify-between items-center">
@@ -1021,7 +1049,22 @@ export default function ParametersPanel() {
                         step={1}
                         onValueChange={(v) => {
                           if (!selectedEntityId) return;
-                          handleVelocityAngleChange(entity.segment_id, v[0]);
+                          if (editingEnabled) {
+                            const normalized = normalizeAngleDeg(v[0]);
+                            const angleRad = degToRad(normalized);
+                            const vx = velocityState.magnitude * Math.cos(angleRad);
+                            const vy = velocityState.magnitude * Math.sin(angleRad);
+                            updateBodyLocal(entity.segment_id, { velocity_m_s: [vx, vy] });
+                            setVelocityState(prev => ({
+                              ...prev,
+                              angleDeg: normalized,
+                              vxText: formatVelocityText(vx),
+                              vyText: formatVelocityText(vy),
+                            }));
+                            setSceneModified(true);
+                          } else {
+                            handleVelocityAngleChange(entity.segment_id, v[0]);
+                          }
                         }}
                       />
                       <div className="grid gap-3">
@@ -1036,7 +1079,18 @@ export default function ParametersPanel() {
                               inputMode="decimal"
                               value={velocityState.vxText}
                               onChange={(event) =>
-                                handleVelocityComponentInput(entity.segment_id, 'vx', event.target.value)
+                                editingEnabled ? (() => {
+                                  const value = event.target.value;
+                                  setVelocityState(prev => ({ ...prev, vxText: value }));
+                                  if (!isPartialNumberInput(value) && !isPartialNumberInput(velocityState.vyText)) {
+                                    const vxNum = parseFloat(value);
+                                    const vyNum = parseFloat(velocityState.vyText);
+                                    if (Number.isFinite(vxNum) && Number.isFinite(vyNum)) {
+                                      updateBodyLocal(entity.segment_id, { velocity_m_s: [vxNum, vyNum] });
+                                      setSceneModified(true);
+                                    }
+                                  }
+                                })() : handleVelocityComponentInput(entity.segment_id, 'vx', event.target.value)
                               }
                             />
                           </div>
@@ -1049,7 +1103,18 @@ export default function ParametersPanel() {
                               inputMode="decimal"
                               value={velocityState.vyText}
                               onChange={(event) =>
-                                handleVelocityComponentInput(entity.segment_id, 'vy', event.target.value)
+                                editingEnabled ? (() => {
+                                  const value = event.target.value;
+                                  setVelocityState(prev => ({ ...prev, vyText: value }));
+                                  if (!isPartialNumberInput(value) && !isPartialNumberInput(velocityState.vxText)) {
+                                    const vyNum = parseFloat(value);
+                                    const vxNum = parseFloat(velocityState.vxText);
+                                    if (Number.isFinite(vxNum) && Number.isFinite(vyNum)) {
+                                      updateBodyLocal(entity.segment_id, { velocity_m_s: [vxNum, vyNum] });
+                                      setSceneModified(true);
+                                    }
+                                  }
+                                })() : handleVelocityComponentInput(entity.segment_id, 'vy', event.target.value)
                               }
                             />
                           </div>
@@ -1091,15 +1156,18 @@ export default function ParametersPanel() {
                         step={0.1}
                         onValueChange={(v) => {
                           const av = v[0];
-                          if (scene?.bodies) {
-                            updateSceneAndResimulate((prev: any | null) => {
-                              if (!prev?.bodies) return prev;
-                              const updatedBodies = prev.bodies.map((b: any) =>
-                                b.id === entity.segment_id ? { ...b, angular_velocity_rad_s: av } : b,
-                              );
-                              return { ...prev, bodies: updatedBodies };
-                            });
-                          }
+                              if (editingEnabled) {
+                                updateBodyLocal(entity.segment_id, { angular_velocity_rad_s: av } as any);
+                                setSceneModified(true);
+                              } else if (scene?.bodies) {
+                                updateSceneAndResimulate((prev: any | null) => {
+                                  if (!prev?.bodies) return prev;
+                                  const updatedBodies = prev.bodies.map((b: any) =>
+                                    b.id === entity.segment_id ? { ...b, angular_velocity_rad_s: av } : b,
+                                  );
+                                  return { ...prev, bodies: updatedBodies };
+                                });
+                              }
                         }}
                       />
                     </div>
