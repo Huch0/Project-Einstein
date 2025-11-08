@@ -1,6 +1,194 @@
-# 🧩 Context-aware Simulation Integration
+# 🧩 Next Development Plan
 
-## 🎯 Goal
+## 🚨 Critical: Backend Sync & Resimulation (Current Priority)
+
+### Status: � Ready to Implement
+**Issue:** Dragged object positions not reflected in simulation playback  
+**Root Cause:** Backend scene updated but frames not regenerated  
+**Solution:** Trigger resimulation when Play clicked after scene modifications
+
+### Implementation Plan (Phase 5)
+
+**Background:**
+- ✅ Phase 1-4 Complete: Edit mode, drag, click detection all working
+- ✅ Backend sync works: `/simulation/batch_update` receives position changes
+- ❌ Frames not updated: Play uses old frames (before drag)
+
+**Goal:**
+User drags object → clicks Play → simulation runs from NEW position
+
+**Architecture Decision:**
+**Option A: Resimulate on Play** ✅ **CHOSEN**
+- Pros: Best UX (multiple edits without waiting), explicit user action
+- Cons: Slight delay when clicking Play after edits
+- Implementation: Intercept Play button, check dirty flag, resimulate if needed
+
+**Implementation Steps:**
+
+**Step 1: Add Scene Modification Tracking**
+```typescript
+// SimulationContext.tsx
+const [sceneModified, setSceneModified] = useState(false);
+
+// Export:
+{
+    sceneModified,
+    setSceneModified,
+    // ... existing exports
+}
+```
+
+**Step 2: Mark Scene as Modified on Drag**
+```typescript
+// simulation-layer.tsx - enddrag handler
+Matter.Events.on(mouseConstraint, 'enddrag', async (event: any) => {
+    // ... existing drag code ...
+    
+    // Mark scene as modified
+    setSceneModified(true);
+    console.log('[SimulationLayer] 🏷️ Scene marked as modified');
+});
+```
+
+**Step 3: Resimulation API Wrapper**
+```typescript
+// lib/simulation-api.ts
+export async function resimulateScene(
+    conversationId: string,
+    duration?: number
+): Promise<{ frames: any[], scene: any }> {
+    const response = await fetch(`${API_BASE_URL}/run_sim`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            conversation_id: conversationId,
+            duration_s: duration || 5,
+        }),
+    });
+    
+    if (!response.ok) {
+        throw new Error(`Resimulation failed: ${response.statusText}`);
+    }
+    
+    return response.json();
+}
+```
+
+**Step 4: Intercept Play Button**
+```typescript
+// simulation-box-node.tsx or SimulationContext.tsx
+const handlePlayPause = useCallback(async () => {
+    if (!playing && sceneModified) {
+        // Scene was edited, need resimulation first
+        console.log('[Simulation] 🔄 Scene modified, resimulating...');
+        
+        try {
+            // Flush pending backend updates
+            if (debouncedBackendSyncRef?.current) {
+                await debouncedBackendSyncRef.current.flush();
+            }
+            
+            // Trigger resimulation
+            const { frames: newFrames } = await resimulateScene(
+                globalChat.activeBoxId,
+                config.duration
+            );
+            
+            // Update frames
+            setFrames(newFrames);
+            setCurrentIndex(0);
+            setSceneModified(false);
+            
+            console.log('[Simulation] ✅ Resimulation complete:', newFrames.length, 'frames');
+            
+            // Now start playing
+            setPlaying(true);
+        } catch (error) {
+            console.error('[Simulation] ❌ Resimulation failed:', error);
+            // Don't start playing if resimulation failed
+        }
+    } else {
+        // Normal play/pause toggle
+        setPlaying(!playing);
+    }
+}, [playing, sceneModified, globalChat.activeBoxId, config.duration]);
+```
+
+**Step 5: Reset Clears Modified Flag**
+```typescript
+// SimulationContext.tsx - resetSimulation()
+const resetSimulation = useCallback(() => {
+    console.log('[SimulationContext] resetSimulation called');
+    setPlaying(false);
+    setCurrentIndex(0);
+    setHasEverPlayed(false);
+    setSceneModified(false); // ← Add this
+    lastTimestamp.current = null;
+    console.log('[SimulationContext] reset complete');
+}, []);
+```
+
+### Files to Modify
+1. ✅ `frontend/src/simulation/SimulationContext.tsx`
+   - Add `sceneModified` state
+   - Add `setSceneModified` to exports
+   - Clear flag in `resetSimulation()`
+
+2. ✅ `frontend/src/components/simulation/simulation-layer.tsx`
+   - Import `setSceneModified`
+   - Call in `enddrag` handler
+
+3. ✅ `frontend/src/lib/simulation-api.ts`
+   - Add `resimulateScene()` function
+
+4. ✅ `frontend/src/whiteboard/components/simulation-box-node.tsx`
+   - Modify `handlePlayPause()` to check `sceneModified`
+   - Trigger resimulation before playing
+
+### Testing Plan
+1. **Baseline Test:**
+   - Load simulation → Click Play → Record starting position
+   
+2. **Edit Test:**
+   - Reset → Enter Edit mode → Drag object to new position
+   - Console: `🏷️ Scene marked as modified`
+   - Click Play
+   - Console: `🔄 Scene modified, resimulating...`
+   - Console: `✅ Resimulation complete: X frames`
+   - Verify: Object starts from NEW position ✅
+
+3. **Multiple Edits Test:**
+   - Reset → Edit → Drag object A → Drag object B
+   - Click Play
+   - Verify: Both objects start from new positions ✅
+
+4. **Reset Test:**
+   - After editing → Click Reset
+   - sceneModified should be false
+   - Click Play → No resimulation (uses original scene)
+
+### Success Criteria
+- [ ] `sceneModified` flag tracks edit state
+- [ ] Play button triggers resimulation when flag is true
+- [ ] New frames generated with updated positions
+- [ ] Playback starts from dragged positions
+- [ ] Reset clears modified flag
+- [ ] No resimulation when playing unmodified scene
+
+### Estimated Time
+- Step 1: 10 minutes (state addition)
+- Step 2: 5 minutes (flag setting)
+- Step 3: 15 minutes (API wrapper)
+- Step 4: 30 minutes (Play button logic)
+- Step 5: 5 minutes (reset update)
+- Testing: 20 minutes
+**Total: ~1.5 hours**
+
+---
+
+## 🎯 Context-aware Simulation Integration (Future)
+
+### Goal
 시뮬레이션 시스템에서 이미지, 컨텍스트, 채팅을 통합해  
 사용자의 의도를 이해하고 시뮬레이션을 직접 제어할 수 있도록 한다.
 
