@@ -176,12 +176,21 @@ interface SimulationState extends SimulationConfig {
   editingEnabled: boolean;
   setEditingEnabled: (enabled: boolean) => void;
   
+  // Track if simulation has ever been played (to prevent edit after playback)
+  hasEverPlayed: boolean;
+  
+  // Track if scene was modified in edit mode (triggers resimulation on play)
+  sceneModified: boolean;
+  setSceneModified: (modified: boolean) => void;
+  
   acceleration?: number;
   tension?: number;
   staticCondition?: boolean;
   resetSimulation: () => void;
   setPlaying: (p: boolean) => void;
   setFrameIndex: (index: number) => void;
+  setFrames: (frames: SimulationFrame[]) => void;
+  setScene: (scene: any | null) => void;
   updateConfig: (partial: Partial<SimulationConfig>) => void;
   updateSceneAndResimulate: (sceneUpdates: any | ((prev: any | null) => any | null)) => Promise<void>; // Universal scene update
   detections: DiagramParseDetection[];
@@ -218,6 +227,8 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [simulationMode, setSimulationMode] = useState<SimulationMode>('playback');
   const [editingEnabled, setEditingEnabled] = useState(false);
+  const [hasEverPlayed, setHasEverPlayed] = useState(false);
+  const [sceneModified, setSceneModified] = useState(false); // Track if scene was edited
   const [acceleration, setAcceleration] = useState<number | undefined>();
   const [tension, setTension] = useState<number | undefined>();
   const [staticCondition, setStaticCondition] = useState<boolean | undefined>();
@@ -231,6 +242,10 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
   const [scene, setScene] = useState<any | null>(null);
   const [labels, setLabels] = useState<{ entities: Array<{ segment_id: string; label: string; props?: Record<string, unknown> }> } | null>(null);
   const [renderImageDataUrl, setRenderImageDataUrl] = useState<string | null>(null);
+  
+  // Store original scene for reset functionality
+  const originalSceneRef = useRef<any | null>(null);
+  const originalFramesRef = useRef<SimulationFrame[]>([]);
   
   // Entity selection state
   const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
@@ -294,10 +309,26 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
 
   const resetSimulation = useCallback(() => {
     console.log('[SimulationContext] resetSimulation called');
+    
     // Stop playback and reset to beginning
     setPlaying(false);
     setCurrentIndex(0);
+    setHasEverPlayed(false);
+    setSceneModified(false);
     lastTimestamp.current = null;
+    
+    // Restore original scene and frames if available
+    if (originalSceneRef.current) {
+      console.log('[SimulationContext] Restoring original scene from backup');
+      // Deep clone to avoid mutation
+      setScene(cloneSceneSnapshot(originalSceneRef.current));
+    }
+    
+    if (originalFramesRef.current.length > 0) {
+      console.log('[SimulationContext] Restoring original frames:', originalFramesRef.current.length);
+      setFrames([...originalFramesRef.current]);
+    }
+    
     console.log('[SimulationContext] reset complete, playing set to false');
   }, []);
 
@@ -340,6 +371,10 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
         setCurrentIndex(0);
         lastTimestamp.current = null;
         setPlaying(mappedFrames.length > 0);
+        
+        // Update original frames backup for Reset functionality
+        console.log('[SimulationContext] Updating original frames backup:', mappedFrames.length, 'frames');
+        originalFramesRef.current = [...mappedFrames];
 
         const dtFromScene =
           typeof sceneToRun?.world?.time_step_s === 'number' && sceneToRun.world.time_step_s > 0
@@ -394,6 +429,11 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
       }
 
       setNormalizationReport(normalizationResult.report ?? null);
+      
+      // Update original scene backup so that Reset uses the modified scene
+      console.log('[SimulationContext] Updating original scene backup with modified scene');
+      originalSceneRef.current = cloneSceneSnapshot(normalizationResult.scene);
+      
       performResimulation(normalizationResult.scene);
     },
     [normalizeSceneForState, performResimulation],
@@ -561,6 +601,12 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     setScale(payload.scale_m_per_px ?? null);
     setLabels(payload.labels ?? null);
   setRenderImageDataUrl(payload.renderImageDataUrl ?? null);
+  
+    // Store original scene for reset functionality
+    if (normalization.scene) {
+      originalSceneRef.current = cloneSceneSnapshot(normalization.scene);
+      console.log('[SimulationContext] Original scene stored for reset');
+    }
 
     const applyFrames = (framesToApply: SimulationFrame[], dtCandidate?: number) => {
       if (requestId !== loadRequestRef.current) {
@@ -570,6 +616,10 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
       setCurrentIndex(0);
       lastTimestamp.current = null;
       setPlaying(framesToApply.length > 0);
+      
+      // Store original frames for reset functionality
+      originalFramesRef.current = [...framesToApply];
+      console.log('[SimulationContext] Original frames stored for reset:', framesToApply.length);
 
       if (typeof dtCandidate === 'number' && Number.isFinite(dtCandidate) && dtCandidate > 0) {
         setConfig(prev => ({ ...prev, dt: dtCandidate }));
@@ -735,11 +785,32 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     playingRef.current = playing;
+    
+    // Track if simulation has ever been played
+    if (playing) {
+      console.log('[SimulationContext] ▶️ Simulation STARTED');
+      setHasEverPlayed(true);
+    } else {
+      console.log('[SimulationContext] ⏸️ Simulation PAUSED/STOPPED');
+    }
+    
     if (!playing && frameRequestRef.current !== null) {
       cancelAnimationFrame(frameRequestRef.current);
       frameRequestRef.current = null;
     }
   }, [playing]);
+
+  // Auto-stop simulation when editing is enabled
+  useEffect(() => {
+    if (editingEnabled && playing) {
+      console.log('[SimulationContext] ✏️ Edit mode enabled → Auto-stopping simulation');
+      setPlaying(false);
+    } else if (editingEnabled) {
+      console.log('[SimulationContext] ✏️ Edit mode ENABLED (simulation already stopped)');
+    } else {
+      console.log('[SimulationContext] 📝 Edit mode DISABLED');
+    }
+  }, [editingEnabled, playing]);
 
   // Playback loop
   useEffect(() => {
@@ -791,12 +862,17 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     setSimulationMode,
     editingEnabled,
     setEditingEnabled,
+    hasEverPlayed,
+    sceneModified,
+    setSceneModified,
     acceleration,
     tension,
     staticCondition,
     resetSimulation,
     setPlaying,
     setFrameIndex,
+    setFrames,
+    setScene,
     updateConfig,
     updateSceneAndResimulate,
     detections,
