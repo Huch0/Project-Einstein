@@ -202,8 +202,9 @@ async def _handle_ask_mode(
             context_info += f"Image attached for analysis.\n"
         system_prompt += context_info
     
-    # Collect images from context
+    # Collect images from context (GPT-5 input_image format)
     image_contents = []
+    
     if context_data:
         # Check image_box
         if context_data.get("image_box") and context_data["image_box"].get("imagePath"):
@@ -211,10 +212,8 @@ async def _handle_ask_mode(
             if encoded:
                 base64_data, mime_type = encoded
                 image_contents.append({
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:{mime_type};base64,{base64_data}"
-                    }
+                    "type": "input_image",
+                    "image_url": f"data:{mime_type};base64,{base64_data}"
                 })
         
         # Check boxes array for additional images
@@ -225,48 +224,52 @@ async def _handle_ask_mode(
                     if encoded:
                         base64_data, mime_type = encoded
                         image_contents.append({
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:{mime_type};base64,{base64_data}"
-                            }
+                            "type": "input_image",
+                            "image_url": f"data:{mime_type};base64,{base64_data}"
                         })
     
     # Prepare messages with Ask mode system prompt
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(history)
     
-    # Add user message with images if present
-    if image_contents:
-        user_content = [
-            {"type": "text", "text": message},
-            *image_contents
-        ]
-        messages.append({"role": "user", "content": user_content})
-    else:
-        messages.append({"role": "user", "content": message})
-    
     # Check if using GPT-5
     is_gpt5 = settings.OPENAI_MODEL.startswith("gpt-5") or settings.OPENAI_MODEL.startswith("o1")
     
-    if is_gpt5:
-        # GPT-5 Responses API
-        # Convert messages to single input string
-        # For images, we'll need to handle them differently in GPT-5
+    # GPT-5 Responses API
+    try:
         if image_contents:
-            # GPT-5 with images: use multimodal input format
-            # Note: Check GPT-5 documentation for correct image format
-            conversation_text = "\n".join([
-                f"{msg['role']}: {msg['content']}" for msg in messages
-            ])
+            # GPT-5 with images: use input array format
+            input_messages = []
+            
+            # Add system prompt as first message
+            if system_prompt:
+                input_messages.append({
+                    "role": "system",
+                    "content": system_prompt
+                })
+            
+            # Add history
+            for hist_msg in history:
+                input_messages.append(hist_msg)
+            
+            # Add current user message with images
+            user_content_items = [
+                {"type": "input_text", "text": message},
+                *image_contents
+            ]
+            
+            input_messages.append({
+                "role": "user",
+                "content": user_content_items
+            })
             
             response = await client.responses.create(
                 model=settings.OPENAI_MODEL,
-                input=conversation_text,
-                # Include images in modalities if supported
+                input=input_messages,
                 text={"verbosity": "medium"}
             )
         else:
-            # GPT-5 without images
+            # GPT-5 without images: use string format
             conversation_text = "\n".join([
                 f"{msg['role']}: {msg['content']}" for msg in messages
             ])
@@ -277,15 +280,27 @@ async def _handle_ask_mode(
                 text={"verbosity": "medium"}
             )
         
-        # Extract text from response
+        # Extract text from response (defensive)
         assistant_message = ""
         if hasattr(response, "output_text"):
             assistant_message = response.output_text
-        else:
-            try:
-                assistant_message = response.output[0].content[0].text
-            except Exception:
-                assistant_message = "Sorry, I couldn't process that request."
+        elif hasattr(response, "output") and len(response.output) > 0:
+            # Try to extract text from output items
+            for item in response.output:
+                if hasattr(item, "type") and item.type == "text" and hasattr(item, "text"):
+                    assistant_message += item.text
+        elif hasattr(response, "choices") and len(response.choices) > 0:
+            # Fallback to chat-style response
+            assistant_message = response.choices[0].message.content or ""
+        
+        if not assistant_message:
+            assistant_message = "Sorry, I couldn't process that request."
+            
+    except Exception as e:
+        logger.error(f"GPT-5 Ask mode failed: {e}")
+        import traceback
+        traceback.print_exc()
+        assistant_message = f"Sorry, I encountered an error: {str(e)}"
     
     return assistant_message
 
@@ -390,7 +405,8 @@ async def _handle_agent_mode(
             context.messages[-1]["content"] += image_context
     
     # Collect images from context_data (for attached image boxes)
-    image_contents = []
+    image_contents = []  # GPT-5 input_image format
+    
     if context_data:
         # Check image_box
         if context_data.get("image_box") and context_data["image_box"].get("imagePath"):
@@ -398,10 +414,8 @@ async def _handle_agent_mode(
             if encoded:
                 base64_data, mime_type = encoded
                 image_contents.append({
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:{mime_type};base64,{base64_data}"
-                    }
+                    "type": "input_image",
+                    "image_url": f"data:{mime_type};base64,{base64_data}"
                 })
                 logger.info(f"[Agent] Added image from image_box: {context_data['image_box'].get('name')}")
         
@@ -413,33 +427,32 @@ async def _handle_agent_mode(
                     if encoded:
                         base64_data, mime_type = encoded
                         image_contents.append({
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:{mime_type};base64,{base64_data}"
-                            }
+                            "type": "input_image",
+                            "image_url": f"data:{mime_type};base64,{base64_data}"
                         })
                         logger.info(f"[Agent] Added image from boxes array: {box.get('name')}")
     
     # Prepare OpenAI request
     system_prompt = get_agent_system_prompt()
+    
+    # Detect if we're using GPT-5 (or o1 models) - use Responses API
+    is_gpt5 = settings.OPENAI_MODEL.startswith("gpt-5") or settings.OPENAI_MODEL.startswith("o1")
+    
     messages = [{"role": "system", "content": system_prompt}]
     
     # Add conversation history with images in the last user message
     for i, msg in enumerate(context.messages):
         if i == len(context.messages) - 1 and msg["role"] == "user" and image_contents:
-            # Last user message - add images
+            # Last user message - add images (GPT-5 format)
             messages.append({
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": msg["content"]},
+                    {"type": "input_text", "text": msg["content"]},
                     *image_contents
                 ]
             })
         else:
             messages.append(msg)
-    
-    # Detect if we're using GPT-5 (or o1 models) - use Responses API
-    is_gpt5 = settings.OPENAI_MODEL.startswith("gpt-5") or settings.OPENAI_MODEL.startswith("o1")
     
     # Log user messages for debugging
     user_messages = [m for m in messages if m["role"] == "user"]
@@ -493,14 +506,56 @@ async def _handle_agent_mode(
     
     if is_gpt5:
         # GPT-5 uses Responses API with 'input' parameter
-        # Include system prompt explicitly in conversation
-        first_response = await client.responses.create(
-            model=model_to_use,
-            input=conversation_text,  # Already includes system message
-            tools=tools,
-            reasoning={"effort": "medium"},
-            text={"verbosity": "medium"}
-        )
+        # For images, use array format; otherwise use text string
+        if image_contents:
+            # GPT-5 with images: Use input array format
+            input_array = []
+            
+            # Add system prompt
+            if system_prompt:
+                input_array.append({
+                    "role": "system",
+                    "content": system_prompt
+                })
+            
+            # Add conversation history and current message with images
+            for msg in context.messages:
+                if msg["role"] == "user":
+                    # Check if this is the last message (with images)
+                    is_last = msg == context.messages[-1]
+                    if is_last and image_contents:
+                        user_content = [
+                            {"type": "input_text", "text": msg["content"]},
+                            *image_contents
+                        ]
+                        input_array.append({
+                            "role": "user",
+                            "content": user_content
+                        })
+                    else:
+                        input_array.append({
+                            "role": "user",
+                            "content": msg["content"]
+                        })
+                else:
+                    input_array.append(msg)
+            
+            first_response = await client.responses.create(
+                model=model_to_use,
+                input=input_array,
+                tools=tools,
+                reasoning={"effort": "medium"},
+                text={"verbosity": "medium"}
+            )
+        else:
+            # GPT-5 without images: Use string format
+            first_response = await client.responses.create(
+                model=model_to_use,
+                input=conversation_text,  # Already includes system message
+                tools=tools,
+                reasoning={"effort": "medium"},
+                text={"verbosity": "medium"}
+            )
         
         # GPT-5 Responses API has different structure
         # Debug: Log full response structure (non-streaming)
@@ -864,7 +919,7 @@ async def _stream_agent_mode(
     # Prepare OpenAI request
     system_prompt = get_agent_system_prompt()
     
-    # Collect images from context_data (for attached image boxes)
+    # Collect images from context_data (for attached image boxes) - GPT-5 format only
     image_contents = []
     if context_data:
         # Check image_box
@@ -872,11 +927,10 @@ async def _stream_agent_mode(
             encoded = encode_image_to_base64(context_data["image_box"]["imagePath"])
             if encoded:
                 base64_data, mime_type = encoded
+                # GPT-5 format: flat structure with input_image
                 image_contents.append({
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:{mime_type};base64,{base64_data}"
-                    }
+                    "type": "input_image",
+                    "image_url": f"data:{mime_type};base64,{base64_data}"
                 })
                 logger.info(f"[StreamAgent] Added image from image_box: {context_data['image_box'].get('name')}")
         
@@ -887,24 +941,23 @@ async def _stream_agent_mode(
                     encoded = encode_image_to_base64(box["imagePath"])
                     if encoded:
                         base64_data, mime_type = encoded
+                        # GPT-5 format: flat structure with input_image
                         image_contents.append({
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:{mime_type};base64,{base64_data}"
-                            }
+                            "type": "input_image",
+                            "image_url": f"data:{mime_type};base64,{base64_data}"
                         })
                         logger.info(f"[StreamAgent] Added image from boxes array: {box.get('name')}")
     
     messages = [{"role": "system", "content": system_prompt}]
     
-    # Add conversation history with images in the last user message
+    # Add conversation history with images in the last user message (GPT-5 format)
     for i, msg in enumerate(context.messages):
         if i == len(context.messages) - 1 and msg["role"] == "user" and image_contents:
-            # Last user message - add images
+            # Last user message - add images with GPT-5 input_text format
             messages.append({
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": msg["content"]},
+                    {"type": "input_text", "text": msg["content"]},
                     *image_contents
                 ]
             })
