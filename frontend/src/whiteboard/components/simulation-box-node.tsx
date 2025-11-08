@@ -22,6 +22,7 @@ import { useSimulation } from '@/simulation/SimulationContext';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { useGlobalChat } from '@/contexts/global-chat-context';
+import { resimulateScene } from '@/lib/simulation-api';
 
 interface SimulationBoxNodeProps {
     node: SimulationBoxNodeType;
@@ -84,8 +85,14 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
         resetSimulation,
         updateConfig,
         setFrameIndex,
+        setFrames,
+        setScene,
         editingEnabled,
         setEditingEnabled,
+        hasEverPlayed,
+        sceneModified,
+        setSceneModified,
+        duration,
     } = useSimulation();
 
     // Local state for playback speed (multiplier on playback cadence)
@@ -129,9 +136,48 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
     const [boxName, setBoxName] = useState(node.name || '');
 
     // Simulation control handlers
-    const handlePlayPause = useCallback(() => {
-        setPlaying(!playing);
-    }, [playing, setPlaying]);
+    const handlePlayPause = useCallback(async () => {
+        if (!playing && sceneModified) {
+            // Scene was edited, need resimulation before playing
+            console.log('[SimulationBox] 🔄 Scene modified, triggering resimulation...');
+            
+            if (!globalChat.activeBoxId) {
+                console.error('[SimulationBox] ❌ No active conversation ID for resimulation');
+                return;
+            }
+            
+            try {
+                // Trigger resimulation with current (modified) scene
+                const result = await resimulateScene(
+                    globalChat.activeBoxId,
+                    duration || 5
+                );
+                
+                // Update only frames (scene already has edited positions)
+                if (result.frames && result.frames.length > 0) {
+                    console.log('[SimulationBox] ✅ Resimulation complete:', result.frames.length, 'frames');
+                    
+                    // Only update frames - scene keeps edited positions
+                    setFrames(result.frames);
+                    setFrameIndex(0);
+                    setSceneModified(false);
+                    
+                    console.log('[SimulationBox] 📦 New frames loaded with edited positions');
+                    
+                    // Now start playing with new frames
+                    setPlaying(true);
+                } else {
+                    console.warn('[SimulationBox] ⚠️ Resimulation returned no frames');
+                }
+            } catch (error) {
+                console.error('[SimulationBox] ❌ Resimulation failed:', error);
+                // Don't start playing if resimulation failed
+            }
+        } else {
+            // Normal play/pause toggle
+            setPlaying(!playing);
+        }
+    }, [playing, sceneModified, globalChat.activeBoxId, duration, setFrames, setFrameIndex, setSceneModified, setPlaying]);
 
     const handleReset = useCallback(() => {
         resetSimulation();
@@ -556,13 +602,25 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
                                 : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
                         )}
                         onClick={() => {
+                            console.log('[SimulationBox] 🐛 DEBUG: Edit button clicked', { hasEverPlayed, playing, editingEnabled });
+                            if (hasEverPlayed) {
+                                console.log('[SimulationBox] Edit blocked: simulation has been played. Reset required.');
+                                return;
+                            }
                             console.log('[SimulationBox] Toggle editing mode:', !editingEnabled);
+                            setPlaying(false); // Ensure simulation is stopped
                             setEditingEnabled(!editingEnabled);
                         }}
                         aria-label="Toggle editing mode"
-                        title={editingEnabled ? "Editing enabled (click objects to edit)" : "Enable editing mode"}
+                        title={
+                            hasEverPlayed
+                                ? "Reset simulation to enable editing"
+                                : editingEnabled 
+                                    ? "Editing enabled (double-click objects to drag)" 
+                                    : "Enable editing mode"
+                        }
                         data-node-action="true"
-                        disabled={playing}
+                        disabled={playing || hasEverPlayed}
                     >
                         <Edit3 className="h-3.5 w-3.5" />
                     </button>
@@ -642,7 +700,7 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
                     )}
                 </div>
             </div>
-            {isSelected && resizable ? (
+            {isSelected && resizable && !editingEnabled ? (
                 <div className="pointer-events-none absolute inset-0 z-10">
                     <div className="absolute inset-0 rounded-lg border border-primary/60 shadow-[0_0_0_1px_rgba(37,99,235,0.35)]" />
                     {RESIZE_HANDLES.map(({ id, style, cursor }) => (
