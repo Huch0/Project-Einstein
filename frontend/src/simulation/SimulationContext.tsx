@@ -172,6 +172,9 @@ interface SimulationState extends SimulationConfig {
   simulationMode: SimulationMode;
   setSimulationMode: (mode: SimulationMode) => void;
   
+  // Local optimistic scene mutation (no resimulation)
+  updateBodyLocal: (bodyId: string, updates: Partial<{ position_m: [number, number]; mass_kg: number; material: any; velocity_m_s: [number, number] }>) => void;
+  
   // Editing mode (for interactive object manipulation)
   editingEnabled: boolean;
   setEditingEnabled: (enabled: boolean) => void;
@@ -257,6 +260,22 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     setUpdateEntityCallback(() => callback);
   }, []);
   const [normalizationReport, setNormalizationReport] = useState<SceneNormalizationReport | null>(null);
+
+  // Local optimistic body update (mutate scene only)
+  const updateBodyLocal = useCallback((bodyId: string, updates: Partial<{ position_m: [number, number]; mass_kg: number; material: any; velocity_m_s: [number, number] }>) => {
+    setScene((prev: any | null) => {
+      if (!prev || !Array.isArray((prev as any).bodies)) return prev;
+      const next = cloneSceneSnapshot(prev);
+      const bodies = (next as any).bodies as any[];
+      const idx = bodies.findIndex((b) => typeof b?.id === 'string' && b.id === bodyId);
+      if (idx === -1) {
+        console.warn('[SimulationContext] updateBodyLocal: body not found', bodyId);
+        return prev;
+      }
+      bodies[idx] = { ...bodies[idx], ...updates };
+      return next;
+    });
+  }, []);
 
   const normalizeSceneForState = useCallback(
     (sceneInput: any | null, overrides?: SceneNormalizationOverrides) => {
@@ -860,6 +879,7 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     currentIndex,
     simulationMode,
     setSimulationMode,
+    updateBodyLocal,
     editingEnabled,
     setEditingEnabled,
     hasEverPlayed,
