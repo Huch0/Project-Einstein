@@ -206,6 +206,10 @@ export function SimulationLayer({
     const isDragging = useRef(false);
     const animationFrameRef = useRef<number | null>(null);
     
+    // Scene modification tracking (ref for immediate check, no re-render)
+    const sceneModifiedRef = useRef(false);
+    const renderSceneRef = useRef<any>(null);
+    
     // Visual feedback state
     const [hoveredBodyId, setHoveredBodyId] = useState<string | null>(null);
     const [cursor, setCursor] = useState<string>('default');
@@ -274,6 +278,8 @@ export function SimulationLayer({
         editingEnabled,
         sceneModified,
         setSceneModified,
+        updateBodyLocal,
+        updateSceneAndResimulate,
     } = useSimulation();
     const currentFrame = frames[currentIndex];
     const globalChat = useGlobalChat();
@@ -542,9 +548,21 @@ export function SimulationLayer({
 
     const renderScene = useMemo(() => {
         if (!scene) {
+            renderSceneRef.current = null;
             return null;
         }
-        return convertSceneForRender(scene, activeTransform);
+        
+        // OPTIMIZATION: In edit mode with modified scene, return cached renderScene
+        // This prevents Matter.js re-initialization on every drag
+        // Use ref check only (no editingEnabled in dependency to avoid re-render on mode change)
+        if (sceneModifiedRef.current && renderSceneRef.current) {
+            console.log('[SimulationLayer] 📌 Using cached renderScene (scene modified)');
+            return renderSceneRef.current;
+        }
+        
+        const newRenderScene = convertSceneForRender(scene, activeTransform);
+        renderSceneRef.current = newRenderScene;
+        return newRenderScene;
     }, [scene, activeTransform]);
 
     const applyFrameToMatter = useCallback((frame: any) => {
@@ -706,6 +724,39 @@ export function SimulationLayer({
             return;
         }
 
+        // OPTIMIZATION: Skip scene regeneration if editing and scene was modified locally
+        // This prevents drag-induced scene changes from causing full Matter re-initialization
+        // Use ref for immediate check (state update may be delayed)
+        console.log('[SimulationLayer] 🔍 Skip check:', {
+            editingEnabled,
+            sceneModified: sceneModifiedRef.current,
+            hasEngine: !!matterEngineRef.current,
+            willSkip: editingEnabled && sceneModifiedRef.current && matterEngineRef.current
+        });
+        
+        if (editingEnabled && sceneModifiedRef.current && matterEngineRef.current) {
+            console.log('[SimulationLayer] ⏭️ Skipping scene regeneration (edit mode + modified scene)');
+            return;
+        }
+        
+        console.log('[SimulationLayer] ⚠️ NOT skipping - proceeding with Matter.js re-initialization');
+
+        // PRESERVE POSITIONS: Save current body positions before destroying Matter scene
+        // This ensures dragged positions survive re-initialization
+        const savedPositions = new Map<string, { x: number; y: number }>();
+        if (editingEnabled && matterEngineRef.current) {
+            const currentBodies = Matter.Composite.allBodies(matterEngineRef.current.world);
+            currentBodies.forEach(body => {
+                const label = (body as any).label || body.id?.toString();
+                if (label) {
+                    savedPositions.set(label, { x: body.position.x, y: body.position.y });
+                }
+            });
+            if (savedPositions.size > 0) {
+                console.log('[SimulationLayer] 💾 Saved positions for', savedPositions.size, 'bodies before re-init');
+            }
+        }
+
         destroyMatterScene();
 
         try {
@@ -720,6 +771,18 @@ export function SimulationLayer({
                 (body as any).__originallyStatic = body.isStatic;
             });
             console.log('[SimulationLayer] 📝 Stored original static state for', allBodies.length, 'bodies');
+
+            // RESTORE POSITIONS: Apply saved positions after re-initialization
+            if (savedPositions.size > 0) {
+                allBodies.forEach(body => {
+                    const label = (body as any).label || body.id?.toString();
+                    const saved = savedPositions.get(label);
+                    if (saved) {
+                        Matter.Body.setPosition(body, { x: saved.x, y: saved.y });
+                    }
+                });
+                console.log('[SimulationLayer] 🔄 Restored positions for', savedPositions.size, 'bodies after re-init');
+            }
 
             const render = Matter.Render.create({
                 element: renderHost,
@@ -888,6 +951,12 @@ export function SimulationLayer({
         }
 
         return () => {
+            // OPTIMIZATION: Skip cleanup if scene was modified in edit mode
+            // This preserves the Matter.js world for the next useEffect cycle
+            if (sceneModifiedRef.current && editingEnabled) {
+                console.log('[SimulationLayer] ⏭️ Skipping cleanup (preserving Matter world)');
+                return;
+            }
             destroyMatterScene();
         };
     }, [renderScene, destroyMatterScene, containerW, containerH, frames, applyFrameToMatter, playing, globalChat.activeBoxId]);
@@ -944,7 +1013,7 @@ export function SimulationLayer({
             // Track dragged body (mouseConstraint.body becomes null on enddrag)
             let draggedBody: Matter.Body | null = null;
 
-            // Click to select & activate entity for dragging (no double-click needed)
+            // Click to select entity (activation happens in startdrag)
             const mousedownHandler = (event: any) => {
                 console.log('[SimulationLayer] 🖱️ MOUSEDOWN event triggered');
                 const mouse = event.mouse;
@@ -973,14 +1042,9 @@ export function SimulationLayer({
                     const bodyId = clickedBody.label || clickedBody.id?.toString() || 'unknown';
                     console.log('[SimulationLayer] ✅ Body CLICKED:', bodyId);
                     
-                    const now = performance.now();
-                    
-                    // Immediately select and activate for dragging
+                    // Just select - activation will happen in startdrag
                     setSelectedEntityId(bodyId);
-                    setActivatedBodyId(bodyId);
-                    activatedBodyIdRef.current = bodyId;
-                    activationTimestampRef.current = now;
-                    console.log('[SimulationLayer] ✨ Body selected and activated for dragging:', bodyId);
+                    console.log('[SimulationLayer] 📌 Body selected (activation deferred to startdrag):', bodyId);
                 } else {
                     // Clicked empty space - deselect
                     console.log('[SimulationLayer] ⚪ Empty space clicked - deselecting');
@@ -1028,21 +1092,19 @@ export function SimulationLayer({
                 
                 console.log('[SimulationLayer] 🎯 STARTDRAG event on:', bodyId, { isStatic });
                 
-                // For static bodies, require explicit double-click activation.
-                // For dynamic bodies, allow single-click drag (no activation required).
+                // CRITICAL FIX: Activate body immediately on startdrag
+                // This ensures activation happens BEFORE drag check
+                const now = performance.now();
+                setActivatedBodyId(bodyId);
+                activatedBodyIdRef.current = bodyId;
+                activationTimestampRef.current = now;
+                console.log('[SimulationLayer] ✨ Body activated for dragging:', bodyId);
+                
+                // Now both static and dynamic bodies are activated and can be dragged
                 if (isStatic) {
-                    if (activatedBodyIdRef.current !== bodyId) {
-                        console.log('[SimulationLayer] ❌ Drag BLOCKED (static body not activated):', bodyId);
-                        (mouseConstraint as any).body = null; // Cancel drag
-                        return;
-                    }
-                    console.log('[SimulationLayer] ✅ Static body drag allowed (activated):', bodyId);
+                    console.log('[SimulationLayer] ✅ Static body drag allowed:', bodyId);
                 } else {
-                    // Dynamic body: implicitly mark as activated for consistent visuals
                     console.log('[SimulationLayer] ✅ Dynamic body drag allowed:', bodyId);
-                    setActivatedBodyId(bodyId);
-                    activatedBodyIdRef.current = bodyId;
-                    activationTimestampRef.current = performance.now();
                 }
                 
                 // Store reference to dragged body
@@ -1086,28 +1148,40 @@ export function SimulationLayer({
                     return;
                 }
 
-                // Scene coordinates: Y-up (invert Y from Matter.js)
-                const sceneX = body.position.x;
-                const sceneY = -body.position.y;
-                const newPosition: [number, number] = [sceneX, sceneY];
+                // Convert canvas (Matter) coordinates back to scene meters using activeTransform
+                // body.position is already in canvas space; activeTransform handles origin/scale.
+                const newPosition: [number, number] = [
+                    (body.position.x - activeTransform.originPx[0]) * activeTransform.pixelsToMeters,
+                    (activeTransform.originPx[1] - body.position.y) * activeTransform.pixelsToMeters,
+                ];
 
-                console.log(`[SimulationLayer] Body ${bodyId} dragged to (scene):`, newPosition);
+                console.log(`[SimulationLayer] 🎯 Body ${bodyId} dragged to (scene):`, newPosition);
+                console.log(`[SimulationLayer] 📍 Matter.js position (canvas px):`, body.position);
 
-                // Sync to backend (debounced) and trigger resimulation
+                // CRITICAL FIX: Set ref BEFORE state to ensure skip logic works immediately
+                sceneModifiedRef.current = true;
+                
+                // Set sceneModified flag BEFORE updateBodyLocal to activate skip logic
+                setSceneModified(true);
+                
+                // Update scene data for parameters panel
+                // The skip logic (line ~715) prevents Matter world re-initialization
+                updateBodyLocal(bodyId, { position_m: newPosition });
+                
+                console.log(`[SimulationLayer] ✅ Scene data updated, skip logic active`);
+
+                // Sync to backend (debounced) and trigger resimulation on Play later
                 const conversationId = globalChat.activeBoxId;
                 if (conversationId && debouncedBackendSyncRef.current) {
                     try {
                         console.log(`[SimulationLayer] 📤 Syncing ${bodyId} position to backend...`);
-                        await debouncedBackendSyncRef.current.flush();
-                        
+                        // Queue update and flush at drag end so backend stays authoritative
                         debouncedBackendSyncRef.current.debouncedUpdate({
                             [bodyId]: { position_m: newPosition }
                         });
+                        await debouncedBackendSyncRef.current.flush();
                         
-                        // Mark scene as modified (triggers resimulation on next Play)
-                        setSceneModified(true);
-                        console.log(`[SimulationLayer] 🏷️ Scene marked as modified`);
-                        console.log(`[SimulationLayer] ✅ Position update queued for backend sync`);
+                        console.log(`[SimulationLayer] ✅ Position update synced to backend`);
                     } catch (error) {
                         console.error('[SimulationLayer] Backend sync failed:', error);
                     }
@@ -1150,7 +1224,8 @@ export function SimulationLayer({
                 matterMouseConstraintRef.current = null;
             }
         };
-    }, [editingEnabled, playing, scene, globalChat.activeBoxId, setSelectedEntityId, setHoveredBodyId, setCursor, activatedBodyId]);
+    }, [editingEnabled, playing, scene, globalChat.activeBoxId, setSelectedEntityId, setHoveredBodyId, setCursor]);
+    // REMOVED: activatedBodyId from dependencies - it should NOT trigger MouseConstraint recreation during drag
 
     // Body static state management based on simulation mode
     useEffect(() => {
@@ -1163,7 +1238,25 @@ export function SimulationLayer({
         
         if (playing) {
             // Play mode: Restore bodies to original state
-            console.log('[SimulationLayer] � Play mode: Restoring body dynamics');
+            console.log('[SimulationLayer] ▶️ Play mode: Restoring body dynamics');
+            
+            // If scene was modified, trigger resimulation with updated scene
+            const wasModified = sceneModifiedRef.current;
+            
+            // Reset sceneModified flag when entering play mode
+            // This allows the scene to be regenerated properly if needed
+            sceneModifiedRef.current = false;
+            setSceneModified(false);
+            
+            // Trigger resimulation if scene was modified
+            if (wasModified) {
+                console.log('[SimulationLayer] 🔄 Scene was modified, triggering resimulation...');
+                // Resimulate with current scene (already updated via updateBodyLocal)
+                updateSceneAndResimulate((prev: any) => prev).catch((error: any) => {
+                    console.error('[SimulationLayer] Resimulation failed:', error);
+                });
+            }
+            
             bodies.forEach(body => {
                 const originallyStatic = (body as any).__originallyStatic;
                 if (originallyStatic !== undefined && body.isStatic !== originallyStatic) {
