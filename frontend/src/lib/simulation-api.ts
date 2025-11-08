@@ -280,3 +280,40 @@ export function createDebouncedBatchUpdate(
 
   return { debouncedUpdate, flush };
 }
+
+/**
+ * Resimulate scene with current backend state.
+ * Triggers a new simulation run based on the latest scene modifications.
+ * 
+ * @param conversationId - Conversation ID
+ * @param duration - Simulation duration in seconds (default: 5)
+ * @returns Simulation result with new frames
+ * 
+ * @example
+ * ```typescript
+ * const result = await resimulateScene('abc123', 10);
+ * console.log('New frames:', result.frames.length);
+ * ```
+ */
+export async function resimulateScene(
+  conversationId: string,
+  duration: number = 5
+): Promise<{ frames: any[]; scene: any }> {
+  const response = await fetch(`${API_BASE_URL}/run_sim`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      conversation_id: conversationId,
+      duration_s: duration,
+    }),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(`Resimulation failed: ${error.detail || response.statusText}`);
+  }
+
+  return response.json();
+}
