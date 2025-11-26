@@ -172,87 +172,39 @@ export default function ParametersPanel() {
     return entitiesList;
   }, [labels, selectedBox]);
   
-  // SIMPLIFIED: Use body.id directly as entity ID (no complex mapping needed)
-  // The scene.bodies already have the correct IDs that should be used for entity selection
-  const bodyIdToSegmentId = useMemo(() => {
-    const mapping = new Map<string, string>();
-    
-    if (scene?.bodies && entities.length > 0) {
-      console.group('[ParametersPanel] � Entity Mapping Debug');
-      console.log('Scene bodies:', scene.bodies.map((b: any) => ({ 
-        id: b.id, 
-        label: b.label,
-        type: b.type 
-      })));
-      console.log('Entities:', entities.map(e => ({ 
-        segment_id: e.segment_id, 
-        label: e.label, 
-        props: e.props 
-      })));
-      
-      // Try to establish mapping
-      scene.bodies.forEach((body: any) => {
-        const entity = entities.find(e => {
-          // Check all possible matching strategies
-          if (e.segment_id === body.id) return true;
-          if (e.props && (e.props as any).body_id === body.id) return true;
-          if (e.props && (e.props as any).id === body.id) return true;
-          return false;
-        });
-        
-        if (entity) {
-          mapping.set(body.id, entity.segment_id);
-        }
-      });
-      
-      console.log('Mapping result:', Object.fromEntries(mapping));
-      console.groupEnd();
-    }
-    
-    return mapping;
-  }, [scene?.bodies, entities]);
+  // Resolve selected id to a concrete body.id. Prefer body.id usage everywhere.
+  const resolveToBodyId = useCallback((id: string | null): string | null => {
+    if (!id || !scene?.bodies) return null;
+    // Direct match by body.id
+    if (scene.bodies.some((b: any) => b?.id === id)) return id;
+    // Fallback: find by source_segment_id (backend-provided)
+    const bySegment = scene.bodies.find((b: any) => String(b?.source_segment_id ?? '') === String(id));
+    if (bySegment?.id) return bySegment.id;
+    // Last resort: return as-is
+    return id;
+  }, [scene?.bodies]);
+
+  // Normalized id the rest of the panel will use (always a body.id when possible)
+  const normalizedSelectedEntityId = useMemo(() => resolveToBodyId(selectedEntityId), [selectedEntityId, resolveToBodyId]);
   
-  // SIMPLIFIED: Direct ID usage (prefer body.id over complex normalization)
-  const normalizedSelectedEntityId = useMemo(() => {
-    if (!selectedEntityId) return null;
-    
-    // STRATEGY 1: Direct body.id usage (most common case)
-    // If the selectedEntityId exists as a body.id in scene, use it directly
-    if (scene?.bodies?.some((b: any) => b.id === selectedEntityId)) {
-      console.log('[ParametersPanel] ✅ Using body.id directly:', selectedEntityId);
-      return selectedEntityId;
-    }
-    
-    // STRATEGY 2: Check if it's already a valid segment_id
-    if (entities.some(e => e.segment_id === selectedEntityId)) {
-      console.log('[ParametersPanel] ✅ Using segment_id:', selectedEntityId);
-      return selectedEntityId;
-    }
-    
-    // STRATEGY 3: Try mapping (fallback)
-    const segmentId = bodyIdToSegmentId.get(selectedEntityId);
-    if (segmentId) {
-      console.log('[ParametersPanel] ✅ Using mapped segment_id:', segmentId);
-      return segmentId;
-    }
-    
-    // STRATEGY 4: No mapping found, use as-is
-    console.warn('[ParametersPanel] ⚠️ No mapping found, using ID as-is:', selectedEntityId);
-    return selectedEntityId;
-  }, [selectedEntityId, entities, bodyIdToSegmentId, scene?.bodies]);
-  
+  // Helper: does any entity match this segment id value
+  const eSafeHasSegment = useCallback((ents: Array<{ segment_id: string }>, segId: unknown): boolean => {
+    if (segId === undefined || segId === null) return false;
+    return ents.some(e => String(e.segment_id) === String(segId));
+  }, []);
+
   // Validate selectedEntityId exists in scene or entities
   useEffect(() => {
     if (!selectedEntityId) return;
     
     const normalized = normalizedSelectedEntityId;
-    
     // Check if it exists in scene bodies
     const inScene = scene?.bodies?.some((b: any) => b.id === normalized);
-    
-    // Check if it exists in entities
-    const inEntities = entities.some(e => e.segment_id === normalized);
-    
+    // Check if it exists in entities by either body.id or body.source_segment_id
+    const inEntities = entities.some(e => e.segment_id === normalized) ||
+      scene?.bodies?.some((b: any) => b.id === normalized && eSafeHasSegment(entities, b.source_segment_id))
+      || false;
+
     if (!inScene && !inEntities && entities.length > 0) {
       console.group('[ParametersPanel] 🔍 Entity Validation');
       console.warn('Selected body ID:', selectedEntityId);
@@ -261,12 +213,11 @@ export default function ParametersPanel() {
       console.warn('In entities:', inEntities);
       console.table([
         { type: 'Scene Bodies', ids: scene?.bodies?.map((b: any) => b.id).join(', ') },
-        { type: 'Entities', ids: entities.map(e => e.segment_id).join(', ') },
-        { type: 'Mapping', ids: Array.from(bodyIdToSegmentId.entries()).map(([k,v]) => `${k}→${v}`).join(', ') }
+        { type: 'Entities', ids: entities.map(e => e.segment_id).join(', ') }
       ]);
       console.groupEnd();
     }
-  }, [selectedEntityId, entities, normalizedSelectedEntityId, bodyIdToSegmentId, scene?.bodies]);
+  }, [selectedEntityId, entities, normalizedSelectedEntityId, eSafeHasSegment, scene?.bodies]);
 
   useEffect(() => {
     if (!normalizedSelectedEntityId || !scene?.bodies) {
