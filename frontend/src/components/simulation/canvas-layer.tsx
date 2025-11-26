@@ -21,6 +21,7 @@ import { Slider } from '@/components/ui/slider';
 import { cn } from '@/lib/utils';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { createStrokeNode, useWhiteboardStore } from '@/whiteboard/context';
+import { createTransformStore, useTransformStore, useTransformController } from '@/simulation/transform-store';
 import {
     isStrokeNode,
     type CameraState,
@@ -65,6 +66,20 @@ export function CanvasLayer({ mode, dimensions, camera, onCameraChange }: Canvas
     const [isColorPopoverOpen, setIsColorPopoverOpen] = useState(false);
     const { strokeNodes, addNode, updateNode, removeNode, clearStrokes } = useWhiteboardStore();
     const isDrawingEnabled = mode === 'draw';
+    // Initialize a local transform store for now; future: lift to WhiteboardProvider & share with SimulationLayer.
+    const transformStoreRef = useRef<ReturnType<typeof createTransformStore> | null>(null);
+    if (!transformStoreRef.current) {
+        transformStoreRef.current = createTransformStore({ container: dimensions });
+    }
+    const { setContainer, setCamera } = useTransformController(transformStoreRef.current);
+    // Keep container up to date
+    useEffect(() => {
+        setContainer({ width: dimensions.width, height: dimensions.height });
+    }, [dimensions.width, dimensions.height, setContainer]);
+    // Push camera into transform store so SimulationLayer can later consume unified state.
+    useEffect(() => {
+        setCamera({ position: camera.position, zoom: camera.zoom });
+    }, [camera.position.x, camera.position.y, camera.zoom, setCamera]);
 
     useEffect(() => {
         if (!isDrawingEnabled) {
@@ -132,6 +147,8 @@ export function CanvasLayer({ mode, dimensions, camera, onCameraChange }: Canvas
             Math.abs(nextCamera.position.y - camera.position.y) > 0.1;
         if (zoomChanged || posChanged) {
             onCameraChange(nextCamera);
+            // Mirror into transform store
+            setCamera({ position: nextCamera.position, zoom: nextCamera.zoom });
         }
     };
 
