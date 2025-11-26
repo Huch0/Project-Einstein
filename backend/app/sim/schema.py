@@ -40,6 +40,9 @@ class Body(BaseModel):
   angular_velocity_rad_s: float = Field(0.0, description="Angular velocity in rad/s.")
   collider: dict = Field(default_factory=lambda: {"type": "rectangle", "width_m": 0.1, "height_m": 0.1})
   material: Material = Field(default_factory=Material)
+  # Optional metadata linking back to segmentation/vision and geometry useful for UI
+  source_segment_id: str | int | None = Field(None, description="Original SAM/vision segment id that this body was derived from.")
+  geometry: dict | None = Field(None, description="Optional geometry info: polygon/centers in px/m for UI overlays.")
 
   @field_validator("position_m")
   @classmethod
