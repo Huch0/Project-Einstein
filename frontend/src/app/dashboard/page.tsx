@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useState, useRef, type ReactNode } from 'react';
 import { ChevronDown, ChevronUp, ChevronLeft, ChevronRight } from 'lucide-react';
+import { ImperativePanelHandle } from 'react-resizable-panels';
 
 import ChatPanel from '@/components/chat/chat-panel';
 import ControlPane from '@/components/simulation/control-pane';
@@ -44,6 +45,9 @@ export default function DashboardPage() {
     const [shouldStackPanels, setShouldStackPanels] = useState(false);
     const [chatCollapsed, setChatCollapsed] = useState(false);
     const [controlsCollapsed, setControlsCollapsed] = useState(false);
+    
+    const chatPanelRef = useRef<ImperativePanelHandle>(null);
+    const controlsPanelRef = useRef<ImperativePanelHandle>(null);
 
     useEffect(() => {
         const mediaQuery = window.matchMedia('(max-width: 1023px)');
@@ -76,16 +80,15 @@ export default function DashboardPage() {
                 {/* Collapsed Chat Tab (desktop horizontal layout) */}
                 {!shouldStackPanels && chatCollapsed && (
                     <div 
-                        className="fixed right-0 top-1/2 -translate-y-1/2 z-50 bg-primary text-primary-foreground px-2 py-6 rounded-l-md cursor-pointer hover:bg-primary/90 transition-all shadow-lg"
-                        onClick={() => setChatCollapsed(false)}
+                        className="fixed right-0 top-1/2 -translate-y-1/2 z-50 bg-primary text-primary-foreground px-4 py-2 rounded-l-md cursor-pointer hover:bg-primary/90 transition-all shadow-lg"
+                        onClick={() => {
+                            chatPanelRef.current?.expand();
+                            setChatCollapsed(false);
+                        }}
                     >
-                        <div className="flex flex-col items-center gap-2">
+                        <div className="flex items-center gap-2">
                             <ChevronLeft className="h-4 w-4" />
-                            <div className="flex flex-col">
-                                {['A', 's', 's', 'i', 's', 't', 'a', 'n', 't', ' ', 'C', 'h', 'a', 't'].map((char, i) => (
-                                    <span key={i} className="text-xs font-medium leading-tight">{char}</span>
-                                ))}
-                            </div>
+                            <span className="text-xs font-medium whitespace-nowrap">Chat</span>
                         </div>
                     </div>
                 )}
@@ -94,7 +97,10 @@ export default function DashboardPage() {
                 {controlsCollapsed && (
                     <div 
                         className="fixed bottom-0 left-1/2 -translate-x-1/2 z-50 bg-primary text-primary-foreground px-6 py-2 rounded-t-md cursor-pointer hover:bg-primary/90 transition-all shadow-lg"
-                        onClick={() => setControlsCollapsed(false)}
+                        onClick={() => {
+                            controlsPanelRef.current?.expand();
+                            setControlsCollapsed(false);
+                        }}
                     >
                         <div className="flex items-center gap-2">
                             <ChevronUp className="h-4 w-4" />
