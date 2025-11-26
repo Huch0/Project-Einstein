@@ -72,7 +72,33 @@ export default function DashboardPage() {
 
     return (
         <GlobalChatProvider>
-            <div className="flex h-screen flex-col overflow-hidden bg-muted/10">
+            <div className="flex h-screen flex-col overflow-hidden bg-muted/10 relative">
+                {/* Collapsed Chat Tab (desktop horizontal layout) */}
+                {!shouldStackPanels && chatCollapsed && (
+                    <div 
+                        className="fixed right-0 top-1/2 -translate-y-1/2 z-50 bg-primary text-primary-foreground px-2 py-6 rounded-l-md cursor-pointer hover:bg-primary/90 transition-all shadow-lg"
+                        onClick={() => setChatCollapsed(false)}
+                    >
+                        <div className="flex flex-col items-center gap-2">
+                            <ChevronLeft className="h-4 w-4" />
+                            <span className="text-xs font-medium writing-mode-vertical-rl transform rotate-180">Assistant Chat</span>
+                        </div>
+                    </div>
+                )}
+                
+                {/* Collapsed Controls Tab */}
+                {controlsCollapsed && (
+                    <div 
+                        className="fixed bottom-0 left-1/2 -translate-x-1/2 z-50 bg-primary text-primary-foreground px-6 py-2 rounded-t-md cursor-pointer hover:bg-primary/90 transition-all shadow-lg"
+                        onClick={() => setControlsCollapsed(false)}
+                    >
+                        <div className="flex items-center gap-2">
+                            <ChevronUp className="h-4 w-4" />
+                            <span className="text-xs font-medium whitespace-nowrap">Simulation Controls</span>
+                        </div>
+                    </div>
+                )}
+
                 {shouldStackPanels ? (
                     <ResizablePanelGroup direction="vertical" className="flex-1 min-h-0 overflow-hidden border-t bg-background">
                         <ResizablePanel defaultSize={45} minSize={30}>
@@ -98,26 +124,14 @@ export default function DashboardPage() {
                         </ResizablePanel>
                         <ResizableHandle withHandle aria-label="Resize assistant chat and simulation controls" />
                         <ResizablePanel defaultSize={25} minSize={0} collapsedSize={0} collapsible onCollapse={() => setControlsCollapsed(true)} onExpand={() => setControlsCollapsed(false)}>
-                            {controlsCollapsed ? (
-                                <div 
-                                    className="h-full flex items-center justify-center bg-muted/50 cursor-pointer hover:bg-muted border-t"
-                                    onClick={() => setControlsCollapsed(false)}
-                                >
-                                    <div className="flex flex-col items-center gap-2 text-muted-foreground">
-                                        <ChevronUp className="h-4 w-4" />
-                                        <span className="text-xs font-medium">Show Controls</span>
-                                    </div>
-                                </div>
-                            ) : (
-                                <PaneShell
-                                    title="Simulation Controls"
-                                    hint={verticalResizeHint}
-                                    headerClassName="px-2 py-3 sm:px-3"
-                                    bodyClassName="flex-1 min-h-0 overflow-hidden"
-                                >
-                                    <ControlPane />
-                                </PaneShell>
-                            )}
+                            <PaneShell
+                                title="Simulation Controls"
+                                hint={verticalResizeHint}
+                                headerClassName="px-2 py-3 sm:px-3"
+                                bodyClassName="flex-1 min-h-0 overflow-hidden"
+                            >
+                                <ControlPane />
+                            </PaneShell>
                         </ResizablePanel>
                     </ResizablePanelGroup>
                 ) : (
@@ -136,26 +150,14 @@ export default function DashboardPage() {
                                 </ResizablePanel>
                                 <ResizableHandle withHandle aria-label="Resize simulation canvas and simulation controls" />
                                 <ResizablePanel defaultSize={40} minSize={0} collapsedSize={0} collapsible onCollapse={() => setControlsCollapsed(true)} onExpand={() => setControlsCollapsed(false)}>
-                                    {controlsCollapsed ? (
-                                        <div 
-                                            className="h-full flex items-center justify-center bg-muted/50 cursor-pointer hover:bg-muted border-t"
-                                            onClick={() => setControlsCollapsed(false)}
-                                        >
-                                            <div className="flex flex-col items-center gap-2 text-muted-foreground">
-                                                <ChevronUp className="h-4 w-4" />
-                                                <span className="text-xs font-medium">Show Controls</span>
-                                            </div>
-                                        </div>
-                                    ) : (
-                                        <PaneShell
-                                            title="Simulation Controls"
-                                            hint={verticalResizeHint}
-                                            headerClassName="px-2 py-3 sm:px-3"
-                                            bodyClassName="flex-1 min-h-0 overflow-hidden"
-                                        >
-                                            <ControlPane />
-                                        </PaneShell>
-                                    )}
+                                    <PaneShell
+                                        title="Simulation Controls"
+                                        hint={verticalResizeHint}
+                                        headerClassName="px-2 py-3 sm:px-3"
+                                        bodyClassName="flex-1 min-h-0 overflow-hidden"
+                                    >
+                                        <ControlPane />
+                                    </PaneShell>
                                 </ResizablePanel>
                             </ResizablePanelGroup>
                         </ResizablePanel>
