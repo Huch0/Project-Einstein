@@ -43,7 +43,7 @@ cp .env.example .env  # create one if needed
 cat <<'EOF' >> .env
 APP_ENV=dev
 OPENAI_API_KEY=sk-...
-OPENAI_MODEL=gpt-4o-mini
+OPENAI_MODEL=gpt-5
 CHAT_SYSTEM_PROMPT=You are Project Einstein...
 FRONTEND_ORIGIN=http://localhost:9002
 CHAT_AUDIT_LOG_ENABLED=true
