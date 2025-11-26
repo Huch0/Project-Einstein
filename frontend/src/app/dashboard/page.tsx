@@ -81,7 +81,11 @@ export default function DashboardPage() {
                     >
                         <div className="flex flex-col items-center gap-2">
                             <ChevronLeft className="h-4 w-4" />
-                            <span className="text-xs font-medium writing-mode-vertical-rl transform rotate-180">Assistant Chat</span>
+                            <div className="flex flex-col">
+                                {['A', 's', 's', 'i', 's', 't', 'a', 'n', 't', ' ', 'C', 'h', 'a', 't'].map((char, i) => (
+                                    <span key={i} className="text-xs font-medium leading-tight">{char}</span>
+                                ))}
+                            </div>
                         </div>
                     </div>
                 )}
@@ -124,14 +128,18 @@ export default function DashboardPage() {
                         </ResizablePanel>
                         <ResizableHandle withHandle aria-label="Resize assistant chat and simulation controls" />
                         <ResizablePanel defaultSize={25} minSize={0} collapsedSize={0} collapsible onCollapse={() => setControlsCollapsed(true)} onExpand={() => setControlsCollapsed(false)}>
-                            <PaneShell
-                                title="Simulation Controls"
-                                hint={verticalResizeHint}
-                                headerClassName="px-2 py-3 sm:px-3"
-                                bodyClassName="flex-1 min-h-0 overflow-hidden"
-                            >
-                                <ControlPane />
-                            </PaneShell>
+                            {controlsCollapsed ? (
+                                <div className="h-8 bg-background border-t" />
+                            ) : (
+                                <PaneShell
+                                    title="Simulation Controls"
+                                    hint={verticalResizeHint}
+                                    headerClassName="px-2 py-3 sm:px-3"
+                                    bodyClassName="flex-1 min-h-0 overflow-hidden"
+                                >
+                                    <ControlPane />
+                                </PaneShell>
+                            )}
                         </ResizablePanel>
                     </ResizablePanelGroup>
                 ) : (
@@ -150,14 +158,18 @@ export default function DashboardPage() {
                                 </ResizablePanel>
                                 <ResizableHandle withHandle aria-label="Resize simulation canvas and simulation controls" />
                                 <ResizablePanel defaultSize={40} minSize={0} collapsedSize={0} collapsible onCollapse={() => setControlsCollapsed(true)} onExpand={() => setControlsCollapsed(false)}>
-                                    <PaneShell
-                                        title="Simulation Controls"
-                                        hint={verticalResizeHint}
-                                        headerClassName="px-2 py-3 sm:px-3"
-                                        bodyClassName="flex-1 min-h-0 overflow-hidden"
-                                    >
-                                        <ControlPane />
-                                    </PaneShell>
+                                    {controlsCollapsed ? (
+                                        <div className="h-8 bg-background border-t" />
+                                    ) : (
+                                        <PaneShell
+                                            title="Simulation Controls"
+                                            hint={verticalResizeHint}
+                                            headerClassName="px-2 py-3 sm:px-3"
+                                            bodyClassName="flex-1 min-h-0 overflow-hidden"
+                                        >
+                                            <ControlPane />
+                                        </PaneShell>
+                                    )}
                                 </ResizablePanel>
                             </ResizablePanelGroup>
                         </ResizablePanel>
@@ -166,14 +178,18 @@ export default function DashboardPage() {
                             aria-label="Resize main simulation area and assistant chat"
                         />
                         <ResizablePanel defaultSize={35} minSize={0} collapsedSize={0} collapsible onCollapse={() => setChatCollapsed(true)} onExpand={() => setChatCollapsed(false)}>
-                            <PaneShell
-                                title="Assistant Chat"
-                                hint={horizontalResizeHint}
-                                headerClassName="px-2 py-3 sm:px-3"
-                                bodyClassName="flex-1 min-h-0"
-                            >
-                                <ChatPanel padding="flush" />
-                            </PaneShell>
+                            {chatCollapsed ? (
+                                <div className="w-8 bg-background border-l" />
+                            ) : (
+                                <PaneShell
+                                    title="Assistant Chat"
+                                    hint={horizontalResizeHint}
+                                    headerClassName="px-2 py-3 sm:px-3"
+                                    bodyClassName="flex-1 min-h-0"
+                                >
+                                    <ChatPanel padding="flush" />
+                                </PaneShell>
+                            )}
                         </ResizablePanel>
                     </ResizablePanelGroup>
                 )}
