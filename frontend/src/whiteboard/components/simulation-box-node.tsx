@@ -137,6 +137,12 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
 
     // Simulation control handlers
     const handlePlayPause = useCallback(async () => {
+        // IMPORTANT: Disable editing when starting playback
+        if (!playing && editingEnabled) {
+            console.log('[SimulationBox] 🎬 Disabling edit mode before playback');
+            setEditingEnabled(false);
+        }
+        
         if (!playing && sceneModified) {
             // Scene was edited, need resimulation before playing
             console.log('[SimulationBox] 🔄 Scene modified, triggering resimulation...');
@@ -177,7 +183,7 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
             // Normal play/pause toggle
             setPlaying(!playing);
         }
-    }, [playing, sceneModified, globalChat.activeBoxId, duration, setFrames, setFrameIndex, setSceneModified, setPlaying]);
+    }, [playing, sceneModified, editingEnabled, globalChat.activeBoxId, duration, setFrames, setFrameIndex, setSceneModified, setPlaying, setEditingEnabled]);
 
     const handleReset = useCallback(() => {
         resetSimulation();
@@ -596,7 +602,7 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
                     <button
                         type="button"
                         className={cn(
-                            "rounded p-1 transition-colors bg-background",
+                            "rounded px-2 py-1 transition-colors bg-background flex items-center gap-1",
                             editingEnabled 
                                 ? "text-primary hover:bg-primary/20" 
                                 : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
@@ -623,16 +629,18 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
                         disabled={playing || hasEverPlayed}
                     >
                         <Edit3 className="h-3.5 w-3.5" />
+                        <span className="text-xs">Edit</span>
                     </button>
                     {/* Remove Box */}
                     <button
                         type="button"
-                        className="rounded p-1 text-muted-foreground transition-colors hover:bg-destructive hover:text-destructive-foreground bg-background"
+                        className="rounded px-2 py-1 text-muted-foreground transition-colors hover:bg-destructive hover:text-destructive-foreground bg-background flex items-center gap-1"
                         onClick={() => removeNode(node.id)}
                         aria-label="Remove simulation box"
                         data-node-action="true"
                     >
                         <Trash2 className="h-3.5 w-3.5" />
+                        <span className="text-xs">Delete</span>
                     </button>
                 </div>
             </div>
@@ -695,6 +703,7 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
                                 onFrameChange={handleFrameChange}
                                 onSpeedChange={handleSpeedChange}
                                 disabled={agentLoading}
+                                editingEnabled={editingEnabled}
                             />
                         </div>
                     )}
