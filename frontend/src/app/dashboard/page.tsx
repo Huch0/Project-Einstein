@@ -133,7 +133,7 @@ export default function DashboardPage() {
                             </PaneShell>
                         </ResizablePanel>
                         <ResizableHandle withHandle aria-label="Resize assistant chat and simulation controls" />
-                        <ResizablePanel defaultSize={25} minSize={0} collapsedSize={0} collapsible onCollapse={() => setControlsCollapsed(true)} onExpand={() => setControlsCollapsed(false)}>
+                        <ResizablePanel ref={controlsPanelRef} defaultSize={25} minSize={0} collapsedSize={0} collapsible onCollapse={() => setControlsCollapsed(true)} onExpand={() => setControlsCollapsed(false)}>
                             {controlsCollapsed ? (
                                 <div className="h-8 bg-background border-t" />
                             ) : (
@@ -163,7 +163,7 @@ export default function DashboardPage() {
                                     </PaneShell>
                                 </ResizablePanel>
                                 <ResizableHandle withHandle aria-label="Resize simulation canvas and simulation controls" />
-                                <ResizablePanel defaultSize={40} minSize={0} collapsedSize={0} collapsible onCollapse={() => setControlsCollapsed(true)} onExpand={() => setControlsCollapsed(false)}>
+                                <ResizablePanel ref={controlsPanelRef} defaultSize={40} minSize={0} collapsedSize={0} collapsible onCollapse={() => setControlsCollapsed(true)} onExpand={() => setControlsCollapsed(false)}>
                                     {controlsCollapsed ? (
                                         <div className="h-8 bg-background border-t" />
                                     ) : (
@@ -183,7 +183,7 @@ export default function DashboardPage() {
                             withHandle
                             aria-label="Resize main simulation area and assistant chat"
                         />
-                        <ResizablePanel defaultSize={35} minSize={0} collapsedSize={0} collapsible onCollapse={() => setChatCollapsed(true)} onExpand={() => setChatCollapsed(false)}>
+                        <ResizablePanel ref={chatPanelRef} defaultSize={35} minSize={0} collapsedSize={0} collapsible onCollapse={() => setChatCollapsed(true)} onExpand={() => setChatCollapsed(false)}>
                             {chatCollapsed ? (
                                 <div className="w-8 bg-background border-l" />
                             ) : (
