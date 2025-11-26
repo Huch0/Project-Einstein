@@ -166,26 +166,14 @@ export default function DashboardPage() {
                             aria-label="Resize main simulation area and assistant chat"
                         />
                         <ResizablePanel defaultSize={35} minSize={0} collapsedSize={0} collapsible onCollapse={() => setChatCollapsed(true)} onExpand={() => setChatCollapsed(false)}>
-                            {chatCollapsed ? (
-                                <div 
-                                    className="h-full flex items-center justify-center bg-muted/50 cursor-pointer hover:bg-muted border-l"
-                                    onClick={() => setChatCollapsed(false)}
-                                >
-                                    <div className="flex flex-col items-center gap-2 text-muted-foreground">
-                                        <ChevronLeft className="h-4 w-4" />
-                                        <span className="text-xs font-medium -rotate-90 whitespace-nowrap">Show Chat</span>
-                                    </div>
-                                </div>
-                            ) : (
-                                <PaneShell
-                                    title="Assistant Chat"
-                                    hint={horizontalResizeHint}
-                                    headerClassName="px-2 py-3 sm:px-3"
-                                    bodyClassName="flex-1 min-h-0"
-                                >
-                                    <ChatPanel padding="flush" />
-                                </PaneShell>
-                            )}
+                            <PaneShell
+                                title="Assistant Chat"
+                                hint={horizontalResizeHint}
+                                headerClassName="px-2 py-3 sm:px-3"
+                                bodyClassName="flex-1 min-h-0"
+                            >
+                                <ChatPanel padding="flush" />
+                            </PaneShell>
                         </ResizablePanel>
                     </ResizablePanelGroup>
                 )}
