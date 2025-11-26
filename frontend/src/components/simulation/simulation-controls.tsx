@@ -1,7 +1,6 @@
 /**
  * Simulation Controls Component
- * 
- * Playback controls for physics simulation (play/pause/reset/step).
+ * * Playback controls for physics simulation (play/pause/reset/step).
  */
 
 import { Play, Pause, RotateCcw, SkipForward } from 'lucide-react';
@@ -20,6 +19,7 @@ export interface SimulationControlsProps {
   onFrameChange: (frame: number) => void;
   onSpeedChange: (speed: number) => void;
   disabled?: boolean;
+  editingEnabled?: boolean; // [추가] 편집 모드 상태를 받는 prop
 }
 
 export function SimulationControls({
@@ -33,6 +33,7 @@ export function SimulationControls({
   onFrameChange,
   onSpeedChange,
   disabled = false,
+  editingEnabled = false, // [추가] 기본값 false
 }: SimulationControlsProps) {
   const lastLoggedFrame = useRef(-1);
   
@@ -44,10 +45,18 @@ export function SimulationControls({
       totalFrames,
       playbackSpeed,
       disabled,
+      editingEnabled, // 로그에도 추가
     });
     lastLoggedFrame.current = currentFrame;
   }
   
+  // [UX] 편집 모드일 때 버튼 툴팁 메시지 생성
+  const playButtonTitle = editingEnabled 
+    ? "편집 모드에서는 재생할 수 없습니다." 
+    : (isPlaying ? "일시정지" : "재생");
+
+  const commonDisabled = disabled || editingEnabled || totalFrames === 0;
+
   return (
     <div className="flex flex-col gap-2 p-2 bg-background/95 border-t">
       {/* Playback Buttons */}
@@ -60,7 +69,9 @@ export function SimulationControls({
             console.log('[SimulationControls] ▶️/⏸️ Play/Pause clicked');
             onPlayPause();
           }}
-          disabled={disabled || totalFrames === 0}
+          // [수정] editingEnabled 상태면 클릭 불가
+          disabled={commonDisabled}
+          title={playButtonTitle}
         >
           {isPlaying ? (
             <Pause className="h-4 w-4" />
@@ -76,7 +87,9 @@ export function SimulationControls({
             console.log('[SimulationControls] 🔄 Reset clicked');
             onReset();
           }}
-          disabled={disabled || totalFrames === 0}
+          // [수정] 편집 중 리셋 방지 (필요에 따라 허용 가능하나 보통 막는 게 안전)
+          disabled={commonDisabled}
+          title="처음으로 리셋"
         >
           <RotateCcw className="h-4 w-4" />
         </Button>
@@ -88,7 +101,9 @@ export function SimulationControls({
             console.log('[SimulationControls] ⏭️ Step clicked');
             onStep();
           }}
-          disabled={disabled || totalFrames === 0 || isPlaying}
+          // [수정] 편집 중 스텝 진행 방지
+          disabled={commonDisabled || isPlaying}
+          title="1프레임 앞으로"
         >
           <SkipForward className="h-4 w-4" />
         </Button>
@@ -107,7 +122,8 @@ export function SimulationControls({
             max={totalFrames - 1}
             step={1}
             onValueChange={(value) => onFrameChange(value[0])}
-            disabled={disabled}
+            // [수정] 편집 중 타임라인 이동 방지
+            disabled={disabled || editingEnabled}
             className="flex-1"
           />
         </div>
@@ -122,7 +138,8 @@ export function SimulationControls({
           max={2}
           step={0.25}
           onValueChange={(value) => onSpeedChange(value[0])}
-          disabled={disabled}
+          // [수정] 설정값 변경은 허용할 수도 있지만, 통일성을 위해 막음
+          disabled={disabled || editingEnabled}
           className="flex-1"
         />
         <span className="text-xs text-muted-foreground tabular-nums w-8">
