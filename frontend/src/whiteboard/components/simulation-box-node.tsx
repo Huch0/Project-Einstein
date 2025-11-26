@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
-import { GripHorizontal, Trash2, Upload, MessageSquare, FlaskConical, Edit3 } from 'lucide-react';
+import { GripHorizontal, Trash2, Upload, MessageSquare, FlaskConical, Edit3, ChevronDown, ChevronUp } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 import { useWhiteboardStore } from '@/whiteboard/context';
@@ -134,6 +134,12 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
     const [showChat, setShowChat] = useState(false);
     const [isEditingName, setIsEditingName] = useState(false);
     const [boxName, setBoxName] = useState(node.name || '');
+    
+    // Draggable panel states
+    const [controlsCollapsed, setControlsCollapsed] = useState(false);
+    const [chatCollapsed, setChatCollapsed] = useState(false);
+    const controlsDragRef = useRef({ startY: 0, isDragging: false });
+    const chatDragRef = useRef({ startY: 0, isDragging: false });
 
     // Simulation control handlers
     const handlePlayPause = useCallback(async () => {
@@ -665,17 +671,60 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
                     </div>
                 )}
 
-                {/* Agent Chat Panel */}
+                {/* Agent Chat Panel - Draggable */}
                 {showChat && (
-                    <AgentChatPanel
-                        boxName={node.name}
-                        conversationId={conversationId}
-                        context={agentContext}
-                        onSendMessage={sendMessage}
-                        onClose={() => setShowChat(false)}
-                        loading={agentLoading}
-                        availableBoxes={availableBoxes}
-                    />
+                    <div className="absolute inset-0 z-30 flex flex-col bg-background">
+                        {/* Drag Handle */}
+                        <div
+                            className="flex items-center justify-center h-4 cursor-ns-resize hover:bg-accent/50 transition-colors border-b border-border/50 bg-background"
+                            onPointerDown={(e) => {
+                                chatDragRef.current = { startY: e.clientY, isDragging: true };
+                                e.currentTarget.setPointerCapture(e.pointerId);
+                            }}
+                            onPointerMove={(e) => {
+                                if (!chatDragRef.current.isDragging) return;
+                                const deltaY = e.clientY - chatDragRef.current.startY;
+                                if (Math.abs(deltaY) > 30) {
+                                    if (deltaY > 0 && !chatCollapsed) {
+                                        setChatCollapsed(true);
+                                    } else if (deltaY < 0 && chatCollapsed) {
+                                        setChatCollapsed(false);
+                                    }
+                                    chatDragRef.current.isDragging = false;
+                                }
+                            }}
+                            onPointerUp={() => {
+                                chatDragRef.current.isDragging = false;
+                            }}
+                            onPointerCancel={() => {
+                                chatDragRef.current.isDragging = false;
+                            }}
+                            title={chatCollapsed ? "Drag up to show chat" : "Drag down to hide chat"}
+                        >
+                            {chatCollapsed ? (
+                                <ChevronUp className="h-3 w-3 text-muted-foreground" />
+                            ) : (
+                                <ChevronDown className="h-3 w-3 text-muted-foreground" />
+                            )}
+                        </div>
+                        
+                        {/* Chat Content */}
+                        {!chatCollapsed ? (
+                            <AgentChatPanel
+                                boxName={node.name}
+                                conversationId={conversationId}
+                                context={agentContext}
+                                onSendMessage={sendMessage}
+                                onClose={() => setShowChat(false)}
+                                loading={agentLoading}
+                                availableBoxes={availableBoxes}
+                            />
+                        ) : (
+                            <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground bg-background">
+                                Drag up to show chat
+                            </div>
+                        )}
+                    </div>
                 )}
 
                 {/* Simulation Viewport */}
@@ -689,22 +738,64 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
                         />
                     </div>
 
-                    {/* Simulation Playback Controls */}
+                    {/* Simulation Playback Controls - Draggable */}
                     {frames.length > 0 && (
-                        <div className="border-t border-border bg-background/95 p-2" data-node-action="true">
-                            <SimulationControls
-                                isPlaying={playing}
-                                currentFrame={currentIndex}
-                                totalFrames={frames.length}
-                                playbackSpeed={playbackSpeed}
-                                onPlayPause={handlePlayPause}
-                                onReset={handleReset}
-                                onStep={handleStep}
-                                onFrameChange={handleFrameChange}
-                                onSpeedChange={handleSpeedChange}
-                                disabled={agentLoading}
-                                editingEnabled={editingEnabled}
-                            />
+                        <div 
+                            className="relative border-t border-border bg-background/95"
+                            data-node-action="true"
+                        >
+                            {/* Drag Handle */}
+                            <div
+                                className="flex items-center justify-center h-4 cursor-ns-resize hover:bg-accent/50 transition-colors border-b border-border/50"
+                                onPointerDown={(e) => {
+                                    controlsDragRef.current = { startY: e.clientY, isDragging: true };
+                                    e.currentTarget.setPointerCapture(e.pointerId);
+                                }}
+                                onPointerMove={(e) => {
+                                    if (!controlsDragRef.current.isDragging) return;
+                                    const deltaY = e.clientY - controlsDragRef.current.startY;
+                                    if (Math.abs(deltaY) > 30) {
+                                        if (deltaY > 0 && !controlsCollapsed) {
+                                            setControlsCollapsed(true);
+                                        } else if (deltaY < 0 && controlsCollapsed) {
+                                            setControlsCollapsed(false);
+                                        }
+                                        controlsDragRef.current.isDragging = false;
+                                    }
+                                }}
+                                onPointerUp={() => {
+                                    controlsDragRef.current.isDragging = false;
+                                }}
+                                onPointerCancel={() => {
+                                    controlsDragRef.current.isDragging = false;
+                                }}
+                                title={controlsCollapsed ? "Drag up to show controls" : "Drag down to hide controls"}
+                            >
+                                {controlsCollapsed ? (
+                                    <ChevronUp className="h-3 w-3 text-muted-foreground" />
+                                ) : (
+                                    <ChevronDown className="h-3 w-3 text-muted-foreground" />
+                                )}
+                            </div>
+                            
+                            {/* Controls Content */}
+                            {!controlsCollapsed && (
+                                <div className="p-2">
+                                    <SimulationControls
+                                        isPlaying={playing}
+                                        currentFrame={currentIndex}
+                                        totalFrames={frames.length}
+                                        playbackSpeed={playbackSpeed}
+                                        onPlayPause={handlePlayPause}
+                                        onReset={handleReset}
+                                        onStep={handleStep}
+                                        onFrameChange={handleFrameChange}
+                                        onSpeedChange={handleSpeedChange}
+                                        disabled={agentLoading}
+                                        editingEnabled={editingEnabled}
+                                    />
+                                </div>
+                            )}
                         </div>
                     )}
                 </div>
