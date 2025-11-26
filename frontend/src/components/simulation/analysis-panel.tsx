@@ -1,38 +1,42 @@
-'use client';
+"use client";
 
 import { useMemo } from 'react';
-import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useSimulation } from '@/simulation/SimulationContext';
 import { formatNumber } from '@/lib/utils';
+import type { SimulationFrame, FrameBodyState } from '@/simulation/types';
 
 export default function AnalysisPanel() { // kept filename; acts as "Analysis" panel now
-  const { acceleration, tension, staticCondition, frames, massA, massB, gravity, friction, dt, runAnalytic, playing } = useSimulation();
+  const sim = useSimulation() as any;
+  const { acceleration, tension, staticCondition, frames, gravity, friction, dt, playing, scene } = sim;
 
   // Derive basic kinematics & energies from last frame
   const analysis = useMemo(() => {
     if (!frames.length) return null;
-    const last = frames[frames.length - 1];
-    const m1 = massA;
-    const m2 = massB;
+    const last: SimulationFrame = frames[frames.length - 1] as SimulationFrame;
+    // Infer masses from scene if available, else default to 1
+    const m1 = Number(scene?.bodies?.find((b: any) => b?.id === 'm1')?.mass_kg) || 1;
+    const m2 = Number(scene?.bodies?.find((b: any) => b?.id === 'm2')?.mass_kg) || 1;
     // Pick rope speed magnitude from m1 velocity
-    const vx = last.bodies.find(b => b.id === 'm1')?.velocity_m_s[0] ?? 0;
+    const vx = last.bodies.find((b: FrameBodyState) => b.id === 'm1')?.velocity_m_s?.[0] ?? 0;
     const speed = Math.abs(vx);
     // Position (displacement) from m1 x or -m2 y
-    const disp = last.bodies.find(b => b.id === 'm1')?.position_m[0] ?? 0;
+    const disp = last.bodies.find((b: FrameBodyState) => b.id === 'm1')?.position_m?.[0] ?? 0;
     // Energies (relative) – treat gravitational potential loss of m2 as positive 'released energy'
     const releasedPotential = m2 * gravity * disp; // since m2 descended disp
     const kinetic = 0.5 * (m1 + m2) * speed * speed;
     const mech = kinetic + releasedPotential; // not strictly physical sum; placeholder for future separation
     // Simple arrays for sparkline (kinetic) – sample up to 40 points
     const sampleEvery = Math.ceil(frames.length / 40);
-    const kineticSeries = frames.filter((_, i) => i % sampleEvery === 0).map(f => {
-      const v = Math.abs(f.bodies.find(b => b.id === 'm1')?.velocity_m_s[0] ?? 0);
-      return 0.5 * (m1 + m2) * v * v;
-    });
+    const kineticSeries = (frames as SimulationFrame[])
+      .filter((_: SimulationFrame, i: number) => i % sampleEvery === 0)
+      .map((f: SimulationFrame) => {
+        const v = Math.abs(f.bodies.find((b: FrameBodyState) => b.id === 'm1')?.velocity_m_s?.[0] ?? 0);
+        return 0.5 * (m1 + m2) * v * v;
+      });
     return { speed, disp, releasedPotential, kinetic, mech, kineticSeries };
-  }, [frames, massA, massB, gravity]);
+  }, [frames, gravity, scene]);
 
   return (
     <Card className="h-full flex flex-col">
@@ -41,10 +45,10 @@ export default function AnalysisPanel() { // kept filename; acts as "Analysis" p
             <div>
                 <CardTitle className="font-headline text-lg">Analysis</CardTitle>
                 <CardDescription className="mt-1">
-                Real‑time analytic evaluation (ideal rope, single pulley). Use Parameters panel to modify masses, friction, gravity.
+                Playback analysis of current frames. Values are derived from frame data and current config.
                 </CardDescription>
             </div>
-            <Button variant="outline" onClick={() => runAnalytic()}>Run Simulation</Button>
+            {/* Analytic button removed */}
         </div>
       </CardHeader>
       <CardContent className="flex-1 min-h-0">
@@ -52,8 +56,12 @@ export default function AnalysisPanel() { // kept filename; acts as "Analysis" p
           <ScrollArea className="h-full">
             <div className="p-4 space-y-4 text-sm">
               <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-xs">
-                <Info label="m1 (kg)" value={massA} />
-                <Info label="m2 (kg)" value={massB} />
+                {Number.isFinite(Number(scene?.bodies?.find((b: any) => b?.id === 'm1')?.mass_kg)) && (
+                  <Info label="m1 (kg)" value={Number(scene?.bodies?.find((b: any) => b?.id === 'm1')?.mass_kg)} />
+                )}
+                {Number.isFinite(Number(scene?.bodies?.find((b: any) => b?.id === 'm2')?.mass_kg)) && (
+                  <Info label="m2 (kg)" value={Number(scene?.bodies?.find((b: any) => b?.id === 'm2')?.mass_kg)} />
+                )}
                 <Info label="μk" value={friction} />
                 <Info label="g (m/s²)" value={gravity} />
                 <Info label="dt (s)" value={dt} />
@@ -62,7 +70,7 @@ export default function AnalysisPanel() { // kept filename; acts as "Analysis" p
               <div className="text-xs space-y-1">
                 <div>Acceleration: {acceleration !== undefined ? `${formatNumber(acceleration,3)} m/s²` : '—'} {staticCondition && '(static)'} </div>
                 <div>Tension: {tension !== undefined ? `${formatNumber(tension,2)} N` : '—'}</div>
-                <div>Status: {playing ? 'playing' : 'idle'} <Button size="sm" variant="outline" className="ml-2 h-5 px-2" onClick={() => runAnalytic()}>Re-run</Button></div>
+                <div>Status: {playing ? 'playing' : 'idle'}</div>
                 {analysis && (
                   <>
                     <div>Displacement (m2 down): {formatNumber(analysis.disp,3)} m</div>
