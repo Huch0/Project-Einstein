@@ -508,7 +508,7 @@ export default function ImageNode({ node, mode, camera }: ImageNodeProps) {
                     <button
                         type="button"
                         className={cn(
-                            'rounded p-1 text-muted-foreground transition-colors bg-background',
+                            'rounded px-2 py-1 text-muted-foreground transition-colors bg-background flex items-center gap-1',
                             isConverting || !node.source.uri
                                 ? 'cursor-not-allowed opacity-60'
                                 : 'hover:bg-accent hover:text-accent-foreground'
@@ -524,11 +524,12 @@ export default function ImageNode({ node, mode, camera }: ImageNodeProps) {
                         ) : (
                             <Sparkles className="h-3.5 w-3.5" />
                         )}
+                        <span className="text-xs">Convert</span>
                     </button>
                     <button
                         type="button"
                         className={cn(
-                            'rounded p-1 text-muted-foreground transition-colors bg-background',
+                            'rounded px-2 py-1 text-muted-foreground transition-colors bg-background flex items-center gap-1',
                             isConverting
                                 ? 'cursor-not-allowed opacity-60'
                                 : 'hover:bg-accent hover:text-accent-foreground'
@@ -539,11 +540,12 @@ export default function ImageNode({ node, mode, camera }: ImageNodeProps) {
                         disabled={isConverting}
                     >
                         <Upload className="h-3.5 w-3.5" />
+                        <span className="text-xs">Upload</span>
                     </button>
                     <button
                         type="button"
                         className={cn(
-                            'rounded p-1 text-muted-foreground transition-colors bg-background',
+                            'rounded px-2 py-1 text-muted-foreground transition-colors bg-background flex items-center gap-1',
                             isConverting
                                 ? 'cursor-not-allowed opacity-60'
                                 : 'hover:bg-destructive hover:text-destructive-foreground'
@@ -554,6 +556,7 @@ export default function ImageNode({ node, mode, camera }: ImageNodeProps) {
                         disabled={isConverting}
                     >
                         <Trash2 className="h-3.5 w-3.5" />
+                        <span className="text-xs">Delete</span>
                     </button>
                 </div>
             </div>
