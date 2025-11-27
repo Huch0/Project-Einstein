@@ -28,7 +28,8 @@ const GET_PIXEL_RATIO = () => {
 
 interface SimulationRendererProps {
   engineRef: React.MutableRefObject<Matter.Engine | null>;
-  scene: any;
+  constraints: any[];
+  scale: number;
   width: number;
   height: number;
   playing: boolean;
@@ -43,7 +44,8 @@ interface SimulationRendererProps {
 
 export default function SimulationRenderer({
   engineRef,
-  scene,
+  constraints,
+  scale,
   width,
   height,
   playing,
@@ -61,11 +63,11 @@ export default function SimulationRenderer({
   // [핵심 해결책] 렌더러가 준비되었음을 알리는 State 추가
   const [activeRender, setActiveRender] = useState<Matter.Render | null>(null);
 
-  // Store scene in ref
-  const sceneRef = useRef<any | null>(scene);
+  // Store constraints in ref
+  const constraintsRef = useRef<any[]>(constraints || []);
   useEffect(() => {
-    sceneRef.current = scene;
-  }, [scene]);
+    constraintsRef.current = constraints || [];
+  }, [constraints]);
 
   // 1. Canvas 생성 Effect
   useEffect(() => {
@@ -120,45 +122,59 @@ export default function SimulationRenderer({
       
       const ctx = render.context as CanvasRenderingContext2D;
       const bodies = Matter.Composite.allBodies(engine.world);
-      const currentScene = sceneRef.current;
+      const currentConstraints = constraintsRef.current;
 
       // Draw pulley ropes
-      if (currentScene && Array.isArray(currentScene.constraints)) {
+      if (currentConstraints && Array.isArray(currentConstraints)) {
         try {
-          currentScene.constraints.forEach((constraint: any) => {
+          currentConstraints.forEach((constraint: any) => {
             if (constraint.type !== 'ideal_fixed_pulley') return;
             const bodyA = bodies.find(b => (b as any).label === constraint.body_a);
             const bodyB = bodies.find(b => (b as any).label === constraint.body_b);
-            const anchor = constraint.pulley_anchor_m;
-            if (!bodyA || !bodyB || !anchor) return;
+            if (!bodyA || !bodyB) {
+              return;
+            }
+
+            // Find pulley body by label (should contain 'pulley' in name)
+            const pulleyBody = bodies.find(b => {
+              const label = (b as any).label;
+              return label && (label.toLowerCase().includes('pulley') || label === 'pulley1');
+            });
+            
+            if (!pulleyBody) {
+              return;
+            }
+            
+            // Use live pulley body position (always synced with Matter.js)
+            const anchorX = pulleyBody.position.x;
+            const anchorY = pulleyBody.position.y;
 
             ctx.strokeStyle = THEME.PULLEY.ROPE_COLOR;
             ctx.lineWidth = THEME.PULLEY.ROPE_WIDTH;
             ctx.setLineDash([4, 2]);
             ctx.beginPath();
             ctx.moveTo(bodyA.position.x, bodyA.position.y);
-            if ('x' in anchor && 'y' in anchor) ctx.lineTo(anchor.x, anchor.y);
-            else if (Array.isArray(anchor)) ctx.lineTo(anchor[0], -anchor[1]);
+            ctx.lineTo(anchorX, anchorY);
             ctx.stroke();
 
             ctx.beginPath();
-            if ('x' in anchor && 'y' in anchor) ctx.moveTo(anchor.x, anchor.y);
-            else if (Array.isArray(anchor)) ctx.moveTo(anchor[0], -anchor[1]);
+            ctx.moveTo(anchorX, anchorY);
             ctx.lineTo(bodyB.position.x, bodyB.position.y);
             ctx.stroke();
 
             const wheelRadius = constraint.wheel_radius_m || 0.1;
-            const wheelRadiusPixels = wheelRadius * 100;
+            const wheelRadiusPixels = wheelRadius * scale;
             ctx.setLineDash([]);
             ctx.strokeStyle = THEME.PULLEY.WHEEL_COLOR;
             ctx.lineWidth = THEME.PULLEY.WHEEL_WIDTH;
             ctx.beginPath();
-            if ('x' in anchor && 'y' in anchor) ctx.arc(anchor.x, anchor.y, wheelRadiusPixels, 0, 2 * Math.PI);
-            else if (Array.isArray(anchor)) ctx.arc(anchor[0], -anchor[1], wheelRadiusPixels, 0, 2 * Math.PI);
+            ctx.arc(anchorX, anchorY, wheelRadiusPixels, 0, 2 * Math.PI);
             ctx.stroke();
             ctx.setLineDash([]);
           });
-        } catch {}
+        } catch (e) {
+          console.error('Error drawing pulley:', e);
+        }
       }
 
       // Hover highlight
