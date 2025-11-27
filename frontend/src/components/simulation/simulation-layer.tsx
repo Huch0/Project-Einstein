@@ -79,37 +79,48 @@ const convertSceneForRender = (scene: any, transform: ReturnType<typeof computeC
         const position = projectPoint(body.position_m);
         const velocity = convertVelocity(body.velocity_m_s, scale);
         const angularVelocity = Number(body.angular_velocity_rad_s);
-        const collider = body.collider && typeof body.collider === 'object' ? { ...body.collider } : undefined;
-        if (collider) {
-            if (typeof collider.width_m === 'number') {
-                collider.width_m = convertLength(collider.width_m, scale) ?? collider.width_m;
+        
+        let collider: any = undefined;
+        if (body.collider && typeof body.collider === 'object') {
+            collider = { type: body.collider.type };
+            if (typeof body.collider.width_m === 'number') {
+                collider.width_m = convertLength(body.collider.width_m, scale) ?? body.collider.width_m;
             }
-            if (typeof collider.height_m === 'number') {
-                collider.height_m = convertLength(collider.height_m, scale) ?? collider.height_m;
+            if (typeof body.collider.height_m === 'number') {
+                collider.height_m = convertLength(body.collider.height_m, scale) ?? body.collider.height_m;
             }
-            if (typeof collider.radius_m === 'number') {
-                collider.radius_m = convertLength(collider.radius_m, scale) ?? collider.radius_m;
+            if (typeof body.collider.radius_m === 'number') {
+                collider.radius_m = convertLength(body.collider.radius_m, scale) ?? body.collider.radius_m;
             }
-            if (Array.isArray(collider.points_m)) {
-                collider.points_m = collider.points_m.map((point: unknown) => projectPoint(point) ?? [0, 0]);
+            if (Array.isArray(body.collider.points_m)) {
+                collider.points_m = body.collider.points_m.map((point: unknown) => projectPoint(point) ?? [0, 0]);
             }
-            if (Array.isArray(collider.polygon_m)) {
-                collider.polygon_m = collider.polygon_m.map((point: unknown) => projectPoint(point) ?? [0, 0]);
+            if (Array.isArray(body.collider.polygon_m)) {
+                collider.polygon_m = body.collider.polygon_m.map((point: unknown) => projectPoint(point) ?? [0, 0]);
             }
-            if (Array.isArray(collider.vertices)) {
-                collider.vertices = collider.vertices.map((point: unknown) => projectPoint(point) ?? [0, 0]);
+            if (Array.isArray(body.collider.vertices)) {
+                collider.vertices = body.collider.vertices.map((point: unknown) => projectPoint(point) ?? [0, 0]);
             }
         }
 
-        const render = body.render && typeof body.render === 'object' ? { ...body.render } : undefined;
+        let render: any = undefined;
+        if (body.render && typeof body.render === 'object') {
+            render = {};
+            if ('fillStyle' in body.render) render.fillStyle = body.render.fillStyle;
+            if ('strokeStyle' in body.render) render.strokeStyle = body.render.strokeStyle;
+            if ('lineWidth' in body.render) render.lineWidth = body.render.lineWidth;
+        }
 
         return {
-            ...body,
+            id: body.id,
+            type: body.type,
+            mass_kg: body.mass_kg,
             position_m: position ?? body.position_m,
             velocity_m_s: velocity ?? body.velocity_m_s,
             angular_velocity_rad_s: Number.isFinite(angularVelocity) ? angularVelocity : body.angular_velocity_rad_s,
             collider,
             render,
+            material: body.material,
             __renderSpace: 'canvas',
         };
     };
@@ -125,11 +136,17 @@ const convertSceneForRender = (scene: any, transform: ReturnType<typeof computeC
         if (!constraint || typeof constraint !== 'object') {
             return constraint;
         }
-        const next: any = { ...constraint };
+        // Create a clean object without spreading (which can cause circular refs)
+        const next: any = {
+            type: constraint.type,
+            body_a: constraint.body_a,
+            body_b: constraint.body_b,
+        };
+        
         const ropeKeys = ['rope_length_m', 'length_m', 'rest_length_m'];
         for (const key of ropeKeys) {
-            if (key in next) {
-                const converted = convertLength(next[key], scale);
+            if (key in constraint) {
+                const converted = convertLength(constraint[key], scale);
                 if (typeof converted === 'number') {
                     next[key] = converted;
                 }
@@ -164,19 +181,32 @@ const convertSceneForRender = (scene: any, transform: ReturnType<typeof computeC
         ];
 
         for (const key of anchorKeys) {
-            if (key in next) {
-                const projected = projectAnchor(next[key]);
+            if (key in constraint) {
+                const projected = projectAnchor(constraint[key]);
                 if (projected) {
                     next[key] = projected;
                 }
             }
         }
 
-        if ('pulley_anchor_m' in next) {
-            const projected = projectPoint(next.pulley_anchor_m);
-            if (projected) {
-                next.pulley_anchor_m = { x: projected[0], y: projected[1], __canvas: true };
-            }
+        // For pulley constraints, store the pulley body ID (not coordinates)
+        if ('pulley_anchor_m' in constraint) {
+            // Keep original anchor for reference, but renderer will use live pulley body position
+            next.pulley_anchor_m = constraint.pulley_anchor_m;
+        }
+        
+        // Copy wheel_radius_m without conversion (it's already in meters)
+        if ('wheel_radius_m' in constraint && typeof constraint.wheel_radius_m === 'number') {
+            next.wheel_radius_m = constraint.wheel_radius_m;
+        }
+        
+        // Store pulley body ID if available
+        if ('pulley_body_id' in constraint) {
+            next.pulley_body_id = constraint.pulley_body_id;
+        }
+        
+        if ('stiffness' in constraint) {
+            next.stiffness = constraint.stiffness;
         }
 
         return next;
@@ -782,18 +812,26 @@ export function SimulationLayer({
             return null;
         }
         if (mappingTransform.hasMapping) {
-            return {
-                scale: mappingTransform.letterboxScale,
-                offsetX: mappingTransform.letterboxOffset.x,
-                offsetY: mappingTransform.letterboxOffset.y,
-            };
+            const offsetX = mappingTransform.letterboxOffset.x;
+            const offsetY = mappingTransform.letterboxOffset.y;
+            const scale = mappingTransform.letterboxScale;
+            return { scale, offsetX, offsetY };
         }
         if (imageSizePx) {
             const fit = computeLetterboxFit(imageSizePx, { width: containerW, height: containerH });
             return fit;
         }
         return null;
-    }, [mappingTransform, imageSizePx, containerW, containerH]);
+    }, [
+        mappingTransform.hasMapping,
+        mappingTransform.letterboxScale,
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        JSON.stringify(mappingTransform.letterboxOffset),
+        imageSizePx?.width,
+        imageSizePx?.height,
+        containerW,
+        containerH
+    ]);
 
     useEffect(() => {
         if (mappingTransform.hasMapping || !fallbackTransform) {
@@ -1102,7 +1140,8 @@ export function SimulationLayer({
                 {/* Matter.js renderer */}
                 <SimulationRenderer
                     engineRef={matterEngineRef}
-                    scene={effectiveScene}
+                    constraints={renderScene?.constraints || []}
+                    scale={activeTransform.metersToPixels}
                     width={containerW}
                     height={containerH}
                     playing={playing}
@@ -1175,15 +1214,6 @@ export function SimulationLayer({
                 {bodyPoints.length === 0 && !playing ? (
                     <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground pointer-events-none">
                         Simulation frames will appear here once available.
-                    </div>
-                ) : null}
-                {normalizationReport && normalizationReport.applied ? (
-                    <div className="absolute top-2 right-2 pointer-events-none text-[11px] font-medium text-muted-foreground">
-                        <span className="rounded bg-muted/70 px-2 py-1 shadow-sm backdrop-blur">
-                            Normalized scene delta=({normalizationReport.translation_m[0].toFixed(2)}m,
-                            {normalizationReport.translation_m[1].toFixed(2)}m)
-                            {normalizationReport.scale ? ` x${normalizationReport.scale.toFixed(2)}` : ''}
-                        </span>
                     </div>
                 ) : null}
                 {bodyPoints.map((body) => {
