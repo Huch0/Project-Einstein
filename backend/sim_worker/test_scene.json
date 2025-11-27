@@ -21,12 +21,23 @@
         "type": "circle",
         "radius_m": 0.05
       }
+    },
+    {
+      "id": "pulley1",
+      "mass_kg": 0.5,
+      "position_m": [1.5, 0.0],
+      "collider": {
+        "type": "circle",
+        "radius_m": 0.1
+      },
+      "is_static": true
     }
   ],
   "constraints": [
     {
       "type": "ideal_fixed_pulley",
-      "anchor_m": [1.5, 0.0],
+      "pulley_anchor_m": [1.5, 0.0],
+      "wheel_radius_m": 0.1,
       "body_a": "m1",
       "body_b": "m2",
       "rope_length_m": 1.5
