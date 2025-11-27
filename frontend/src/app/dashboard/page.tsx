@@ -70,7 +70,6 @@ export default function DashboardPage() {
             (mediaQuery as any).removeListener(legacyListener);
         };
     }, []);
-
     const horizontalResizeHint = 'Drag handle to adjust width';
     const verticalResizeHint = 'Drag handle to adjust height';
 
@@ -133,9 +132,11 @@ export default function DashboardPage() {
                             </PaneShell>
                         </ResizablePanel>
                         <ResizableHandle withHandle aria-label="Resize assistant chat and simulation controls" />
-                        <ResizablePanel ref={controlsPanelRef} defaultSize={25} minSize={0} collapsedSize={0} collapsible onCollapse={() => setControlsCollapsed(true)} onExpand={() => setControlsCollapsed(false)}>
+                        <ResizablePanel ref={controlsPanelRef} defaultSize={25} minSize={8} collapsedSize={8} collapsible onCollapse={() => setControlsCollapsed(true)} onExpand={() => setControlsCollapsed(false)}>
                             {controlsCollapsed ? (
-                                <div className="h-8 bg-background border-t" />
+                                <div className="w-full h-full bg-background border-t flex items-center justify-center">
+                                    <div className="text-xs text-muted-foreground">↑ Drag to show controls</div>
+                                </div>
                             ) : (
                                 <PaneShell
                                     title="Simulation Controls"
@@ -163,9 +164,11 @@ export default function DashboardPage() {
                                     </PaneShell>
                                 </ResizablePanel>
                                 <ResizableHandle withHandle aria-label="Resize simulation canvas and simulation controls" />
-                                <ResizablePanel ref={controlsPanelRef} defaultSize={40} minSize={0} collapsedSize={0} collapsible onCollapse={() => setControlsCollapsed(true)} onExpand={() => setControlsCollapsed(false)}>
+                                <ResizablePanel ref={controlsPanelRef} defaultSize={40} minSize={8} collapsedSize={8} collapsible onCollapse={() => setControlsCollapsed(true)} onExpand={() => setControlsCollapsed(false)}>
                                     {controlsCollapsed ? (
-                                        <div className="h-8 bg-background border-t" />
+                                        <div className="w-full h-full bg-background border-t flex items-center justify-center">
+                                            <div className="text-xs text-muted-foreground">↑ Drag to show controls</div>
+                                        </div>
                                     ) : (
                                         <PaneShell
                                             title="Simulation Controls"
@@ -183,9 +186,11 @@ export default function DashboardPage() {
                             withHandle
                             aria-label="Resize main simulation area and assistant chat"
                         />
-                        <ResizablePanel ref={chatPanelRef} defaultSize={35} minSize={0} collapsedSize={0} collapsible onCollapse={() => setChatCollapsed(true)} onExpand={() => setChatCollapsed(false)}>
+                        <ResizablePanel ref={chatPanelRef} defaultSize={35} minSize={15} collapsedSize={15} collapsible onCollapse={() => setChatCollapsed(true)} onExpand={() => setChatCollapsed(false)}>
                             {chatCollapsed ? (
-                                <div className="w-8 bg-background border-l" />
+                                <div className="w-full h-full bg-background border-l flex items-center justify-center">
+                                    <div className="text-xs text-muted-foreground rotate-90">← Drag to show chat</div>
+                                </div>
                             ) : (
                                 <PaneShell
                                     title="Assistant Chat"
