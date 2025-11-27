@@ -87,7 +87,7 @@ export const SAMPLE_PULLEY_SCENE = {
       velocity_m_s: [0, 0],
       collider: {
         type: "circle" as const,
-        radius_m: 0.4
+        radius_m: 0.15
       },
       material: {
         friction: 0.0,
@@ -97,11 +97,12 @@ export const SAMPLE_PULLEY_SCENE = {
   ],
   constraints: [
     {
-      type: "rope" as const,
+      type: "ideal_fixed_pulley" as const,
       body_a: "mass_a",
       body_b: "mass_b",
-      length_m: 4.0,
-      stiffness: 1.0
+      pulley_anchor_m: [0, -1.5],
+      wheel_radius_m: 0.15,
+      rope_length_m: 4.0
     }
   ]
 };
