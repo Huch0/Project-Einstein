@@ -28,8 +28,9 @@ const GET_PIXEL_RATIO = () => {
 
 interface SimulationRendererProps {
   engineRef: React.MutableRefObject<Matter.Engine | null>;
-  constraints: any[];
-  scale: number;
+  engine: Matter.Engine | null; // [FIX] Direct engine prop to trigger useEffect
+  constraints: ReadonlyArray<any>; // [FIX] ReadonlyArray to prevent mutations
+  scale: number; // [FIX] Primitive number only, no transform object
   width: number;
   height: number;
   playing: boolean;
@@ -38,12 +39,13 @@ interface SimulationRendererProps {
   selectedBodyId: string | null;
   activatedBodyIdRef: React.MutableRefObject<string | null>;
   activationTimestampRef: React.MutableRefObject<number>;
-  pulleyConstraintsRef: React.MutableRefObject<any[]>;
+  pulleyConstraintsRef: React.MutableRefObject<ReadonlyArray<any>>; // [FIX] ReadonlyArray
   onRenderCreated?: (render: Matter.Render) => void;
 }
 
 export default function SimulationRenderer({
   engineRef,
+  engine,
   constraints,
   scale,
   width,
@@ -57,24 +59,53 @@ export default function SimulationRenderer({
   pulleyConstraintsRef,
   onRenderCreated,
 }: SimulationRendererProps) {
+  console.log('[SimulationRenderer] 🚀 Component CALLED with:', { width, height, playing, scale, constraintsCount: constraints?.length, hasEngine: !!engine });
+  
   const hostRef = useRef<HTMLDivElement | null>(null);
   const rafRef = useRef<number | null>(null);
   
-  // [핵심 해결책] 렌더러가 준비되었음을 알리는 State 추가
   const [activeRender, setActiveRender] = useState<Matter.Render | null>(null);
 
-  // Store constraints in ref
-  const constraintsRef = useRef<any[]>(constraints || []);
+  // [FIX] Ref Bridge Pattern: Sync frequently changing props to ref
+  // This prevents canvas recreation when hover/selection changes
+  const propsRef = useRef({
+    hoveredBodyId,
+    selectedBodyId,
+    constraints: constraints || [],
+    scale,
+  });
+
   useEffect(() => {
-    constraintsRef.current = constraints || [];
-  }, [constraints]);
+    propsRef.current = {
+      hoveredBodyId,
+      selectedBodyId,
+      constraints: constraints || [],
+      scale,
+    };
+  }, [hoveredBodyId, selectedBodyId, constraints, scale]);
 
   // 1. Canvas 생성 Effect
   useEffect(() => {
     const host = hostRef.current;
-    const engine = engineRef.current; 
+    
+    console.log('[SimulationRenderer] 🔍 Canvas creation useEffect triggered:', {
+      hasHost: !!host,
+      hasEngine: !!engine,
+      width,
+      height,
+      hasActiveRender: !!activeRender,
+    });
+    
     // 크기가 유효할 때만 생성
-    if (!host || !engine || width <= 0 || height <= 0) return;
+    if (!host || !engine || width <= 0 || height <= 0) {
+      console.log('[SimulationRenderer] ⚠️ Early return from canvas creation:', {
+        host: !!host,
+        engine: !!engine,
+        width,
+        height,
+      });
+      return;
+    }
 
     // 기존 렌더러 정리
     if (activeRender) {
@@ -111,6 +142,13 @@ export default function SimulationRenderer({
     render.options.hasBounds = true;
     render.options.wireframes = false;
 
+    console.log('[SimulationRenderer] 🎨 Canvas created:', {
+      width,
+      height,
+      canvasElement: render.canvas,
+      canvasInDOM: document.contains(render.canvas),
+    });
+
     // [중요] State 업데이트 -> 애니메이션 루프 Effect를 트리거함
     setActiveRender(render);
     
@@ -118,36 +156,44 @@ export default function SimulationRenderer({
 
     // afterRender overlays setup
     const afterRender = () => {
-      if (!engine) return; 
+      if (!engine || !render.context) return; 
       
       const ctx = render.context as CanvasRenderingContext2D;
       const bodies = Matter.Composite.allBodies(engine.world);
-      const currentConstraints = constraintsRef.current;
+      
+      // [DEBUG] Log body count and positions on first render
+      if (!(render as any).__debugLogged) {
+        (render as any).__debugLogged = true;
+        console.log('[SimulationRenderer] 🔍 Bodies in world:', bodies.length);
+        bodies.forEach(b => {
+          console.log(`  - ${(b as any).label || b.id}: pos=(${b.position.x.toFixed(1)}, ${b.position.y.toFixed(1)}), static=${b.isStatic}`);
+        });
+        console.log('[SimulationRenderer] 🖼️ Canvas bounds:', {
+          width: render.options.width,
+          height: render.options.height,
+          bounds: render.bounds,
+        });
+      }
+      
+      // [FIX] Read from propsRef to get latest values without recreation
+      const { hoveredBodyId, selectedBodyId, constraints, scale } = propsRef.current;
 
       // Draw pulley ropes
-      if (currentConstraints && Array.isArray(currentConstraints)) {
+      if (constraints && Array.isArray(constraints)) {
         try {
-          currentConstraints.forEach((constraint: any) => {
+          constraints.forEach((constraint: any) => {
             if (constraint.type !== 'ideal_fixed_pulley') return;
             const bodyA = bodies.find(b => (b as any).label === constraint.body_a);
             const bodyB = bodies.find(b => (b as any).label === constraint.body_b);
-            if (!bodyA || !bodyB) {
-              return;
-            }
+            if (!bodyA || !bodyB) return;
 
-            // Find pulley body by label (should contain 'pulley' in name)
-            const pulleyBody = bodies.find(b => {
-              const label = (b as any).label;
-              return label && (label.toLowerCase().includes('pulley') || label === 'pulley1');
-            });
+            const anchor = constraint.pulley_anchor_m;
+            if (!anchor || !Array.isArray(anchor) || anchor.length < 2) return;
             
-            if (!pulleyBody) {
-              return;
-            }
+            const anchorX = Number(anchor[0]);
+            const anchorY = Number(anchor[1]);
             
-            // Use live pulley body position (always synced with Matter.js)
-            const anchorX = pulleyBody.position.x;
-            const anchorY = pulleyBody.position.y;
+            if (!Number.isFinite(anchorX) || !Number.isFinite(anchorY)) return;
 
             ctx.strokeStyle = THEME.PULLEY.ROPE_COLOR;
             ctx.lineWidth = THEME.PULLEY.ROPE_WIDTH;
@@ -242,8 +288,8 @@ export default function SimulationRenderer({
       } catch {}
       setActiveRender(null);
     };
-    // 의존성 배열에서 pointerEnabled를 제거하여 Edit 토글 시 재생성 방지
-  }, [engineRef, width, height, hoveredBodyId, selectedBodyId, activatedBodyIdRef, activationTimestampRef, onRenderCreated]);
+    // [FIX] engine prop triggers re-execution when engine is created
+  }, [engine, width, height]);
 
   // 2. Pointer Events만 관리하는 Effect
   useEffect(() => {
@@ -266,14 +312,22 @@ export default function SimulationRenderer({
     let lastLogTime = performance.now();
 
     const tick = (now: number) => {
+      // [DEBUG] Log first tick
+      if (frameCount === 0) {
+        console.log('[SimulationRenderer] 🎬 Animation loop started, playing:', playing);
+      }
+      
       const dt = (now - lastTime) / 1000;
       lastTime = now;
       frameCount++;
 
       if (playing) {
         Matter.Engine.update(engine, dt * 1000);
-        const constraints = pulleyConstraintsRef.current;
-        if (constraints && constraints.length > 0) enforcePulleyConstraints(constraints);
+        const pulleyConstraints = pulleyConstraintsRef.current;
+        if (pulleyConstraints && pulleyConstraints.length > 0) {
+          // [FIX] Convert ReadonlyArray to mutable array for enforcePulleyConstraints
+          enforcePulleyConstraints([...pulleyConstraints]);
+        }
         
         if (now - lastLogTime >= 5000) {
           console.log('[SimulationRenderer] 🎬 Physics running (frame', frameCount, ')');
@@ -321,6 +375,8 @@ export default function SimulationRenderer({
     // [핵심] activeRender가 변경되면 루프를 재시작함
   }, [engineRef, playing, pulleyConstraintsRef, activeRender]);
 
+  console.log('[SimulationRenderer] 📦 Returning JSX, hostRef.current:', hostRef.current);
+  
   return (
     <div
       ref={hostRef}
