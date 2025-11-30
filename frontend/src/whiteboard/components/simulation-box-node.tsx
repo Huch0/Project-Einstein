@@ -87,12 +87,18 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
         setFrameIndex,
         setFrames,
         setScene,
+        scene,
+        labels,
+        gravity,
+        dt,
+        friction,
+        duration,
+        restitution,
         editingEnabled,
         setEditingEnabled,
         hasEverPlayed,
         sceneModified,
         setSceneModified,
-        duration,
     } = useSimulation();
 
     // Local state for playback speed (multiplier on playback cadence)
@@ -212,6 +218,43 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
         // Adjust integrator step based on speed multiplier; higher speed = smaller dt
         updateConfig({ dt: 0.02 / speed });
     }, [updateConfig]);
+
+    const handleSave = useCallback(() => {
+        console.log('[SimulationBox] 💾 Saving simulation...');
+        
+        // 시뮬레이션 데이터를 JSON으로 저장
+        const simulationData = {
+            boxName: node.name || 'Simulation',
+            timestamp: new Date().toISOString(),
+            scene: scene,
+            frames: frames,
+            config: {
+                gravity,
+                dt,
+                friction,
+                duration,
+                restitution,
+            },
+            entities: labels?.entities || [],
+            metadata: {
+                totalFrames: frames.length,
+                currentFrame: currentIndex,
+                playbackSpeed: playbackSpeed,
+            }
+        };
+
+        const blob = new Blob([JSON.stringify(simulationData, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `${(node.name || 'simulation').replace(/\s+/g, '_')}_${new Date().toISOString().split('T')[0]}.json`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        
+        console.log('[SimulationBox] ✅ Simulation saved successfully');
+    }, [node.name, scene, frames, gravity, dt, friction, duration, restitution, labels, currentIndex, playbackSpeed]);
 
     const draggable = mode === 'pan';
     const resizable = mode !== 'draw';
@@ -791,6 +834,7 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
                                         onStep={handleStep}
                                         onFrameChange={handleFrameChange}
                                         onSpeedChange={handleSpeedChange}
+                                        onSave={handleSave}
                                         disabled={agentLoading}
                                         editingEnabled={editingEnabled}
                                     />
