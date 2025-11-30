@@ -3,7 +3,7 @@
  * * Playback controls for physics simulation (play/pause/reset/step).
  */
 
-import { Play, Pause, RotateCcw, SkipForward } from 'lucide-react';
+import { Play, Pause, RotateCcw, SkipForward, Save } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
 import { useRef } from 'react';
@@ -18,6 +18,7 @@ export interface SimulationControlsProps {
   onStep: () => void;
   onFrameChange: (frame: number) => void;
   onSpeedChange: (speed: number) => void;
+  onSave?: () => void; // [추가] 시뮬레이션 저장 콜백
   disabled?: boolean;
   editingEnabled?: boolean; // [추가] 편집 모드 상태를 받는 prop
 }
@@ -32,6 +33,7 @@ export function SimulationControls({
   onStep,
   onFrameChange,
   onSpeedChange,
+  onSave,
   disabled = false,
   editingEnabled = false, // [추가] 기본값 false
 }: SimulationControlsProps) {
@@ -107,6 +109,32 @@ export function SimulationControls({
         >
           <SkipForward className="h-4 w-4" />
         </Button>
+        
+        {/* Save Button */}
+        {onSave && (
+          <Button
+            variant="outline"
+            size="icon"
+            className="h-8 w-8"
+            onClick={() => {
+              console.log('[SimulationControls] 💾 Save clicked');
+              onSave();
+            }}
+            disabled={commonDisabled}
+            title="시뮬레이션 저장"
+          >
+            <Save className="h-4 w-4" />
+          </Button>
+        )}
+        
+        {/* Debug: Step button state */}
+        {(commonDisabled || isPlaying) && (
+          <span className="text-[10px] text-red-500 ml-1">
+            {editingEnabled && "편집중"}
+            {isPlaying && "재생중"}
+            {totalFrames === 0 && "프레임없음"}
+          </span>
+        )}
         
         {/* Frame Counter */}
         <div className="ml-auto text-xs text-muted-foreground tabular-nums">
