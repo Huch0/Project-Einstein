@@ -111,36 +111,78 @@ const convertSceneForRender = (scene: any, transform: ReturnType<typeof computeC
             if ('lineWidth' in body.render) render.lineWidth = body.render.lineWidth;
         }
 
-        return {
-            id: body.id,
-            type: body.type,
-            mass_kg: body.mass_kg,
-            position_m: position ?? body.position_m,
-            velocity_m_s: velocity ?? body.velocity_m_s,
-            angular_velocity_rad_s: Number.isFinite(angularVelocity) ? angularVelocity : body.angular_velocity_rad_s,
+        // [FIX] Break material object reference to prevent circular refs
+        let material: any = undefined;
+        if (body.material && typeof body.material === 'object') {
+            // Create plain object with only primitive properties
+            material = {
+                friction: Number(body.material.friction ?? 0),
+                restitution: Number(body.material.restitution ?? 0),
+                density: Number(body.material.density ?? 1),
+            };
+        }
+
+        // [FIX] Ensure all returned values are primitives or plain objects (no circular refs)
+        const result = {
+            id: String(body.id ?? 'body'),
+            type: String(body.type ?? 'dynamic'),
+            mass_kg: Number(body.mass_kg ?? 1),
+            position_m: position ?? [0, 0],
+            velocity_m_s: velocity ?? [0, 0],
+            angular_velocity_rad_s: Number.isFinite(angularVelocity) ? angularVelocity : 0,
             collider,
             render,
-            material: body.material,
+            material,
             __renderSpace: 'canvas',
         };
+        
+        return result;
     };
 
     const projectAnchor = (value: unknown): { x: number; y: number; __canvas: true } | undefined => {
         const tuple = toVec2(value);
         if (!tuple) return undefined;
         const [x, y] = tuple;
-        return { x: x * scale, y: -y * scale, __canvas: true };
+        
+        // [FIX] Validate that coordinates are finite numbers
+        if (!Number.isFinite(x) || !Number.isFinite(y)) {
+            return undefined;
+        }
+        
+        const projectedX = x * scale;
+        const projectedY = -y * scale;
+        
+        // [FIX] Additional validation after transformation
+        if (!Number.isFinite(projectedX) || !Number.isFinite(projectedY)) {
+            return undefined;
+        }
+        
+        return { x: projectedX, y: projectedY, __canvas: true };
     };
 
     const cloneConstraint = (constraint: any) => {
         if (!constraint || typeof constraint !== 'object') {
             return constraint;
         }
+        
+        // [FIX] Extract ID from Matter.js Body objects to prevent circular references
+        const resolveBodyId = (body: any): string | null | undefined => {
+            if (!body) return body;
+            if (typeof body === 'object') {
+                // Matter.js Body object → extract ID/label
+                return body.id ?? body.label ?? null;
+            }
+            // Already a primitive (string/number) → return as-is
+            return body;
+        };
+        
         // Create a clean object without spreading (which can cause circular refs)
+        // [FIX] Handle both snake_case (JSON) and camelCase (Matter.js objects)
         const next: any = {
             type: constraint.type,
-            body_a: constraint.body_a,
-            body_b: constraint.body_b,
+            body_a: resolveBodyId(constraint.body_a || constraint.bodyA),
+            body_b: resolveBodyId(constraint.body_b || constraint.bodyB),
+            __isValid: true, // Track validity during construction
         };
         
         const ropeKeys = ['rope_length_m', 'length_m', 'rest_length_m'];
@@ -185,14 +227,24 @@ const convertSceneForRender = (scene: any, transform: ReturnType<typeof computeC
                 const projected = projectAnchor(constraint[key]);
                 if (projected) {
                     next[key] = projected;
+                } else if (constraint[key] !== undefined && constraint[key] !== null) {
+                    // [FIX] Anchor exists but projection failed - mark invalid
+                    console.warn(`[SimulationLayer] Invalid anchor ${key} in constraint ${constraint.type}:`, constraint[key]);
+                    next.__isValid = false;
                 }
             }
         }
 
-        // For pulley constraints, store the pulley body ID (not coordinates)
+        // For pulley constraints, convert anchor coordinates from scene meters to canvas pixels
         if ('pulley_anchor_m' in constraint) {
-            // Keep original anchor for reference, but renderer will use live pulley body position
-            next.pulley_anchor_m = constraint.pulley_anchor_m;
+            // [FIX] Use projectPoint (not projectAnchor) to convert scene coords to canvas
+            const anchorProjected = projectPoint(constraint.pulley_anchor_m);
+            if (anchorProjected) {
+                next.pulley_anchor_m = anchorProjected;
+            } else {
+                console.warn(`[SimulationLayer] Failed to project pulley_anchor_m:`, constraint.pulley_anchor_m);
+                next.__isValid = false;
+            }
         }
         
         // Copy wheel_radius_m without conversion (it's already in meters)
@@ -212,10 +264,47 @@ const convertSceneForRender = (scene: any, transform: ReturnType<typeof computeC
         return next;
     };
 
+    // [FIX] DO NOT use ...scene spread! It imports circular references from Matter.js World/Engine
+    // Only copy safe, needed properties explicitly
+    const clonedBodies = Array.isArray(scene.bodies) ? scene.bodies.map(cloneBody) : [];
+    const clonedConstraints = Array.isArray(scene.constraints) 
+        ? scene.constraints
+            .map(cloneConstraint)
+            // [FIX] Filter out invalid constraints (failed anchor projections)
+            .filter((c: any) => {
+                if (!c || typeof c !== 'object') return true;
+                if (c.__isValid === false) {
+                    console.warn(`[SimulationLayer] Filtering out invalid constraint:`, c.type, c.body_a, c.body_b);
+                    return false;
+                }
+                return true;
+            })
+            // Clean up internal validation flag
+            .map((c: any) => {
+                if (c && typeof c === 'object' && '__isValid' in c) {
+                    const { __isValid, ...rest } = c;
+                    return rest;
+                }
+                return c;
+            })
+        : [];
+    
     return {
-        ...scene,
-        bodies: Array.isArray(scene.bodies) ? scene.bodies.map(cloneBody) : scene.bodies,
-        constraints: Array.isArray(scene.constraints) ? scene.constraints.map(cloneConstraint) : scene.constraints,
+        // Safe metadata (no circular refs)
+        version: scene.version,
+        world: scene.world ? {
+            gravity_m_s2: scene.world.gravity_m_s2,
+            time_step_s: scene.world.time_step_s,
+        } : undefined,
+        // [FIX] Sanitize mapping object - extract only primitive values
+        mapping: scene.mapping ? {
+            origin_px: scene.mapping.origin_px,
+            scale_m_per_px: scene.mapping.scale_m_per_px,
+        } : undefined,
+        
+        // Cleaned data structures (circular refs removed by clone functions)
+        bodies: clonedBodies,
+        constraints: clonedConstraints,
     };
 };
 
@@ -225,6 +314,29 @@ export function SimulationLayer({
     enabled,
     dimensions,
 }: SimulationLayerProps) {
+    // [EMERGENCY] Detect infinite render loop
+    const renderCountRef = useRef(0);
+    const lastRenderTimeRef = useRef(Date.now());
+    
+    useEffect(() => {
+        renderCountRef.current++;
+        const now = Date.now();
+        const elapsed = now - lastRenderTimeRef.current;
+        
+        if (renderCountRef.current > 100 && elapsed < 1000) {
+            console.error('🚨 [SimulationLayer] INFINITE RENDER LOOP DETECTED!', {
+                renders: renderCountRef.current,
+                timeMs: elapsed,
+            });
+            throw new Error('Infinite render loop detected in SimulationLayer');
+        }
+        
+        if (elapsed > 1000) {
+            renderCountRef.current = 0;
+            lastRenderTimeRef.current = now;
+        }
+    });
+    
     // Shared transform store to unify with whiteboard/canvas
     const transformStoreRef = useRef<ReturnType<typeof createTransformStore> | null>(null);
     if (!transformStoreRef.current) {
@@ -520,12 +632,20 @@ export function SimulationLayer({
         const bounds = computeClampRect(rect.width, rect.height);
         const clampedX = clamp(objectPosition.x, bounds.minX, bounds.maxX);
         const clampedY = clamp(objectPosition.y, bounds.minY, bounds.maxY);
-        if (clampedX !== objectPosition.x || clampedY !== objectPosition.y) {
+        
+        // [FIX] Epsilon check to prevent infinite re-render from floating-point precision
+        const EPSILON = 0.01;
+        const deltaX = Math.abs(clampedX - objectPosition.x);
+        const deltaY = Math.abs(clampedY - objectPosition.y);
+        if (deltaX > EPSILON || deltaY > EPSILON) {
             onObjectPositionChange({ x: clampedX, y: clampedY });
         }
     }, [objectPosition, onObjectPositionChange, dimensions.width, dimensions.height, computeClampRect]);
 
     const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+        // [FIX] Stop propagation to prevent background/whiteboard from panning
+        event.stopPropagation();
+        
         if (!enabled) return;
         isDragging.current = true;
         event.currentTarget.setPointerCapture(event.pointerId);
@@ -649,8 +769,13 @@ export function SimulationLayer({
         });
     }, [mappingTransform.hasMapping, fallbackBounds, containerW, containerH]);
 
-    const activeTransform = fallbackTransform ?? mappingTransform;
+    const activeTransform = useMemo(() => {
+        return fallbackTransform ?? mappingTransform;
+    }, [fallbackTransform, mappingTransform]);
     const metersToPx = activeTransform.metersToPixels;
+    
+    // [FIX] Stable scale value to prevent infinite re-renders
+    const stableScale = useMemo(() => metersToPx, [metersToPx]);
 
     // Build a fallback pseudo-scene from first frame bodies if real scene is absent (enables editing after simulation-only loads)
     const effectiveScene = useMemo(() => {
@@ -674,26 +799,59 @@ export function SimulationLayer({
             renderSceneRef.current = null;
             return null;
         }
-        // EDIT MODE CACHING STRATEGY (UPDATED):
-        // When user drags an object, sceneModifiedRef is set to true.
-        // We DON'T want to regenerate Matter scene in this case because:
-        // 1. Matter body is already at the correct position (from drag)
-        // 2. Regenerating would cause canvas recreation and position reset
-        // So: Keep using cached renderScene when sceneModified is true!
-        // Only regenerate when scene actually needs rebuilding (not just position updates).
+        // EDIT MODE CACHING STRATEGY
         const shouldCache = editingEnabled && !playing && matterEngineRef.current;
         if (shouldCache && renderSceneRef.current) {
-            // IMPORTANT: Even if sceneModifiedRef is true, use cache!
-            // The scene state update is just persisting the drag position,
-            // but Matter body is already positioned correctly.
-            console.log('[SimulationLayer] 📦 Using cached renderScene (edit mode)');
-            return renderSceneRef.current; // stable reference prevents unnecessary re-init
+            return renderSceneRef.current;
         }
         const newRenderScene = convertSceneForRender(effectiveScene, activeTransform);
+        
+        // [FIX] Validate that renderScene is serializable (no circular refs)
+        try {
+            JSON.stringify(newRenderScene);
+        } catch (e) {
+            console.error('[SimulationLayer] ❌ renderScene contains circular references!', e);
+            // Return a safe fallback
+            return {
+                version: effectiveScene.version,
+                world: effectiveScene.world,
+                mapping: null,
+                bodies: [],
+                constraints: [],
+            };
+        }
+        
         renderSceneRef.current = newRenderScene;
-        console.log('[SimulationLayer] 🆕 Created new renderScene');
         return newRenderScene;
-    }, [effectiveScene, activeTransform, editingEnabled, playing]);
+    }, [effectiveScene, stableScale, editingEnabled, playing]); // [FIX] Use stableScale instead of activeTransform
+
+    // [FIX] Memoize constraints to prevent re-render loops
+    const safeConstraints = useMemo(() => {
+        if (!renderScene?.constraints) return [];
+        
+        // [FIX] Deep clone constraints to remove ALL circular references
+        try {
+            // JSON parse/stringify removes circular refs (will throw if any exist)
+            const serialized = JSON.stringify(renderScene.constraints);
+            return JSON.parse(serialized);
+        } catch (e) {
+            console.error('[SimulationLayer] ❌ Constraints contain circular references, using safe fallback:', e);
+            // Fallback: manual shallow copy with only safe properties
+            return renderScene.constraints.map((c: any) => ({
+                type: c.type,
+                body_a: c.body_a,
+                body_b: c.body_b,
+                pulley_anchor_m: c.pulley_anchor_m,
+                wheel_radius_m: c.wheel_radius_m,
+                rope_length_m: c.rope_length_m,
+            }));
+        }
+    }, [renderScene]); // [FIX] Use renderScene instead of renderScene?.constraints
+    
+    // [FIX] Extract scale as primitive to prevent circular reference
+    const safeScale = useMemo(() => {
+        return Number(activeTransform.metersToPixels ?? 1);
+    }, [activeTransform.metersToPixels]);
 
     const applyFrameToMatter = useCallback((frame: any) => {
         if (!frame) return;
@@ -860,6 +1018,7 @@ export function SimulationLayer({
 
     useEffect(() => {
         if (!renderScene) {
+            console.log('[SimulationLayer] ⚠️ renderScene is null/undefined, skipping Matter initialization');
             return;
         }
 
@@ -867,32 +1026,23 @@ export function SimulationLayer({
         const height = containerH;
 
         if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 2 || height <= 2) {
+            console.log('[SimulationLayer] ⚠️ Invalid container size:', { width, height });
             return;
         }
 
         if (!Number.isFinite(metersToPx) || metersToPx <= 0) {
+            console.log('[SimulationLayer] ⚠️ Invalid metersToPx:', metersToPx);
             return;
         }
 
         // OPTIMIZATION: Skip scene regeneration if editing and scene was modified locally
         // This prevents drag-induced scene changes from causing full Matter re-initialization
-        // Use ref for immediate check (state update may be delayed)
-        console.log('[SimulationLayer] 🔍 Skip check:', {
-            editingEnabled,
-            sceneModified: sceneModifiedRef.current,
-            hasEngine: !!matterEngineRef.current,
-            willSkip: editingEnabled && sceneModifiedRef.current && matterEngineRef.current
-        });
-        
         if (editingEnabled && sceneModifiedRef.current && matterEngineRef.current) {
-            console.log('[SimulationLayer] ⏭️ Skipping scene regeneration (edit mode + modified scene)');
+            console.log('[SimulationLayer] ℹ️ Skipping scene regeneration (edit mode + scene modified)');
             return;
         }
-        
-    console.log('[SimulationLayer] ⚠️ NOT skipping - proceeding with Matter.js re-initialization');
 
         // PRESERVE POSITIONS: Save current body positions before destroying Matter scene
-        // This ensures dragged positions survive re-initialization
         const savedPositions = new Map<string, { x: number; y: number }>();
         if (editingEnabled && matterEngineRef.current) {
             const currentBodies = Matter.Composite.allBodies(matterEngineRef.current.world);
@@ -902,12 +1052,15 @@ export function SimulationLayer({
                     savedPositions.set(label, { x: body.position.x, y: body.position.y });
                 }
             });
-            if (savedPositions.size > 0) {
-                console.log('[SimulationLayer] 💾 Saved positions for', savedPositions.size, 'bodies before re-init');
-            }
         }
 
         destroyMatterScene();
+
+        console.log('[SimulationLayer] 🏗️ Creating Matter.js engine with renderScene:', {
+            bodies: renderScene?.bodies?.length,
+            constraints: renderScene?.constraints?.length,
+            mapping: !!renderScene?.mapping,
+        });
 
         try {
             const built = initializeMatterScene(renderScene);
@@ -915,12 +1068,18 @@ export function SimulationLayer({
             matterBodyMapRef.current = built.bodyMap;
             pulleyConstraintsRef.current = built.pulleyConstraints;
             
+            console.log('[SimulationLayer] ✅ Matter.js engine created:', {
+                engine: !!built.engine,
+                bodies: Matter.Composite.allBodies(built.engine.world).length,
+                bodyMap: built.bodyMap.size,
+                pulleyConstraints: built.pulleyConstraints.length,
+            });
+            
             // Store original static state for all bodies
             const allBodies = Matter.Composite.allBodies(built.engine.world);
             allBodies.forEach(body => {
                 (body as any).__originallyStatic = body.isStatic;
             });
-            console.log('[SimulationLayer] 📝 Stored original static state for', allBodies.length, 'bodies');
 
             // RESTORE POSITIONS: Apply saved positions after re-initialization
             if (savedPositions.size > 0) {
@@ -931,7 +1090,6 @@ export function SimulationLayer({
                         Matter.Body.setPosition(body, { x: saved.x, y: saved.y });
                     }
                 });
-                console.log('[SimulationLayer] 🔄 Restored positions for', savedPositions.size, 'bodies after re-init');
             }
 
             // Renderer is now handled by SimulationRenderer component
@@ -943,9 +1101,7 @@ export function SimulationLayer({
 
         return () => {
             // OPTIMIZATION: Skip cleanup if scene was modified in edit mode
-            // This preserves the Matter.js world for the next useEffect cycle
             if (sceneModifiedRef.current && editingEnabled) {
-                console.log('[SimulationLayer] ⏭️ Skipping cleanup (preserving Matter world)');
                 return;
             }
             destroyMatterScene();
@@ -962,18 +1118,16 @@ export function SimulationLayer({
 
         // IMPORTANT: If editing is enabled, force pause mode regardless of playing state
         if (editingEnabled) {
-            console.log('[SimulationLayer] ✏️ Edit mode ACTIVE: forcing pause behavior');
             engine.gravity.x = 0;
             engine.gravity.y = 0;
             bodies.forEach(body => {
                 Matter.Body.setVelocity(body, { x: 0, y: 0 });
                 Matter.Body.setAngularVelocity(body, 0);
             });
-            return; // Don't process play mode logic
+            return;
         }
 
         if (playing) {
-            console.log('[SimulationLayer] ▶️ Play mode: restoring gravity & original static flags');
             // Restore gravity (if previously zeroed)
             const g = effectiveScene?.world?.gravity_m_s2 ?? 9.81;
             engine.gravity.y = g;
@@ -1115,9 +1269,13 @@ export function SimulationLayer({
             <div
                 ref={containerRef}
                 className="absolute inset-4 rounded-md bg-primary/5 overflow-hidden shadow-sm"
+                onPointerDown={handlePointerDown}
+                onPointerMove={handlePointerMove}
+                onPointerUp={handlePointerUp}
                 style={{ 
                     pointerEvents: enabled ? 'auto' : 'none',
-                    cursor: (editingEnabled && !playing && (scene || effectiveScene)) ? cursor : 'default'
+                    cursor: (editingEnabled && !playing && (scene || effectiveScene)) ? cursor : 'default',
+                    touchAction: 'none', // Prevent browser touch gestures
                 }}
             >
                 {renderImageDataUrl && detectionFit && (
@@ -1140,8 +1298,9 @@ export function SimulationLayer({
                 {/* Matter.js renderer */}
                 <SimulationRenderer
                     engineRef={matterEngineRef}
-                    constraints={renderScene?.constraints || []}
-                    scale={activeTransform.metersToPixels}
+                    engine={matterEngineRef.current}
+                    constraints={safeConstraints}
+                    scale={safeScale}
                     width={containerW}
                     height={containerH}
                     playing={playing}
@@ -1178,7 +1337,7 @@ export function SimulationLayer({
                 <SimulationInteraction
                     engine={matterEngineRef.current}
                     render={matterRenderRef.current}
-                    scene={effectiveScene}
+                    scene={renderScene || effectiveScene}
                     editingEnabled={editingEnabled}
                     playing={playing}
                     hoveredBodyId={hoveredBodyId}
