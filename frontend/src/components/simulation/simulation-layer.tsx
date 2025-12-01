@@ -1281,7 +1281,7 @@ export function SimulationLayer({
     useEffect(() => () => destroyMatterScene(), [destroyMatterScene]);
 
     return (
-        <div className="relative h-full w-full">
+        <div className="relative h-full w-full" style={{ minHeight: 200, minWidth: 240 }}>
             <div
                 ref={containerRef}
                 className="absolute inset-4 rounded-md bg-primary/5 overflow-hidden shadow-sm"
@@ -1292,6 +1292,9 @@ export function SimulationLayer({
                     pointerEvents: enabled ? 'auto' : 'none',
                     cursor: (editingEnabled && !playing && (scene || effectiveScene)) ? cursor : 'default',
                     touchAction: 'none', // Prevent browser touch gestures
+                    opacity: 1,
+                    visibility: 'visible',
+                    zIndex: 1,
                 }}
             >
                 {renderImageDataUrl && detectionFit && (
