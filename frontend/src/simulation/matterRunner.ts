@@ -73,7 +73,24 @@ function createBody(bodyDef: any, timeStep_s: number, overrides?: { restitution?
     const matterY = usesCanvasSpace ? scenePosition[1] : -scenePosition[1];
     const collider = bodyDef?.collider ?? null;
     const isStatic = bodyDef?.type === 'static';
-    const isEnvironment = isStatic || ['surface', 'ground', 'ramp', 'rope', 'anchor'].includes(bodyDef?.id?.split('_')[0] ?? '');
+    
+    // [FIX] Force dynamic bodies for common movable objects (override backend static flag)
+    const bodyId = bodyDef?.id?.toLowerCase() ?? '';
+    const shouldBeDynamic = 
+        bodyId.includes('mass') || 
+        bodyId.includes('ball') || 
+        bodyId.includes('block') ||
+        bodyId.includes('box') ||
+        bodyId.includes('weight') ||
+        (collider?.type === 'circle' && !bodyId.includes('pulley') && !bodyId.includes('wheel'));
+    
+    const finalIsStatic = shouldBeDynamic ? false : isStatic;
+    
+    if (shouldBeDynamic && isStatic) {
+        console.log(`🔧 [matterRunner] Forcing body "${bodyDef?.id}" to dynamic (was static)`);
+    }
+    
+    const isEnvironment = finalIsStatic || ['surface', 'ground', 'ramp', 'rope', 'anchor'].includes(bodyDef?.id?.split('_')[0] ?? '');
     const effectiveDt = Number.isFinite(timeStep_s) && timeStep_s > 0 ? timeStep_s : 0.016;
 
     const renderConfig = bodyDef?.render && typeof bodyDef.render === 'object' ? bodyDef.render : undefined;
@@ -123,7 +140,7 @@ function createBody(bodyDef: any, timeStep_s: number, overrides?: { restitution?
     }
 
     const commonOpts: Matter.IBodyDefinition = {
-        isStatic,
+        isStatic: finalIsStatic,
         friction: surfaceFriction,
         frictionStatic: surfaceFriction,
         frictionAir: 0.0,
@@ -173,7 +190,7 @@ function createBody(bodyDef: any, timeStep_s: number, overrides?: { restitution?
         Body.setAngle(singleBody, initialAngle);
     }
 
-    if (!isStatic) {
+    if (!finalIsStatic) {
         const targetMass = Number(bodyDef?.mass_kg);
         if (Number.isFinite(targetMass) && targetMass > 0) {
             Body.setMass(singleBody, targetMass);
