@@ -510,8 +510,11 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
             width: node.bounds.width,
             height: node.bounds.height,
             transform: `translate(${node.transform.x}px, ${node.transform.y}px)`,
+            zIndex: isSelected ? 100 : 10,
+            opacity: 1,
+            visibility: 'visible' as const,
         }),
-        [node.bounds.height, node.bounds.width, node.transform.x, node.transform.y]
+        [node.bounds.height, node.bounds.width, node.transform.x, node.transform.y, isSelected]
     );
 
     const containerClassName = cn(
