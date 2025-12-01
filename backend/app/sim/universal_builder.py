@@ -329,6 +329,41 @@ def build_scene_universal(request: Dict[str, Any]) -> Dict[str, Any]:
     # - Contact surfaces
     # - Hinges
     
+    # [FIX] Add ground if no static support exists
+    has_ground = any(
+        b.get("type") == "static" and 
+        b.get("id", "").startswith(("ground", "surface", "support", "plank", "base"))
+        for b in bodies
+    )
+    
+    if not has_ground and bodies:
+        # Find lowest body to position ground below it
+        lowest_y = max((b.get("position_m", [0, 0])[1] for b in bodies), default=0)
+        ground_y = lowest_y + 2.0  # 2 meters below lowest object
+        
+        ground_body = {
+            "id": "auto_ground",
+            "type": "static",
+            "position_m": [0, ground_y],
+            "angle_rad": 0,
+            "collider": {
+                "type": "rectangle",
+                "width_m": 20.0,  # 20 meters wide
+                "height_m": 0.5,  # 0.5 meter thick
+            },
+            "material": {
+                "restitution": 0.3,
+                "friction": 0.8,
+            },
+            "mass_kg": 1000.0,
+            "render_config": {
+                "fillStyle": "#374151",
+                "strokeStyle": "#4b5563",
+            }
+        }
+        bodies.append(ground_body)
+        warnings.append("Added automatic ground plane (no static support detected)")
+    
     # Build Scene JSON
     scene_dict = {
         "version": "0.4.0",
