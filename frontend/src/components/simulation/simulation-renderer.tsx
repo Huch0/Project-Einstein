@@ -59,7 +59,10 @@ export default function SimulationRenderer({
   pulleyConstraintsRef,
   onRenderCreated,
 }: SimulationRendererProps) {
-  console.log('[SimulationRenderer] 🚀 Component CALLED with:', { width, height, playing, scale, constraintsCount: constraints?.length, hasEngine: !!engine });
+  // Reduced logging for production
+  if (process.env.NODE_ENV === 'development') {
+    console.log('[SimulationRenderer] Render:', { width, height, hasEngine: !!engine });
+  }
   
   const hostRef = useRef<HTMLDivElement | null>(null);
   const rafRef = useRef<number | null>(null);
@@ -88,22 +91,13 @@ export default function SimulationRenderer({
   useEffect(() => {
     const host = hostRef.current;
     
-    console.log('[SimulationRenderer] 🔍 Canvas creation useEffect triggered:', {
-      hasHost: !!host,
-      hasEngine: !!engine,
-      width,
-      height,
-      hasActiveRender: !!activeRender,
-    });
+    // Reduce logging - only log critical issues
+    if (process.env.NODE_ENV === 'development') {
+      console.log('[SimulationRenderer] Canvas creation:', { hasHost: !!host, hasEngine: !!engine, width, height });
+    }
     
     // 크기가 유효할 때만 생성
     if (!host || !engine || width <= 0 || height <= 0) {
-      console.log('[SimulationRenderer] ⚠️ Early return from canvas creation:', {
-        host: !!host,
-        engine: !!engine,
-        width,
-        height,
-      });
       return;
     }
 
