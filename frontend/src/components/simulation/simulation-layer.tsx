@@ -1172,11 +1172,27 @@ export function SimulationLayer({
             setSceneModified(false);
             if (wasModified) {
                 console.log('[SimulationLayer] 🔄 Resimulating with updated positions');
-                // IMPORTANT: Pass the modified effectiveScene, not (prev) => prev
-                // [수정 후] 2번째 인자로 true(autoPlay)를 전달해야 합니다!
-                updateSceneAndResimulate(effectiveScene, true).catch((error: any) => {
-                    console.error('[SimulationLayer] Resimulation failed:', error);
-                });
+                // [FIX] Create a clean scene copy without circular references
+                try {
+                    const cleanScene = {
+                        version: effectiveScene?.version,
+                        world: effectiveScene?.world ? {
+                            gravity_m_s2: effectiveScene.world.gravity_m_s2,
+                            time_step_s: effectiveScene.world.time_step_s,
+                        } : undefined,
+                        mapping: effectiveScene?.mapping ? {
+                            origin_px: effectiveScene.mapping.origin_px,
+                            scale_m_per_px: effectiveScene.mapping.scale_m_per_px,
+                        } : undefined,
+                        bodies: effectiveScene?.bodies || [],
+                        constraints: effectiveScene?.constraints || [],
+                    };
+                    updateSceneAndResimulate(cleanScene, true).catch((error: any) => {
+                        console.error('[SimulationLayer] Resimulation failed:', error);
+                    });
+                } catch (err) {
+                    console.error('[SimulationLayer] Failed to create clean scene copy:', err);
+                }
             }
             bodies.forEach(body => {
                 const originallyStatic = (body as any).__originallyStatic;
