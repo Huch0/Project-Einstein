@@ -4,7 +4,6 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import { Slider } from '@/components/ui/slider';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { Play, Pause, StepForward, RotateCcw } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSimulation } from '@/simulation/SimulationContext';
@@ -47,6 +46,26 @@ type PositionState = {
   xText: string;
   yText: string;
 };
+
+type BodyType = 'dynamic' | 'static' | 'kinematic';
+
+const BODY_TYPE_OPTIONS: { value: BodyType; label: string; hint: string }[] = [
+  {
+    value: 'dynamic',
+    label: 'Dynamic',
+    hint: 'Moves freely and reacts to forces/torque.',
+  },
+  {
+    value: 'static',
+    label: 'Static',
+    hint: 'Fixed in place (infinite mass, no motion).',
+  },
+  {
+    value: 'kinematic',
+    label: 'Kinematic',
+    hint: 'User-scripted motion; unaffected by forces.',
+  },
+];
 
 const DEFAULT_VELOCITY_STATE: VelocityState = {
   magnitude: 0,
@@ -287,6 +306,29 @@ export default function ParametersPanel() {
     [updateSceneAndResimulate],
   );
 
+  const handleBodyTypeChange = useCallback(
+    (entityId: string, nextType: BodyType) => {
+      updateSceneAndResimulate((prev: any | null) => {
+        if (!prev?.bodies) {
+          return prev;
+        }
+        let changed = false;
+        const updatedBodies = prev.bodies.map((b: any) => {
+          if (b.id !== entityId) {
+            return b;
+          }
+          if (b.type === nextType) {
+            return b;
+          }
+          changed = true;
+          return { ...b, type: nextType };
+        });
+        return changed ? { ...prev, bodies: updatedBodies } : prev;
+      });
+    },
+    [updateSceneAndResimulate],
+  );
+
   return (
     <Card className="h-full flex flex-col min-h-0">
       <CardHeader className="space-y-4">
@@ -324,8 +366,8 @@ export default function ParametersPanel() {
           ) : null}
         </div>
       </CardHeader>
-      <CardContent className="flex-1 overflow-hidden p-0 min-h-0">
-        <ScrollArea type="auto" className="h-full px-6 py-4">
+      <CardContent className="flex-1 p-0">
+        <div className="h-full px-6 py-4">
           {!scene ? (
             <div className="flex items-center justify-center text-sm text-muted-foreground py-8">
               Upload an image to enable Controls & Parameters.
@@ -488,9 +530,37 @@ export default function ParametersPanel() {
                 // Get mass from scene.bodies (pure universal approach)
                 const sceneBody = scene?.bodies?.find((b: any) => b.id === entity.segment_id);
                 const currentMass = sceneBody?.mass_kg ?? 3.0; // Default 3kg if not found
+                const currentBodyType: BodyType = (sceneBody?.type as BodyType) ?? 'dynamic';
+                const currentBodyHint = BODY_TYPE_OPTIONS.find((option) => option.value === currentBodyType)?.hint;
 
                 return (
                   <div className="space-y-4">
+                    {/* Body Type Selector */}
+                    <div className="grid gap-2">
+                      <div className="flex justify-between items-center">
+                        <Label htmlFor={`body-type-${entity.segment_id}`}>Body Type</Label>
+                        <span className="text-sm text-muted-foreground capitalize">{currentBodyType}</span>
+                      </div>
+                      <Select
+                        value={currentBodyType}
+                        onValueChange={(value) => handleBodyTypeChange(entity.segment_id, value as BodyType)}
+                      >
+                        <SelectTrigger id={`body-type-${entity.segment_id}`} className="w-full">
+                          <SelectValue placeholder="Choose body type" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {BODY_TYPE_OPTIONS.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>
+                              {option.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      {currentBodyHint ? (
+                        <p className="text-xs text-muted-foreground">{currentBodyHint}</p>
+                      ) : null}
+                    </div>
+
                     {/* Position Controls */}
                     <div className="grid gap-3">
                       <div className="flex justify-between items-center">
@@ -757,7 +827,7 @@ export default function ParametersPanel() {
               </div>
             </div>
           )}
-        </ScrollArea>
+        </div>
       </CardContent>
     </Card>
   );

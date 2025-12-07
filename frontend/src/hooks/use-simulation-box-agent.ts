@@ -227,13 +227,16 @@ export function useSimulationBoxAgent({
       // Update simulation data if available
       const stateAny = response.state as any;
       if (stateAny?.frames && stateAny?.scene) {
-        globalChat.setSimulationData({
+        const snapshotPayload = {
           scene: stateAny.scene,
           frames: stateAny.frames,
           imageWidth: stateAny.image?.width_px || 800,
           imageHeight: stateAny.image?.height_px || 600,
           boxId,
-        });
+          conversationId: response.conversation_id,
+        };
+        globalChat.setSimulationSnapshot(response.conversation_id, snapshotPayload);
+        globalChat.setSimulationData(snapshotPayload);
       }
       
       onConversationUpdate?.(response.conversation_id, response.state);
@@ -307,13 +310,18 @@ export function useSimulationBoxAgent({
       
       if (simResponse.status === 'simulated') {
         // Update simulation data in GlobalChat
-        globalChat.setSimulationData({
+        const snapshotPayload = {
           scene: initResult?.initialization.scene || {},
           frames: simResponse.simulation.frames,
           imageWidth: 800,  // TODO: Get from init result
           imageHeight: 600,
           boxId,
-        });
+          conversationId,
+        };
+        if (conversationId) {
+          globalChat.setSimulationSnapshot(conversationId, snapshotPayload);
+        }
+        globalChat.setSimulationData(snapshotPayload);
         
         // Add success message
         globalChat.addMessage({

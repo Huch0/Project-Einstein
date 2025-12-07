@@ -137,6 +137,73 @@ def _clamp_block_to_image_bounds(
     return adjusted_position, (width_m, height_m), adjustments
 
 
+def _clamp_circle_to_image_bounds(
+    context: "ConversationContext",
+    position_m: tuple[float, float],
+    radius_m: float,
+) -> tuple[list[float], float, list[str]]:
+    """Ensure circular bodies stay inside uploaded image bounds."""
+
+    mapping = (context.scene_state or {}).get("mapping") or context.mapping or {}
+    image_meta = context.image_metadata or {}
+
+    origin = mapping.get("origin_px")
+    scale = float(mapping.get("scale_m_per_px") or 0.0)
+    width_px = float(image_meta.get("width_px") or 0.0)
+    height_px = float(image_meta.get("height_px") or 0.0)
+
+    if not origin or scale <= 0.0 or width_px <= 0.0 or height_px <= 0.0:
+        return [float(position_m[0]), float(position_m[1])], float(radius_m), []
+
+    origin_x = float(origin[0])
+    origin_y = float(origin[1])
+    margin_px = 2.0
+
+    radius_px = max(float(radius_m) / scale, 1e-6)
+    adjustments: list[str] = []
+
+    max_radius_px = min(
+        max((width_px - margin_px * 2.0) / 2.0, 1.0),
+        max((height_px - margin_px * 2.0) / 2.0, 1.0),
+    )
+
+    if radius_px > max_radius_px:
+        radius_px = max_radius_px
+        radius_m = radius_px * scale
+        adjustments.append("radius_clamped")
+
+    center_x_px = origin_x + float(position_m[0]) / scale
+    center_y_px = origin_y - float(position_m[1]) / scale
+
+    min_center_x = margin_px + radius_px
+    max_center_x = width_px - margin_px - radius_px
+    min_center_y = margin_px + radius_px
+    max_center_y = height_px - margin_px - radius_px
+
+    if min_center_x > max_center_x:
+        center_x_px = width_px / 2.0
+    else:
+        clamped_x = min(max(center_x_px, min_center_x), max_center_x)
+        if abs(clamped_x - center_x_px) > 1e-6:
+            adjustments.append("position_x_clamped")
+        center_x_px = clamped_x
+
+    if min_center_y > max_center_y:
+        center_y_px = height_px / 2.0
+    else:
+        clamped_y = min(max(center_y_px, min_center_y), max_center_y)
+        if abs(clamped_y - center_y_px) > 1e-6:
+            adjustments.append("position_y_clamped")
+        center_y_px = clamped_y
+
+    adjusted_position = [
+        (center_x_px - origin_x) * scale,
+        (origin_y - center_y_px) * scale,
+    ]
+
+    return adjusted_position, float(radius_m), adjustments
+
+
 # ---------------------------------------------------------------------------
 # Pydantic models shared by tools
 # ---------------------------------------------------------------------------
@@ -171,11 +238,41 @@ class CreateBlockInput(BaseModel):
         return self
 
 
+class CreateCircleInput(BaseModel):
+    conversation_id: str
+    body_id: str | None = Field(default=None, description="Optional explicit id")
+    position_m: tuple[float, float]
+    radius_m: float = Field(gt=0.0)
+    body_type: Literal["dynamic", "static", "kinematic"] = "dynamic"
+    angle_rad: float | None = Field(default=None, description="Rotation angle in radians")
+    velocity_m_s: tuple[float, float] | None = None
+    mass_kg: float | None = None
+    friction: float | None = None
+    restitution: float | None = None
+    density_kg_m3: float | None = None
+    notes: str | None = None
+
+
 class ModifyBlockInput(BaseModel):
     conversation_id: str
     body_id: str
     position_m: tuple[float, float] | None = None
     size_m: tuple[float, float] | None = None
+    body_type: Literal["dynamic", "static", "kinematic"] | None = None
+    angle_rad: float | None = None
+    mass_kg: float | None = None
+    velocity_m_s: tuple[float, float] | None = None
+    friction: float | None = None
+    restitution: float | None = None
+    density_kg_m3: float | None = None
+    notes: str | None = None
+
+
+class ModifyCircleInput(BaseModel):
+    conversation_id: str
+    body_id: str
+    position_m: tuple[float, float] | None = None
+    radius_m: float | None = Field(default=None, gt=0.0)
     body_type: Literal["dynamic", "static", "kinematic"] | None = None
     angle_rad: float | None = None
     mass_kg: float | None = None
@@ -224,6 +321,42 @@ class SetMappingInput(BaseModel):
     conversation_id: str
     origin_px: tuple[float, float]
     scale_m_per_px: float = Field(gt=0.0)
+
+
+class CreateSpringInput(BaseModel):
+    conversation_id: str
+    constraint_id: str | None = None
+    body_a: str | None = None
+    body_b: str | None = None
+    anchor_a_m: Optional[tuple[float, float]] = None
+    anchor_b_m: Optional[tuple[float, float]] = None
+    rest_length_m: float | None = Field(default=None, ge=0.0)
+    length_m: float | None = Field(default=None, ge=0.0, description="Alias for rest length")
+    stiffness: float | None = Field(default=None, ge=0.0)
+    damping: float | None = Field(default=None, ge=0.0)
+    notes: str | None = None
+
+
+class ModifyConstraintInput(BaseModel):
+    conversation_id: str
+    constraint_id: str
+    constraint_type: Literal["rope", "spring", "distance", "hinge", "ideal_fixed_pulley"] | None = None
+    body_a: str | None = None
+    body_b: str | None = None
+    anchor_a_m: Optional[tuple[float, float]] = None
+    anchor_b_m: Optional[tuple[float, float]] = None
+    length_m: float | None = Field(default=None, ge=0.0)
+    rope_length_m: float | None = Field(default=None, ge=0.0)
+    rest_length_m: float | None = Field(default=None, ge=0.0)
+    stiffness: float | None = Field(default=None, ge=0.0)
+    damping: float | None = Field(default=None, ge=0.0)
+    angle_limits_rad: Optional[tuple[float, float]] = Field(default=None, description="(min,max) for hinges")
+    notes: str | None = None
+
+
+class RemoveConstraintInput(BaseModel):
+    conversation_id: str
+    constraint_id: str
 
 
 # ---------------------------------------------------------------------------
@@ -276,6 +409,59 @@ async def create_block(input_data: CreateBlockInput) -> SceneEditOutput:
     scene = _snapshot_after_update(context, note=f"create_block:{body_id}")
     logger.info("[scene_editor] Created block %s", body_id)
     message = f"Block '{body_id}' created"
+    if adjustments:
+        message += f" (clamped: {', '.join(adjustments)})"
+    return SceneEditOutput(
+        scene=scene,
+        message=message,
+        updated_body_ids=[body_id],
+    )
+
+
+async def create_circle(input_data: CreateCircleInput) -> SceneEditOutput:
+    context = _get_context(input_data.conversation_id)
+    _ensure_scene_initialized(context)
+
+    body_id = input_data.body_id or f"circle_{len(context.scene_state.get('bodies', {})) + 1}"
+    material = _material_dict(
+        friction=input_data.friction,
+        restitution=input_data.restitution,
+        density=input_data.density_kg_m3,
+    )
+
+    position_adjusted, radius_adjusted, adjustments = _clamp_circle_to_image_bounds(
+        context,
+        tuple(input_data.position_m),
+        float(input_data.radius_m),
+    )
+
+    body: dict[str, Any] = {
+        "id": body_id,
+        "type": input_data.body_type,
+        "position_m": position_adjusted,
+        "collider": {
+            "type": "circle",
+            "radius_m": radius_adjusted,
+        },
+        "notes": input_data.notes,
+    }
+
+    if input_data.velocity_m_s is not None:
+        body["velocity_m_s"] = list(input_data.velocity_m_s)
+    if input_data.mass_kg is not None:
+        body["mass_kg"] = input_data.mass_kg
+    if input_data.angle_rad is not None:
+        body["angle_rad"] = input_data.angle_rad
+    if material:
+        body["material"] = material
+
+    if adjustments:
+        body.setdefault("meta", {})["image_boundary_adjustments"] = adjustments
+
+    context.apply_scene_updates(bodies={body_id: body})
+    scene = _snapshot_after_update(context, note=f"create_circle:{body_id}")
+    logger.info("[scene_editor] Created circle %s", body_id)
+    message = f"Circle '{body_id}' created"
     if adjustments:
         message += f" (clamped: {', '.join(adjustments)})"
     return SceneEditOutput(
@@ -353,6 +539,79 @@ async def modify_block(input_data: ModifyBlockInput) -> SceneEditOutput:
     scene = _snapshot_after_update(context, note=f"modify_block:{input_data.body_id}")
     logger.info("[scene_editor] Modified block %s", input_data.body_id)
     message = f"Block '{input_data.body_id}' updated"
+    if adjustments:
+        message += f" (clamped: {', '.join(adjustments)})"
+    return SceneEditOutput(
+        scene=scene,
+        message=message,
+        updated_body_ids=[input_data.body_id],
+    )
+
+
+async def modify_circle(input_data: ModifyCircleInput) -> SceneEditOutput:
+    context = _get_context(input_data.conversation_id)
+    _ensure_scene_initialized(context)
+
+    bodies = context.scene_state.setdefault("bodies", {})
+    if input_data.body_id not in bodies:
+        raise ValueError(f"Body '{input_data.body_id}' not found")
+
+    body = bodies[input_data.body_id]
+    collider = body.setdefault("collider", {})
+    if collider.get("type") != "circle":
+        raise ValueError(
+            f"Body '{input_data.body_id}' is not a circle. Use modify_block for rectangles or recreate it as a circle."
+        )
+
+    if input_data.position_m is not None:
+        body["position_m"] = list(input_data.position_m)
+    if input_data.radius_m is not None:
+        if input_data.radius_m <= 0:
+            raise ValueError("radius_m must be positive")
+        collider["radius_m"] = float(input_data.radius_m)
+    if input_data.body_type is not None:
+        body["type"] = input_data.body_type
+    if input_data.angle_rad is not None:
+        body["angle_rad"] = input_data.angle_rad
+    if input_data.velocity_m_s is not None:
+        body["velocity_m_s"] = list(input_data.velocity_m_s)
+    if input_data.mass_kg is not None:
+        body["mass_kg"] = input_data.mass_kg
+    if input_data.notes is not None:
+        body["notes"] = input_data.notes
+
+    material = body.setdefault("material", {})
+    if input_data.friction is not None:
+        material["friction"] = input_data.friction
+    if input_data.restitution is not None:
+        material["restitution"] = input_data.restitution
+    if input_data.density_kg_m3 is not None:
+        material["density_kg_m3"] = input_data.density_kg_m3
+    if not material:
+        body.pop("material", None)
+
+    position_tuple = tuple(body.get("position_m", (0.0, 0.0)))  # type: ignore[arg-type]
+    radius_value = float(collider.get("radius_m") or 0.0)
+    if radius_value <= 0:
+        raise ValueError("circle collider requires radius_m > 0")
+
+    position_adjusted, radius_adjusted, adjustments = _clamp_circle_to_image_bounds(
+        context,
+        (float(position_tuple[0]), float(position_tuple[1])),
+        radius_value,
+    )
+    body["position_m"] = position_adjusted
+    collider["radius_m"] = radius_adjusted
+
+    if adjustments:
+        body.setdefault("meta", {})["image_boundary_adjustments"] = adjustments
+    elif isinstance(body.get("meta"), dict):
+        body["meta"].pop("image_boundary_adjustments", None)  # type: ignore[index]
+
+    context.apply_scene_updates(bodies={input_data.body_id: body})
+    scene = _snapshot_after_update(context, note=f"modify_circle:{input_data.body_id}")
+    logger.info("[scene_editor] Modified circle %s", input_data.body_id)
+    message = f"Circle '{input_data.body_id}' updated"
     if adjustments:
         message += f" (clamped: {', '.join(adjustments)})"
     return SceneEditOutput(
@@ -458,6 +717,106 @@ async def create_rope(input_data: CreateRopeInput) -> SceneEditOutput:
     )
 
 
+async def create_spring(input_data: CreateSpringInput) -> SceneEditOutput:
+    context = _get_context(input_data.conversation_id)
+    _ensure_scene_initialized(context)
+
+    constraint_id = input_data.constraint_id or f"spring_{len(context.scene_state.get('constraints', {})) + 1}"
+    constraint: dict[str, Any] = {
+        "id": constraint_id,
+        "type": "spring",
+        "body_a": input_data.body_a,
+        "body_b": input_data.body_b,
+        "notes": input_data.notes,
+    }
+
+    if input_data.anchor_a_m is not None:
+        constraint["anchor_a"] = list(input_data.anchor_a_m)
+    if input_data.anchor_b_m is not None:
+        constraint["anchor_b"] = list(input_data.anchor_b_m)
+
+    rest_length = input_data.rest_length_m or input_data.length_m
+    if rest_length is not None:
+        constraint["rest_length_m"] = rest_length
+
+    if input_data.stiffness is not None:
+        constraint.setdefault("tuning", {})["stiffness"] = input_data.stiffness
+    if input_data.damping is not None:
+        constraint.setdefault("tuning", {})["damping"] = input_data.damping
+
+    context.apply_scene_updates(constraints={constraint_id: constraint})
+    scene = _snapshot_after_update(context, note=f"create_spring:{constraint_id}")
+    logger.info("[scene_editor] Created spring constraint %s", constraint_id)
+    return SceneEditOutput(
+        scene=scene,
+        message=f"Spring '{constraint_id}' created",
+        updated_constraint_ids=[constraint_id],
+    )
+
+
+async def modify_constraint(input_data: ModifyConstraintInput) -> SceneEditOutput:
+    context = _get_context(input_data.conversation_id)
+    _ensure_scene_initialized(context)
+
+    constraints = context.scene_state.setdefault("constraints", {})
+    if input_data.constraint_id not in constraints:
+        raise ValueError(f"Constraint '{input_data.constraint_id}' not found")
+
+    constraint = constraints[input_data.constraint_id]
+
+    if input_data.constraint_type is not None:
+        constraint["type"] = input_data.constraint_type
+    if input_data.body_a is not None:
+        constraint["body_a"] = input_data.body_a
+    if input_data.body_b is not None:
+        constraint["body_b"] = input_data.body_b
+    if input_data.anchor_a_m is not None:
+        constraint["anchor_a"] = list(input_data.anchor_a_m)
+    if input_data.anchor_b_m is not None:
+        constraint["anchor_b"] = list(input_data.anchor_b_m)
+    if input_data.length_m is not None:
+        constraint["length_m"] = input_data.length_m
+    if input_data.rope_length_m is not None:
+        constraint["rope_length_m"] = input_data.rope_length_m
+    if input_data.rest_length_m is not None:
+        constraint["rest_length_m"] = input_data.rest_length_m
+    if input_data.stiffness is not None or input_data.damping is not None:
+        tuning = constraint.setdefault("tuning", {})
+        if input_data.stiffness is not None:
+            tuning["stiffness"] = input_data.stiffness
+        if input_data.damping is not None:
+            tuning["damping"] = input_data.damping
+        if not tuning:
+            constraint.pop("tuning", None)
+    if input_data.angle_limits_rad is not None:
+        constraint["angle_limits"] = list(input_data.angle_limits_rad)
+    if input_data.notes is not None:
+        constraint["notes"] = input_data.notes
+
+    context.apply_scene_updates(constraints={input_data.constraint_id: constraint})
+    scene = _snapshot_after_update(context, note=f"modify_constraint:{input_data.constraint_id}")
+    logger.info("[scene_editor] Modified constraint %s", input_data.constraint_id)
+    return SceneEditOutput(
+        scene=scene,
+        message=f"Constraint '{input_data.constraint_id}' updated",
+        updated_constraint_ids=[input_data.constraint_id],
+    )
+
+
+async def remove_constraint(input_data: RemoveConstraintInput) -> SceneEditOutput:
+    context = _get_context(input_data.conversation_id)
+    _ensure_scene_initialized(context)
+
+    context.remove_scene_entities(constraint_ids=[input_data.constraint_id])
+    scene = _snapshot_after_update(context, note=f"remove_constraint:{input_data.constraint_id}")
+    logger.info("[scene_editor] Removed constraint %s", input_data.constraint_id)
+    return SceneEditOutput(
+        scene=scene,
+        message=f"Constraint '{input_data.constraint_id}' removed",
+        updated_constraint_ids=[input_data.constraint_id],
+    )
+
+
 async def set_world(input_data: SetWorldInput) -> SceneEditOutput:
     context = _get_context(input_data.conversation_id)
     _ensure_scene_initialized(context)
@@ -506,6 +865,7 @@ class SceneToolSpec(BaseModel):
     description: str
     input_model: type[BaseModel]
     function: Any
+    output_model: type[BaseModel] = SceneEditOutput
 
 
 SCENE_EDIT_TOOL_SPECS: list[SceneToolSpec] = [
@@ -516,10 +876,22 @@ SCENE_EDIT_TOOL_SPECS: list[SceneToolSpec] = [
         function=create_block,
     ),
     SceneToolSpec(
+        name="create_circle",
+        description="Create a circular body, useful for masses, rollers, or pulleys.",
+        input_model=CreateCircleInput,
+        function=create_circle,
+    ),
+    SceneToolSpec(
         name="modify_block",
         description="Update block position, size, material, or type for an existing body.",
         input_model=ModifyBlockInput,
         function=modify_block,
+    ),
+    SceneToolSpec(
+        name="modify_circle",
+        description="Update circular body position, radius, material, or type for an existing body.",
+        input_model=ModifyCircleInput,
+        function=modify_circle,
     ),
     SceneToolSpec(
         name="remove_block",
@@ -538,6 +910,24 @@ SCENE_EDIT_TOOL_SPECS: list[SceneToolSpec] = [
         description="Add a rope constraint between two bodies with optional anchors and length.",
         input_model=CreateRopeInput,
         function=create_rope,
+    ),
+    SceneToolSpec(
+        name="create_spring",
+        description="Add a spring constraint with adjustable rest length, stiffness, and damping.",
+        input_model=CreateSpringInput,
+        function=create_spring,
+    ),
+    SceneToolSpec(
+        name="modify_constraint",
+        description="Adjust constraint endpoints, lengths, stiffness, damping, or type.",
+        input_model=ModifyConstraintInput,
+        function=modify_constraint,
+    ),
+    SceneToolSpec(
+        name="remove_constraint",
+        description="Delete a constraint from the scene by id.",
+        input_model=RemoveConstraintInput,
+        function=remove_constraint,
     ),
     SceneToolSpec(
         name="set_world",

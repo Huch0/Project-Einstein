@@ -15,7 +15,7 @@ import {
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 
-import { WhiteboardProvider, useWhiteboardStore } from '@/whiteboard/context';
+import { useWhiteboardStore } from '@/whiteboard/context';
 import WhiteboardCanvas from '@/whiteboard/WhiteboardCanvas';
 import type { InteractionMode } from '@/whiteboard/types';
 import { cn } from '@/lib/utils';
@@ -28,11 +28,7 @@ interface SimulationCanvasStackProps {
 }
 
 export default function SimulationCanvasStack({ className }: SimulationCanvasStackProps = {}) {
-    return (
-        <WhiteboardProvider>
-            <SimulationCanvasInner className={className} />
-        </WhiteboardProvider>
-    );
+    return <SimulationCanvasInner className={className} />;
 }
 
 function SimulationCanvasInner({ className }: SimulationCanvasStackProps) {
@@ -42,6 +38,7 @@ function SimulationCanvasInner({ className }: SimulationCanvasStackProps) {
     const [mode, setMode] = useState<InteractionMode>(INITIAL_MODE);
     const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
     const [open, setOpen] = useState(false);
+    const [isPenInputActive, setIsPenInputActive] = useState(false);
     const { strokeNodes, clearStrokes, createImageBox, setSelection } = useWhiteboardStore();
 
     const hasCanvasContent = strokeNodes.length > 0;
@@ -98,9 +95,45 @@ function SimulationCanvasInner({ className }: SimulationCanvasStackProps) {
         imageInputRef.current?.click();
     };
 
+    useEffect(() => {
+        const wrapper = wrapperRef.current;
+        if (!wrapper) {
+            return;
+        }
+
+        const handlePointerDown = (event: PointerEvent) => {
+            if (event.pointerType !== 'pen') {
+                return;
+            }
+            const target = event.target as Node | null;
+            if (target && !wrapper.contains(target)) {
+                return;
+            }
+            setIsPenInputActive(true);
+        };
+
+        const resetPenInteraction = (event: PointerEvent) => {
+            if (event.pointerType !== 'pen') {
+                return;
+            }
+            setIsPenInputActive(false);
+        };
+
+        wrapper.addEventListener('pointerdown', handlePointerDown);
+        window.addEventListener('pointerup', resetPenInteraction);
+        window.addEventListener('pointercancel', resetPenInteraction);
+
+        return () => {
+            wrapper.removeEventListener('pointerdown', handlePointerDown);
+            window.removeEventListener('pointerup', resetPenInteraction);
+            window.removeEventListener('pointercancel', resetPenInteraction);
+        };
+    }, []);
+
     return (
         <div
             ref={wrapperRef}
+            data-pen-input={isPenInputActive ? 'true' : undefined}
             className={cn('flex h-full w-full flex-col', className)}
         >
             {/* Top bezel toolbar */}

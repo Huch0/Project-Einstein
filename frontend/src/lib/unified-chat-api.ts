@@ -2,7 +2,7 @@
  * Unified Chat API Client (v0.4)
  * 
  * Supports two modes:
- * - Ask Mode: Normal conversation (educational Q&A)
+ * - Tutor Mode: Guided conversation (scaffolded Q&A)
  * - Agent Mode: Tool-enabled simulation pipeline
  * 
  * Features:
@@ -17,7 +17,7 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 // Types
 // ===========================
 
-export type ChatMode = 'ask' | 'agent';
+export type ChatMode = 'tutor' | 'agent';
 
 export interface UnifiedChatRequest {
   message: string;
@@ -126,16 +126,16 @@ export interface DoneEvent {
 // ===========================
 
 /**
- * Send a unified chat message (Ask or Agent mode).
+ * Send a unified chat message (Tutor or Agent mode).
  * 
  * @param request - Chat request with mode selection
  * @returns Chat response with message and optional tool calls
  * 
- * @example Ask mode
+ * @example Tutor mode
  * ```typescript
  * const response = await sendUnifiedChat({
  *   message: "What is Newton's second law?",
- *   mode: "ask"
+ *   mode: "tutor"
  * });
  * console.log(response.message);
  * ```
@@ -271,6 +271,8 @@ export function streamAgentChat(
       const decoder = new TextDecoder();
       let buffer = '';
 
+      let currentEvent: SSEEventType | null = null;
+
       while (!isClosed) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -283,7 +285,8 @@ export function streamAgentChat(
           if (!line.trim() || line.startsWith(':')) continue;
 
           if (line.startsWith('event:')) {
-            const eventType = line.substring(6).trim();
+            const eventType = line.substring(6).trim() as SSEEventType;
+            currentEvent = eventType;
             continue;
           }
 
@@ -294,27 +297,49 @@ export function streamAgentChat(
             try {
               const parsed = JSON.parse(data);
               
-              // Determine event type from the last event: line or from data structure
-              // Since we're parsing SSE manually, we need to track the event type
-              // For simplicity, we'll check the data structure
-              
-              if (parsed.conversation_id && callbacks.onInit) {
-                callbacks.onInit(parsed);
-              } else if (parsed.status && callbacks.onThinking) {
-                callbacks.onThinking(parsed);
-              } else if (parsed.tool && parsed.index !== undefined && callbacks.onToolStart) {
-                callbacks.onToolStart(parsed);
-              } else if (parsed.tool && parsed.success !== undefined && callbacks.onToolComplete) {
-                callbacks.onToolComplete(parsed);
-              } else if (parsed.tool && parsed.error && callbacks.onToolError) {
-                callbacks.onToolError(parsed);
-              } else if (parsed.segments_count !== undefined && callbacks.onStateUpdate) {
-                callbacks.onStateUpdate(parsed);
-              } else if (parsed.content && callbacks.onMessage) {
-                callbacks.onMessage(parsed);
-              } else if (parsed.conversation_id && callbacks.onDone) {
-                callbacks.onDone(parsed);
+              switch (currentEvent) {
+                case 'init':
+                  callbacks.onInit?.(parsed);
+                  break;
+                case 'thinking':
+                  callbacks.onThinking?.(parsed);
+                  break;
+                case 'tool_start':
+                  callbacks.onToolStart?.(parsed);
+                  break;
+                case 'tool_complete':
+                  callbacks.onToolComplete?.(parsed);
+                  break;
+                case 'tool_error':
+                  callbacks.onToolError?.(parsed);
+                  break;
+                case 'state_update':
+                  callbacks.onStateUpdate?.(parsed);
+                  break;
+                case 'message':
+                  callbacks.onMessage?.(parsed);
+                  break;
+                case 'done':
+                  callbacks.onDone?.(parsed);
+                  break;
+                default:
+                  // Fallback for servers that omit event headers
+                  if (parsed.tool && parsed.index !== undefined) {
+                    callbacks.onToolStart?.(parsed);
+                  } else if (parsed.tool && parsed.success !== undefined) {
+                    callbacks.onToolComplete?.(parsed);
+                  } else if (parsed.tool && parsed.error) {
+                    callbacks.onToolError?.(parsed);
+                  } else if (parsed.segments_count !== undefined) {
+                    callbacks.onStateUpdate?.(parsed);
+                  } else if (parsed.content) {
+                    callbacks.onMessage?.(parsed);
+                  } else if (parsed.conversation_id) {
+                    callbacks.onDone?.(parsed);
+                  }
               }
+
+              currentEvent = null;
             } catch (err) {
               console.error('Failed to parse SSE data:', err);
             }
@@ -346,16 +371,16 @@ export function streamAgentChat(
 // ===========================
 
 /**
- * Send Ask mode message (normal conversation).
+ * Send Tutor mode message (scaffolded conversation).
  */
-export async function sendAskMessage(
+export async function sendTutorMessage(
   message: string,
   conversationId?: string
 ): Promise<UnifiedChatResponse> {
   return sendUnifiedChat({
     message,
     conversation_id: conversationId,
-    mode: 'ask',
+    mode: 'tutor',
   });
 }
 
@@ -376,7 +401,7 @@ export async function sendAgentMessage(
 }
 
 /**
- * Get conversation context (both Ask and Agent modes).
+ * Get conversation context (both Tutor and Agent modes).
  */
 export async function getConversationContext(
   conversationId: string
@@ -391,7 +416,7 @@ export async function getConversationContext(
 }
 
 /**
- * Delete conversation (both Ask and Agent modes).
+ * Delete conversation (both Tutor and Agent modes).
  */
 export async function deleteConversation(conversationId: string): Promise<void> {
   const response = await fetch(`${API_BASE}/chat/context/${conversationId}`, {

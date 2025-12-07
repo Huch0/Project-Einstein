@@ -70,11 +70,6 @@ class Settings(BaseSettings):
     PHYSICS_MAX_BODIES: int = 100  # Safety limit for N-body systems
     
     # ===== Agent Tools =====
-    # Tool: segment_image
-    SAM_MODE: str = "http"  # "http" | "stub"
-    SAM_HTTP_URL: str = "http://localhost:9001/segment"
-    SAM_TIMEOUT_S: float = 10.0
-    
     # Tool: label_segments
     LABELER_MODE: str = "openai"  # "openai" | "stub"
     LABELER_MODEL: str = "gpt-5"  # GPT-5 with Responses API

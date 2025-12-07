@@ -1,14 +1,14 @@
 
 'use client';
 
-import { useState, useRef, useEffect, type FormEvent } from 'react';
+import { useState, useRef, useEffect, useCallback, type FormEvent } from 'react';
 import { useToast } from '@/hooks/use-toast';
-import { useGlobalChat } from '@/contexts/global-chat-context';
+import { useGlobalChat, type SimulationData } from '@/contexts/global-chat-context';
 
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
 import { MessageSquare, Bot, Plus, Image as ImageIcon, Box as BoxIcon, X } from 'lucide-react';
-import { sendUnifiedChat, streamAgentChat, type ChatMode } from '@/lib/unified-chat-api';
+import { sendUnifiedChat, streamAgentChat, type ChatMode, type UnifiedChatRequest } from '@/lib/unified-chat-api';
 import { ChatMessages } from './chat-messages';
 import { ChatInput } from './chat-input';
 import { SelectBoxModal } from './select-box-modal';
@@ -20,15 +20,117 @@ export type Message = {
     content: string;
 };
 
-export type SimulationData = {
-    scene: any;
-    frames: any[];
-    imageWidth?: number;
-    imageHeight?: number;
-};
-
 type ChatPanelProps = {
     padding?: 'default' | 'compact' | 'flush';
+};
+
+type SimulationBoxContextPayload = {
+    type: 'simulation';
+    id: string;
+    name: string;
+    conversationId?: string;
+    objects: Array<{
+        type?: string;
+        label?: string;
+        mass_kg?: number;
+    }>;
+    parameters?: {
+        world?: {
+            gravity_m_s2?: number;
+            time_step_s?: number;
+        };
+        summary?: {
+            bodies?: number;
+            constraints?: number;
+        };
+    };
+};
+
+type ImageBoxContextPayload = {
+    type: 'image';
+    id: string;
+    name: string;
+    imagePath: string;
+};
+
+type AttachedBoxContext = SimulationBoxContextPayload | ImageBoxContextPayload;
+type BoxContextCache = Record<string, AttachedBoxContext>;
+
+const MAX_CONTEXT_OBJECTS = 6;
+const TOOL_LOGS_ENABLED = process.env.NEXT_PUBLIC_AGENT_TOOL_LOGS !== 'false';
+
+const logToolDebug = (label: string, payload: Record<string, unknown>) => {
+    if (!TOOL_LOGS_ENABLED) {
+        return;
+    }
+    const timestamp = new Date().toISOString();
+    console.info(`[AgentTool][${timestamp}] ${label}`, payload);
+};
+
+const summarizeEntities = (entities: any[]): SimulationBoxContextPayload['objects'] => {
+    if (!Array.isArray(entities)) {
+        return [];
+    }
+    return entities.slice(0, MAX_CONTEXT_OBJECTS).map((entity) => ({
+        type: entity?.type,
+        label: entity?.props?.label || entity?.props?.id || entity?.id,
+        mass_kg: entity?.props?.mass_kg ?? entity?.props?.mass,
+    }));
+};
+
+const summarizeSceneParameters = (sceneOrParameters: any): SimulationBoxContextPayload['parameters'] => {
+    if (!sceneOrParameters || typeof sceneOrParameters !== 'object') {
+        return undefined;
+    }
+
+    const worldSource = typeof sceneOrParameters.world === 'object'
+        ? sceneOrParameters.world
+        : ('gravity_m_s2' in sceneOrParameters || 'time_step_s' in sceneOrParameters)
+            ? sceneOrParameters
+            : undefined;
+
+    const world = worldSource
+        ? {
+            gravity_m_s2: worldSource.gravity_m_s2,
+            time_step_s: worldSource.time_step_s,
+        }
+        : undefined;
+
+    const bodiesCount = typeof sceneOrParameters?.summary?.bodies === 'number'
+        ? sceneOrParameters.summary.bodies
+        : Array.isArray(sceneOrParameters?.bodies)
+            ? sceneOrParameters.bodies.length
+            : undefined;
+
+    const constraintsCount = typeof sceneOrParameters?.summary?.constraints === 'number'
+        ? sceneOrParameters.summary.constraints
+        : Array.isArray(sceneOrParameters?.constraints)
+            ? sceneOrParameters.constraints.length
+            : undefined;
+
+    const hasSummary = bodiesCount !== undefined || constraintsCount !== undefined;
+    const summary = hasSummary
+        ? {
+            bodies: bodiesCount,
+            constraints: constraintsCount,
+        }
+        : undefined;
+
+    if (!world && !summary) {
+        return undefined;
+    }
+
+    return { world, summary };
+};
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+
+const fetchConversationContext = async (conversationId: string) => {
+    const response = await fetch(`${API_BASE}/chat/context/${conversationId}`);
+    if (!response.ok) {
+        throw new Error(`Context fetch failed (${response.status} ${response.statusText})`);
+    }
+    return response.json();
 };
 
 export default function ChatPanel({ padding = 'default' }: ChatPanelProps = {}) {
@@ -43,9 +145,53 @@ export default function ChatPanel({ padding = 'default' }: ChatPanelProps = {}) 
     const [selectedImage, setSelectedImage] = useState<File | null>(null);
     const [showBoxModal, setShowBoxModal] = useState(false);
     const [attachedBoxIds, setAttachedBoxIds] = useState<string[]>([]); // Multiple boxes
+    const [boxContextCache, setBoxContextCache] = useState<BoxContextCache>({});
     const eventSourceRef = useRef<{ close: () => void } | null>(null);
+    const toolsUsedRef = useRef(false);
+    const conversationIdRef = useRef<string | null>(globalChat.conversationId);
+    const pendingConversationRef = useRef<string | null>(null);
 
     const scrollAreaRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        conversationIdRef.current = globalChat.conversationId;
+    }, [globalChat.conversationId]);
+
+    const resolveBoxIdForConversation = useCallback((conversationId: string) => {
+        let match: string | undefined;
+        globalChat.simulationBoxes.forEach((box, boxId) => {
+            if (!match && box.conversationId === conversationId) {
+                match = boxId;
+            }
+        });
+        return match;
+    }, [globalChat.simulationBoxes]);
+
+    const recordSimulationSnapshot = useCallback((conversationId: string, data: SimulationData) => {
+        if (!conversationId) {
+            return;
+        }
+
+        const resolvedBoxId = data.boxId ?? resolveBoxIdForConversation(conversationId);
+        const snapshotPayload: SimulationData = {
+            ...data,
+            boxId: resolvedBoxId,
+            conversationId,
+            updatedAt: Date.now(),
+        };
+
+        globalChat.setSimulationSnapshot(conversationId, snapshotPayload);
+        globalChat.setSimulationData(snapshotPayload);
+
+        if (resolvedBoxId) {
+            globalChat.updateSimulationBox(resolvedBoxId, {
+                conversationId,
+                hasSimulation: Array.isArray(snapshotPayload.frames)
+                    ? snapshotPayload.frames.length > 0
+                    : false,
+            });
+        }
+    }, [globalChat, resolveBoxIdForConversation]);
 
     const scrollToBottom = () => {
         if (scrollAreaRef.current) {
@@ -65,7 +211,7 @@ export default function ChatPanel({ padding = 'default' }: ChatPanelProps = {}) 
         if (globalChat.messages.length === 0) {
             globalChat.addMessage({
                 role: 'assistant',
-                content: mode === 'ask'
+                content: mode === 'tutor'
                     ? "Hello! I'm your physics tutor. Ask me anything about physics concepts, laws, or problem-solving strategies."
                     : "Welcome to the Physics Lab Assistant! I can help you analyze diagrams and create simulations. Upload an image or describe what you want to simulate.",
             });
@@ -79,6 +225,270 @@ export default function ChatPanel({ padding = 'default' }: ChatPanelProps = {}) 
                 eventSourceRef.current.close();
             }
         };
+    }, []);
+
+    const ensureBoxContexts = useCallback(async (boxIds: string[]): Promise<Record<string, AttachedBoxContext>> => {
+        if (boxIds.length === 0) {
+            return {};
+        }
+
+        const contexts: Record<string, AttachedBoxContext> = {};
+        const missingBoxes: ReturnType<typeof getAllBoxes> = [];
+        const updates: BoxContextCache = {};
+        const allBoxes = getAllBoxes();
+
+        for (const id of boxIds) {
+            const cached = boxContextCache[id];
+            if (cached) {
+                if (cached.type === 'simulation') {
+                    const normalized: SimulationBoxContextPayload = {
+                        ...cached,
+                        objects: summarizeEntities(cached.objects),
+                        parameters: summarizeSceneParameters(cached.parameters),
+                    };
+                    contexts[id] = normalized;
+                    updates[id] = normalized;
+                } else {
+                    contexts[id] = cached;
+                }
+            } else {
+                const box = allBoxes.find((item) => item.id === id);
+                if (box) {
+                    missingBoxes.push(box);
+                }
+            }
+        }
+
+        if (missingBoxes.length === 0) {
+            if (Object.keys(updates).length > 0) {
+                setBoxContextCache((prev) => ({ ...prev, ...updates }));
+            }
+            return contexts;
+        }
+
+        const fetchedEntries = await Promise.all(
+            missingBoxes.map(async (box) => {
+                try {
+                    if (box.type === 'simulation') {
+                        let entities: any[] = [];
+                        let scene: any = undefined;
+                        if (box.conversationId) {
+                            const response = await fetch(`${API_BASE}/chat/context/${box.conversationId}`);
+                            if (response.ok) {
+                                const data = await response.json();
+                                entities = data?.entities || [];
+                                scene = data?.scene || undefined;
+                            }
+                        }
+
+                        const payload: SimulationBoxContextPayload = {
+                            type: 'simulation',
+                            id: box.id,
+                            name: box.name,
+                            conversationId: box.conversationId,
+                            objects: summarizeEntities(entities),
+                            parameters: summarizeSceneParameters(scene),
+                        };
+                        return [box.id, payload] as const;
+                    }
+
+                    const payload: ImageBoxContextPayload = {
+                        type: 'image',
+                        id: box.id,
+                        name: box.name,
+                        imagePath: box.imagePath,
+                    };
+                    return [box.id, payload] as const;
+                } catch (error) {
+                    toast({
+                        variant: 'destructive',
+                        title: 'Context error',
+                        description:
+                            error instanceof Error
+                                ? error.message
+                                : 'Failed to load context for selected box.',
+                    });
+                    return null;
+                }
+            })
+        );
+
+        for (const entry of fetchedEntries) {
+            if (!entry) continue;
+            updates[entry[0]] = entry[1];
+            contexts[entry[0]] = entry[1];
+        }
+
+        if (Object.keys(updates).length > 0) {
+            setBoxContextCache((prev) => ({ ...prev, ...updates }));
+        }
+
+        return contexts;
+    }, [boxContextCache, getAllBoxes, toast]);
+
+    const buildContextPayload = useCallback(async (): Promise<UnifiedChatRequest['context'] | undefined> => {
+        if (attachedBoxIds.length === 0) {
+            return undefined;
+        }
+
+        const contexts = await ensureBoxContexts(attachedBoxIds);
+        const orderedContexts = attachedBoxIds
+            .map((id) => contexts[id])
+            .filter((ctx): ctx is AttachedBoxContext => Boolean(ctx));
+
+        const boxes = orderedContexts.map((ctx) => {
+            if (ctx.type === 'simulation') {
+                return {
+                    type: 'simulation' as const,
+                    id: ctx.id,
+                    name: ctx.name,
+                    conversationId: ctx.conversationId,
+                    objects: ctx.objects,
+                    parameters: ctx.parameters,
+                };
+            }
+            return {
+                type: 'image' as const,
+                id: ctx.id,
+                name: ctx.name,
+                imagePath: ctx.imagePath,
+            };
+        });
+
+        if (boxes.length === 0) {
+            return undefined;
+        }
+
+        const simulationBox = boxes.find((box) => box.type === 'simulation');
+        const imageBox = boxes.find((box) => box.type === 'image');
+
+        return {
+            boxes,
+            simulation_box: simulationBox,
+            image_box: imageBox,
+        };
+    }, [attachedBoxIds, ensureBoxContexts]);
+
+    const refreshSimulationContext = useCallback(async () => {
+        try {
+            const contexts = await ensureBoxContexts(attachedBoxIds);
+            const targets: Array<{ boxId?: string; conversationId: string }> = [];
+            const seen = new Set<string>();
+
+            for (const boxId of attachedBoxIds) {
+                const ctx = contexts[boxId];
+                if (ctx?.type === 'simulation' && ctx.conversationId && !seen.has(ctx.conversationId)) {
+                    targets.push({ boxId, conversationId: ctx.conversationId });
+                    seen.add(ctx.conversationId);
+                }
+            }
+
+            const fallbackConversation = globalChat.conversationId;
+            if (fallbackConversation && !seen.has(fallbackConversation)) {
+                targets.push({ conversationId: fallbackConversation });
+                seen.add(fallbackConversation);
+            }
+
+            if (targets.length === 0) {
+                return;
+            }
+
+            const snapshots = await Promise.all(
+                targets.map(async (target) => {
+                    try {
+                        const snapshot = await fetchConversationContext(target.conversationId);
+                        return { ...target, snapshot };
+                    } catch (error) {
+                        console.error('[ChatPanel] Context refresh failed:', error);
+                        return null;
+                    }
+                })
+            );
+
+            const updatedCache: BoxContextCache = {};
+            let latestSimulationData: SimulationData | null = null;
+
+            for (const result of snapshots) {
+                if (!result) continue;
+                const { boxId, snapshot, conversationId } = result;
+                const scene = snapshot?.scene || snapshot?.scene_state || null;
+                const frames = Array.isArray(snapshot?.frames)
+                    ? snapshot.frames
+                    : Array.isArray(snapshot?.scene_state?.frames)
+                        ? snapshot.scene_state.frames
+                        : [];
+                const meta = snapshot?.meta || snapshot?.scene_state?.meta;
+
+                if (!latestSimulationData && scene) {
+                    latestSimulationData = {
+                        scene,
+                        frames,
+                        imageWidth: snapshot?.image_metadata?.width_px,
+                        imageHeight: snapshot?.image_metadata?.height_px,
+                        boxId,
+                        conversationId,
+                        meta,
+                    };
+                }
+
+                if (boxId && contexts[boxId]?.type === 'simulation') {
+                    const existing = contexts[boxId] as SimulationBoxContextPayload;
+                    updatedCache[boxId] = {
+                        ...existing,
+                        conversationId,
+                        objects: summarizeEntities(snapshot?.entities || []),
+                        parameters: summarizeSceneParameters(scene || snapshot?.scene_state || existing.parameters),
+                    };
+                    globalChat.updateSimulationBox(boxId, {
+                        conversationId,
+                        hasSimulation: frames.length > 0,
+                    });
+                }
+
+                if (scene) {
+                    recordSimulationSnapshot(conversationId, {
+                        scene,
+                        frames,
+                        imageWidth: snapshot?.image_metadata?.width_px,
+                        imageHeight: snapshot?.image_metadata?.height_px,
+                        boxId,
+                        conversationId,
+                        meta,
+                    });
+                }
+            }
+
+            if (Object.keys(updatedCache).length > 0) {
+                setBoxContextCache((prev) => ({ ...prev, ...updatedCache }));
+            }
+
+            if (latestSimulationData?.scene && latestSimulationData.conversationId) {
+                recordSimulationSnapshot(latestSimulationData.conversationId, latestSimulationData);
+            }
+        } catch (error) {
+            console.error('[ChatPanel] Failed to refresh simulation context after tool call:', error);
+        }
+    }, [attachedBoxIds, ensureBoxContexts, globalChat, recordSimulationSnapshot]);
+
+    const deriveConversationIdFromContext = useCallback((contextPayload?: UnifiedChatRequest['context']) => {
+        if (!contextPayload) {
+            return null;
+        }
+
+        const primary = contextPayload.simulation_box;
+        if (primary?.conversationId) {
+            return primary.conversationId;
+        }
+
+        const fallback = contextPayload.boxes?.find((box) => (
+            box &&
+            'type' in box &&
+            (box as { type: string }).type === 'simulation' &&
+            'conversationId' in box &&
+            Boolean((box as { conversationId?: string }).conversationId)
+        )) as { conversationId?: string } | undefined;
+
+        return fallback?.conversationId ?? null;
     }, []);
 
     const handleModeToggle = (newMode: ChatMode) => {
@@ -100,6 +510,7 @@ export default function ChatPanel({ padding = 'default' }: ChatPanelProps = {}) 
 
     const handleBoxSelect = (boxIds: string[]) => {
         setAttachedBoxIds(boxIds);
+        void ensureBoxContexts(boxIds);
     };
 
     const handleRemoveAttachedBox = (boxId: string) => {
@@ -175,82 +586,55 @@ export default function ChatPanel({ padding = 'default' }: ChatPanelProps = {}) 
                 }
             }
 
+            const contextPayload = await buildContextPayload();
+            const derivedConversationId = deriveConversationIdFromContext(contextPayload);
+            const conversationIdForRequest = derivedConversationId ?? globalChat.conversationId ?? undefined;
+
+            if (derivedConversationId && derivedConversationId !== globalChat.conversationId) {
+                globalChat.setConversationId(derivedConversationId);
+            }
+
+            conversationIdRef.current = conversationIdForRequest ?? null;
+            pendingConversationRef.current = conversationIdRef.current;
+
             if (mode === 'agent') {
-                // Build context object if boxes are attached
-                let contextData = undefined;
-                if (attachedBoxIds.length > 0) {
-                    const attachedBoxes = getAllBoxes().filter(box => attachedBoxIds.includes(box.id));
-                    
-                    contextData = {
-                        simulation_box: undefined,
-                        image_box: undefined,
-                        boxes: [] as any[],
-                    };
-                    
-                    for (const box of attachedBoxes) {
-                        if (box.type === 'simulation') {
-                            // Get simulation box context
-                            if (box.conversationId) {
-                                const boxContext = await fetch(
-                                    `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/chat/context/${box.conversationId}`
-                                ).then(res => res.ok ? res.json() : null).catch(() => null);
-                                
-                                contextData.boxes.push({
-                                    type: 'simulation',
-                                    id: box.id,
-                                    name: box.name,
-                                    conversationId: box.conversationId,
-                                    objects: boxContext?.entities || [],
-                                    parameters: boxContext?.scene || {},
-                                });
-                            }
-                        } else {
-                            // Image box
-                            contextData.boxes.push({
-                                type: 'image',
-                                id: box.id,
-                                name: box.name,
-                                imagePath: box.imagePath,
-                            });
-                        }
-                    }
-                    
-                    // For backward compatibility, set first simulation box as main simulation_box
-                    const firstSimBox = contextData.boxes.find((b: any) => b.type === 'simulation');
-                    if (firstSimBox) {
-                        contextData.simulation_box = firstSimBox;
-                    }
-                    
-                    // For backward compatibility, set first image box as main image_box
-                    const firstImgBox = contextData.boxes.find((b: any) => b.type === 'image');
-                    if (firstImgBox) {
-                        contextData.image_box = firstImgBox;
-                    }
-                }
-                
                 // Agent mode: Use streaming for real-time progress
                 const eventSource = streamAgentChat(
                     {
                         message: userInput.content,
-                        conversation_id: globalChat.conversationId,
+                        conversation_id: conversationIdForRequest,
                         mode: 'agent',
                         attachments: attachments,
-                        context: contextData,
+                        context: contextPayload,
                     },
                     {
                         onInit: ({ conversation_id }) => {
                             globalChat.setConversationId(conversation_id);
+                            conversationIdRef.current = conversation_id;
+                            pendingConversationRef.current = conversation_id;
                         },
                         onThinking: ({ status }) => {
                             setProgressMessages((prev) => [...prev, `🤔 ${status}...`]);
                         },
                         onToolStart: ({ tool, index, total }) => {
+                            toolsUsedRef.current = true;
+                            logToolDebug('tool_start', {
+                                tool,
+                                index,
+                                total,
+                                conversationId: globalChat.conversationId,
+                            });
                             setProgressMessages((prev) => [
                                 ...prev,
                                 `[${index + 1}/${total}] Running ${tool}...`,
                             ]);
                         },
                         onToolComplete: ({ tool, success }) => {
+                            logToolDebug('tool_complete', {
+                                tool,
+                                success,
+                                conversationId: globalChat.conversationId,
+                            });
                             if (success) {
                                 setProgressMessages((prev) => {
                                     const updated = [...prev];
@@ -263,36 +647,103 @@ export default function ChatPanel({ padding = 'default' }: ChatPanelProps = {}) 
                             }
                         },
                         onToolError: ({ tool, error }) => {
+                            logToolDebug('tool_error', {
+                                tool,
+                                error,
+                                conversationId: globalChat.conversationId,
+                            });
                             setProgressMessages((prev) => [
                                 ...prev,
                                 `❌ ${tool} failed: ${error}`,
                             ]);
                         },
                         onStateUpdate: (state) => {
-                            console.debug('State update:', state);
-                            
-                            // Capture simulation data when frames are available
-                            if ((state as any).frames && (state as any).scene) {
-                                globalChat.setSimulationData({
-                                    scene: (state as any).scene,
-                                    frames: (state as any).frames,
-                                    imageWidth: (state as any).image?.width_px || 800,
-                                    imageHeight: (state as any).image?.height_px || 600,
-                                });
+                            const stateAny = state as Record<string, any>;
+                            const conversationHint =
+                                stateAny?.conversation_id ??
+                                pendingConversationRef.current ??
+                                conversationIdRef.current ??
+                                globalChat.conversationId ??
+                                null;
+
+                            logToolDebug('state_update', {
+                                ...state,
+                                conversationId: conversationHint,
+                            });
+
+                            if (!conversationHint) {
+                                return;
                             }
+
+                            const previousSnapshot = globalChat.getSimulationSnapshot(conversationHint);
+                            const sceneCandidate =
+                                stateAny.scene ??
+                                stateAny.scene_state ??
+                                previousSnapshot?.scene ??
+                                null;
+
+                            const framesCandidate = Array.isArray(stateAny.frames)
+                                ? stateAny.frames
+                                : Array.isArray(stateAny.scene_state?.frames)
+                                    ? stateAny.scene_state.frames
+                                    : previousSnapshot?.frames ?? [];
+
+                            if (!sceneCandidate && framesCandidate.length === 0) {
+                                return;
+                            }
+
+                            const imageMeta = stateAny.image ?? stateAny.image_metadata;
+                            const meta = stateAny.meta ?? stateAny.simulation_meta ?? previousSnapshot?.meta;
+
+                            logToolDebug('scene_refresh', {
+                                frames: framesCandidate.length,
+                                hasScene: Boolean(sceneCandidate),
+                                conversationId: conversationHint,
+                            });
+
+                            recordSimulationSnapshot(conversationHint, {
+                                scene: sceneCandidate,
+                                frames: framesCandidate,
+                                imageWidth: imageMeta?.width_px ?? previousSnapshot?.imageWidth,
+                                imageHeight: imageMeta?.height_px ?? previousSnapshot?.imageHeight,
+                                meta,
+                            });
                         },
                         onMessage: ({ content }) => {
+                            const trimmed = typeof content === 'string' ? content.trim() : '';
+                            if (!trimmed) {
+                                console.debug('[ChatPanel] Skipping empty assistant message payload');
+                                return;
+                            }
+                            logToolDebug('assistant_message', {
+                                preview: trimmed.slice(0, 120),
+                                conversationId: globalChat.conversationId,
+                            });
                             globalChat.addMessage({ role: 'assistant', content });
                             setProgressMessages([]);
+                            if (toolsUsedRef.current) {
+                                logToolDebug('context_refresh', {
+                                    reason: 'tools_used',
+                                    conversationId: globalChat.conversationId,
+                                });
+                                toolsUsedRef.current = false;
+                                void refreshSimulationContext();
+                            }
                         },
                         onDone: ({ conversation_id }) => {
+                            logToolDebug('stream_done', {
+                                conversationId: conversation_id,
+                            });
                             globalChat.setConversationId(conversation_id);
+                            conversationIdRef.current = conversation_id;
+                            pendingConversationRef.current = null;
                             setIsLoading(false);
                             // Keep attached boxes for next message (user can remove manually with X button)
                             if (eventSourceRef.current) {
                                 eventSourceRef.current.close();
                                 eventSourceRef.current = null;
                             }
+                            toolsUsedRef.current = false;
                         },
                         onError: (error) => {
                             toast({
@@ -302,66 +753,20 @@ export default function ChatPanel({ padding = 'default' }: ChatPanelProps = {}) 
                             });
                             setIsLoading(false);
                             setProgressMessages([]);
+                            toolsUsedRef.current = false;
+                            pendingConversationRef.current = null;
                         },
                     }
                 );
 
                 eventSourceRef.current = eventSource;
             } else {
-                // Ask mode: Simple request/response
-                // Build context object if boxes are attached
-                let contextData = undefined;
-                if (attachedBoxIds.length > 0) {
-                    const attachedBoxes = getAllBoxes().filter(box => attachedBoxIds.includes(box.id));
-                    
-                    contextData = {
-                        simulation_box: undefined,
-                        image_box: undefined,
-                        boxes: [] as any[],
-                    };
-                    
-                    for (const box of attachedBoxes) {
-                        if (box.type === 'simulation') {
-                            if (box.conversationId) {
-                                const boxContext = await fetch(
-                                    `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/chat/context/${box.conversationId}`
-                                ).then(res => res.ok ? res.json() : null).catch(() => null);
-                                
-                                contextData.boxes.push({
-                                    type: 'simulation',
-                                    id: box.id,
-                                    name: box.name,
-                                    conversationId: box.conversationId,
-                                    objects: boxContext?.entities || [],
-                                    parameters: boxContext?.scene || {},
-                                });
-                            }
-                        } else {
-                            contextData.boxes.push({
-                                type: 'image',
-                                id: box.id,
-                                name: box.name,
-                                imagePath: box.imagePath,
-                            });
-                        }
-                    }
-                    
-                    const firstSimBox = contextData.boxes.find((b: any) => b.type === 'simulation');
-                    if (firstSimBox) {
-                        contextData.simulation_box = firstSimBox;
-                    }
-                    
-                    const firstImgBox = contextData.boxes.find((b: any) => b.type === 'image');
-                    if (firstImgBox) {
-                        contextData.image_box = firstImgBox;
-                    }
-                }
-                
+                // Tutor mode: Simple request/response
                 const response = await sendUnifiedChat({
                     message: userInput.content,
-                    conversation_id: globalChat.conversationId,
-                    mode: 'ask',
-                    context: contextData,
+                    conversation_id: conversationIdForRequest,
+                    mode: 'tutor',
+                    context: contextPayload,
                 });
 
                 globalChat.setConversationId(response.conversation_id);
@@ -401,13 +806,13 @@ export default function ChatPanel({ padding = 'default' }: ChatPanelProps = {}) 
             <div className="border-b bg-background/95 px-3 py-3 backdrop-blur-sm supports-[backdrop-filter]:bg-background/60">
                 <div className="flex items-center gap-2">
                     <Button
-                        variant={mode === 'ask' ? 'default' : 'outline'}
+                        variant={mode === 'tutor' ? 'default' : 'outline'}
                         size="sm"
-                        onClick={() => handleModeToggle('ask')}
+                        onClick={() => handleModeToggle('tutor')}
                         className="gap-2"
                     >
                         <MessageSquare className="h-4 w-4" />
-                        Ask
+                        Tutor
                     </Button>
                     <Button
                         variant={mode === 'agent' ? 'default' : 'outline'}
@@ -419,7 +824,7 @@ export default function ChatPanel({ padding = 'default' }: ChatPanelProps = {}) 
                         Agent
                     </Button>
                     <div className="ml-auto text-xs text-muted-foreground">
-                        {mode === 'ask' ? 'Chat mode' : 'Tool-enabled mode'}
+                        {mode === 'tutor' ? 'Tutor mode' : 'Tool-enabled mode'}
                     </div>
                 </div>
                 
@@ -522,7 +927,7 @@ export default function ChatPanel({ padding = 'default' }: ChatPanelProps = {}) 
                         </div>
                     )}
                     
-                    {isLoading && mode === 'ask' && (
+                    {isLoading && mode === 'tutor' && (
                         <ChatMessages messages={[{ role: 'assistant', content: 'Thinking...' }]} />
                     )}
                 </ScrollArea>
@@ -543,8 +948,8 @@ export default function ChatPanel({ padding = 'default' }: ChatPanelProps = {}) 
                     selectedImage={selectedImage}
                     onImageSelect={setSelectedImage}
                     placeholder={
-                        mode === 'ask'
-                            ? 'Ask about physics concepts...'
+                        mode === 'tutor'
+                            ? 'Ask your tutor about physics concepts...'
                             : 'Describe what you want to simulate...'
                     }
                 />

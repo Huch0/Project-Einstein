@@ -252,9 +252,11 @@ class ContextStore:
     def __init__(self):
         self._contexts: dict[str, ConversationContext] = {}
     
-    def create_context(self) -> ConversationContext:
-        """Create new conversation context."""
+    def create_context(self, conversation_id: str | None = None) -> ConversationContext:
+        """Create new conversation context, optionally forcing the identifier."""
         context = ConversationContext()
+        if conversation_id:
+            context.conversation_id = conversation_id
         self._contexts[context.conversation_id] = context
         return context
     

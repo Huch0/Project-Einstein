@@ -1,4 +1,5 @@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { ScrollArea } from '@/components/ui/scroll-area';
 import ParametersPanel from './parameters-panel';
 import AnalysisPanel from './analysis-panel';
 
@@ -11,7 +12,9 @@ export default function ControlPane() {
           <TabsTrigger value="analysis">Analysis</TabsTrigger>
         </TabsList>
         <TabsContent value="parameters" className="flex-1 mt-4 min-h-0">
-          <ParametersPanel />
+          <ScrollArea className="h-full pr-2">
+            <ParametersPanel />
+          </ScrollArea>
         </TabsContent>
         <TabsContent value="analysis" className="flex-1 mt-4 min-h-0">
           <AnalysisPanel />

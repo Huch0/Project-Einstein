@@ -14,6 +14,13 @@ export type SimulationData = {
     imageWidth?: number;
     imageHeight?: number;
     boxId?: string; // Which simulation box created this
+    conversationId?: string; // Source conversation id for per-box routing
+    meta?: {
+        frames_count?: number;
+        simulation_time_s?: number;
+        time_step_s?: number;
+    };
+    updatedAt?: number;
 };
 
 export type SimulationBoxInfo = {
@@ -46,6 +53,9 @@ interface GlobalChatContextType {
     setConversationId: (id: string | null) => void;
     simulationData: SimulationData | null;
     setSimulationData: (data: SimulationData | null) => void;
+    simulationSnapshots: Record<string, SimulationData>;
+    setSimulationSnapshot: (conversationId: string, data: SimulationData) => void;
+    getSimulationSnapshot: (conversationId?: string | null) => SimulationData | undefined;
     activeBoxId: string | null;
     setActiveBoxId: (id: string | null) => void;
     simulationBoxes: Map<string, SimulationBoxInfo>;
@@ -70,6 +80,7 @@ export function GlobalChatProvider({ children }: { children: ReactNode }) {
     ]);
     const [conversationId, setConversationId] = useState<string | null>(null);
     const [simulationData, setSimulationData] = useState<SimulationData | null>(null);
+    const [simulationSnapshots, setSimulationSnapshots] = useState<Record<string, SimulationData>>({});
     const [activeBoxId, setActiveBoxId] = useState<string | null>(null);
     const [simulationBoxes, setSimulationBoxes] = useState<Map<string, SimulationBoxInfo>>(new Map());
     const [imageBoxes, setImageBoxes] = useState<Map<string, ImageBoxInfo>>(new Map());
@@ -87,7 +98,29 @@ export function GlobalChatProvider({ children }: { children: ReactNode }) {
         ]);
         setConversationId(null);
         setSimulationData(null);
+        setSimulationSnapshots({});
     }, []);
+
+    const setSimulationSnapshot = useCallback((conversationId: string, data: SimulationData) => {
+        const payload: SimulationData = data.updatedAt
+            ? { ...data, conversationId }
+            : {
+                ...data,
+                conversationId,
+                updatedAt: Date.now(),
+            };
+        setSimulationSnapshots((prev) => ({
+            ...prev,
+            [conversationId]: payload,
+        }));
+    }, []);
+
+    const getSimulationSnapshot = useCallback((conversationId?: string | null) => {
+        if (!conversationId) {
+            return undefined;
+        }
+        return simulationSnapshots[conversationId];
+    }, [simulationSnapshots]);
 
     const registerSimulationBox = useCallback((info: SimulationBoxInfo) => {
         setSimulationBoxes((prev) => {
@@ -168,6 +201,9 @@ export function GlobalChatProvider({ children }: { children: ReactNode }) {
         setConversationId,
         simulationData,
         setSimulationData,
+        simulationSnapshots,
+        setSimulationSnapshot,
+        getSimulationSnapshot,
         activeBoxId,
         setActiveBoxId,
         simulationBoxes,
@@ -187,6 +223,9 @@ export function GlobalChatProvider({ children }: { children: ReactNode }) {
         setConversationId,
         simulationData,
         setSimulationData,
+        simulationSnapshots,
+        setSimulationSnapshot,
+        getSimulationSnapshot,
         activeBoxId,
         setActiveBoxId,
         simulationBoxes,

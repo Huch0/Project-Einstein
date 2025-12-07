@@ -515,7 +515,12 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     setDetections(payload.detections ?? []);
     setImageSizePx(payload.imageSizePx ?? null);
     setScale(payload.scale_m_per_px ?? null);
-    setLabels(payload.labels ?? null);
+    setLabels((prev) => {
+      if (payload.labels !== undefined) {
+        return payload.labels;
+      }
+      return prev;
+    });
   setRenderImageDataUrl(payload.renderImageDataUrl ?? null);
 
     const applyFrames = (framesToApply: SimulationFrame[], dtCandidate?: number) => {

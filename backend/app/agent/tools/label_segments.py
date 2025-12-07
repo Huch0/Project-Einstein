@@ -20,7 +20,7 @@ class LabelSegmentsInput(BaseModel):
         description="Unique identifier for the source image"
     )
     segments: list[dict[str, Any]] = Field(
-        description="Segment data from segment_image tool"
+        description="Diagram segments produced by the initialization pipeline or user annotations"
     )
     context: str = Field(
         default="",

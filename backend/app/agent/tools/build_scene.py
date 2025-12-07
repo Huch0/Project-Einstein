@@ -382,6 +382,12 @@ def _system_prompt() -> str:
     return (
         "You are an iterative physics scene architect tasked with matching the uploaded diagram. "
         "Use the available scene editing tools to add, adjust, and remove elements. "
+        "Treat circular masses or ball-like bodies as circles (use create_circle or modify_circle) and "
+        "reserve create_block/modify_block for rectangular solids, surfaces, or ramps. "
+        "If the diagram shows multiple copies of the same labeled object along a path (dashed outlines, "
+        "ghosted bodies, or repeated letters such as A_slope vs A_floor), interpret them as sequential "
+        "states of a single body. Only instantiate one physical body per unique object label, placing it in the "
+        "initial state unless the problem text explicitly requests a later moment. "
         "After each tool call you will receive an updated scene snapshot (including a data URL for the render). "
         "Continue refining until the scene accurately reflects the diagram, then respond with a concise summary "
         "and any remaining mismatches or warnings."
@@ -479,7 +485,15 @@ async def build_physics_scene(input_data: BuildSceneInput) -> BuildSceneOutput:
         "content": [
             {
                 "type": "input_text",
-                "text": "Replicate the diagram using the editing tools. Use create_block for masses or surfaces, create_pulley for wheels, and create_rope to connect bodies. Call set_mapping or set_world if scale or gravity need adjustments. Here is the diagram to replicate:",
+                "text": (
+                    "Replicate the diagram using the editing tools. Use create_circle for ball-like masses "
+                    "or any body drawn as a circle, use create_block for rectangular masses or surfaces, "
+                    "create_pulley for wheels, and create_rope to connect bodies. Call set_mapping or set_world "
+                    "if scale or gravity need adjustments. If a diagram shows the same body multiple times along "
+                    "its path (initial vs later states), treat those extra drawings as motion hints—model a single "
+                    "physical body in its initial state unless instructions explicitly say otherwise. Here is the "
+                    "diagram to replicate:"
+                ),
             },
             {"type": "input_image", "image_url": f"data:image/png;base64,{diagram_b64}"},
         ],

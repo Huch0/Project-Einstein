@@ -66,4 +66,16 @@
   body {
     @apply bg-background text-foreground;
   }
+
+  [data-pen-input="true"] {
+    -webkit-touch-callout: none;
+    touch-action: none;
+  }
+
+  [data-pen-input="true"],
+  [data-pen-input="true"] * {
+    user-select: none !important;
+    -webkit-user-select: none !important;
+    -ms-user-select: none !important;
+  }
 }

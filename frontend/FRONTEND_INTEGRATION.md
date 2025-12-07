@@ -5,17 +5,19 @@
 ### 1. **Unified Chat API Client** (`lib/unified-chat-api.ts`)
 
 **Features:**
-- ✅ Ask/Agent 모드 지원
+
+- ✅ Tutor/Agent 모드 지원
 - ✅ Non-streaming API
 - ✅ SSE Streaming API
 - ✅ Type-safe interfaces
 - ✅ Convenience functions
 
 **API:**
+
 ```typescript
 // Non-streaming
 sendUnifiedChat(request: UnifiedChatRequest): Promise<UnifiedChatResponse>
-sendAskMessage(message: string, conversationId?: string)
+sendTutorMessage(message: string, conversationId?: string)
 sendAgentMessage(message: string, attachments?, conversationId?)
 
 // Streaming (Agent only)
@@ -32,7 +34,8 @@ listConversations()
 ### 2. **ChatPanel Component** (`components/chat/chat-panel.tsx`)
 
 **Features:**
-- ✅ Ask/Agent 모드 토글 (GitHub Copilot 스타일)
+
+- ✅ Tutor/Agent 모드 토글 (GitHub Copilot 스타일)
 - ✅ Mode별 Welcome 메시지
 - ✅ SSE Streaming 지원
 - ✅ 실시간 Progress 표시
@@ -40,9 +43,10 @@ listConversations()
 - ✅ Mode 전환 시 대화 리셋
 
 **UI:**
+
 ```
 ┌─────────────────────────────────────────┐
-│ [ 💬 Ask ] [ 🤖 Agent ]  Chat mode     │ ← Mode Toggle
+│ [ 💬 Tutor ] [ 🤖 Agent ]  Chat mode   │ ← Mode Toggle
 ├─────────────────────────────────────────┤
 │                                         │
 │  🤖  Hello! I'm your physics tutor...   │
@@ -56,7 +60,7 @@ listConversations()
 │  [2/4] Running label_segments... ⏳     │
 │                                         │
 ├─────────────────────────────────────────┤
-│ Ask about physics concepts...          │
+│ Ask your tutor about physics concepts... │
 │ [ 🎤 Send ⏎ ]                          │
 └─────────────────────────────────────────┘
 ```
@@ -66,12 +70,14 @@ listConversations()
 ### 3. **ChatInput Component** (`components/chat/chat-input.tsx`)
 
 **Features:**
+
 - ✅ Dynamic placeholder (mode별로 변경)
 - ✅ Enter to send (Shift+Enter for newline)
 - ✅ Loading state
 
 **Placeholders:**
-- Ask: "Ask about physics concepts..."
+
+- Tutor: "Ask your tutor about physics concepts..."
 - Agent: "Describe what you want to simulate..."
 
 ---
@@ -79,6 +85,7 @@ listConversations()
 ### 4. **ChatMessages Component** (`components/chat/chat-messages.tsx`)
 
 **Features:**
+
 - ✅ System message 지원 (Info 아이콘)
 - ✅ User/Assistant 구분
 - ✅ Role별 스타일링
@@ -87,16 +94,16 @@ listConversations()
 
 ## 🎯 사용 흐름
 
-### Ask Mode (Normal Chat)
+### Tutor Mode (Guided Chat)
 
 ```
-User clicks [ 💬 Ask ]
+User clicks [ 💬 Tutor ]
   ↓
 Welcome: "Hello! I'm your physics tutor..."
   ↓
 User: "What is Newton's second law?"
   ↓
-[POST /chat with mode="ask"]
+[POST /chat with mode="tutor"]
   ↓
 Assistant: "Newton's second law states that F=ma..."
 ```
@@ -135,11 +142,11 @@ Assistant: "Simulation complete! Mass B descends at 1.96 m/s²..."
 frontend/src/
 ├── lib/
 │   ├── unified-chat-api.ts      # ⭐ NEW: Unified API client
-│   ├── chat-api.ts              # OLD: Legacy Ask API (can remove)
+│   ├── chat-api.ts              # OLD: Legacy Tutor API (can remove)
 │   └── agent-api.ts             # OLD: Legacy Agent API (can remove)
 ├── components/
 │   └── chat/
-│       ├── chat-panel.tsx       # ✅ UPDATED: Ask/Agent toggle + streaming
+│       ├── chat-panel.tsx       # ✅ UPDATED: Tutor/Agent toggle + streaming
 │       ├── chat-input.tsx       # ✅ UPDATED: Dynamic placeholder
 │       └── chat-messages.tsx    # ✅ UPDATED: System message support
 └── hooks/
@@ -159,19 +166,19 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 
 ## 🧪 테스트 시나리오
 
-### Test 1: Ask Mode (Normal Chat)
+### Test 1: Tutor Mode (Guided Chat)
 
-1. Click **[ 💬 Ask ]** button
+1. Click **[ 💬 Tutor ]** button
 2. Type: "What is Newton's second law?"
 3. Press Enter
-4. **Expected:** Assistant responds with explanation (no tool calls)
+4. **Expected:** Tutor responds with scaffolded explanation (no tool calls)
 
 ### Test 2: Agent Mode (Non-Streaming)
 
 1. Click **[ 🤖 Agent ]** button
 2. Type: "Create a simple pulley simulation"
 3. Press Enter
-4. **Expected:** 
+4. **Expected:**
    - Loading spinner appears
    - After ~5-10s, assistant responds with tool results
 
@@ -191,7 +198,7 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 
 ### Test 4: Mode Switching
 
-1. Start in **Ask mode**
+1. Start in **Tutor mode**
 2. Have a conversation (2-3 messages)
 3. Switch to **Agent mode**
 4. **Expected:**
@@ -242,7 +249,7 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 
 ## 📊 Performance
 
-| Metric | Ask Mode | Agent (Streaming) |
+| Metric | Tutor Mode | Agent (Streaming) |
 |--------|----------|-------------------|
 | **First Response** | ~1s | ~1s (init) |
 | **Total Time** | ~1-2s | ~10-30s |
@@ -257,16 +264,16 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 ### Mode Toggle (Inspired by GitHub Copilot)
 
 ```
-Default state (Ask):
+Default state (Tutor):
 ┌─────────────────────────────────┐
-│ [ 💬 Ask ] [ 🤖 Agent ]        │
+│ [ 💬 Tutor ] [ 🤖 Agent ]      │
 │   ^^^^^^     ^^^^^^^           │
 │   Active     Inactive          │
 └─────────────────────────────────┘
 
 Agent mode:
 ┌─────────────────────────────────┐
-│ [ 💬 Ask ] [ 🤖 Agent ]        │
+│ [ 💬 Tutor ] [ 🤖 Agent ]      │
 │   ^^^^^^^    ^^^^^^            │
 │   Inactive   Active            │
 └─────────────────────────────────┘
@@ -301,7 +308,7 @@ Example:
 2. **Multi-turn Agent**: Agent asks clarifying questions
 3. **Tool Visualization**: Show tool inputs/outputs in expandable cards
 4. **Parallel Tools**: Run independent tools concurrently
-5. **Voice Input**: Speak to Ask mode
+5. **Voice Input**: Speak to Tutor mode
 6. **Code Generation**: Agent generates custom simulation code
 
 ---
@@ -311,7 +318,7 @@ Example:
 ### Old Code (chat-api.ts)
 
 ```typescript
-// ❌ OLD: Legacy Ask API
+// ❌ OLD: Legacy Tutor API
 import { sendChatTurn } from '@/lib/chat-api';
 
 const result = await sendChatTurn({
@@ -329,7 +336,7 @@ import { sendUnifiedChat } from '@/lib/unified-chat-api';
 const result = await sendUnifiedChat({
   message: userInput.content,
   conversation_id: conversationId,
-  mode: 'ask', // or 'agent'
+  mode: 'tutor', // or 'agent'
 });
 ```
 
@@ -371,7 +378,7 @@ const eventSource = streamAgentChat(
 
 ### What We Built
 
-1. **Unified API Client** - Single API for Ask/Agent modes
+1. **Unified API Client** - Single API for Tutor/Agent modes
 2. **Mode Toggle UI** - GitHub Copilot style switcher
 3. **SSE Streaming** - Real-time tool progress
 4. **Type Safety** - Full TypeScript support
@@ -380,7 +387,7 @@ const eventSource = streamAgentChat(
 
 ### Breaking Changes
 
-- ❌ Old `/chat` API (Ask only) → ✅ New unified endpoint
+- ❌ Old `/chat` API (Tutor only) → ✅ New unified endpoint
 - ❌ Old `/agent/chat` API → ✅ New unified endpoint
 - ❌ `chat-api.ts` → ✅ `unified-chat-api.ts`
 - ❌ `agent-api.ts` → ✅ `unified-chat-api.ts`
@@ -389,7 +396,7 @@ const eventSource = streamAgentChat(
 
 1. **Simplified Code** - One API client instead of two
 2. **Better UX** - Real-time progress in Agent mode
-3. **Mode Switching** - Easy toggle between Ask/Agent
+3. **Mode Switching** - Easy toggle between Tutor/Agent
 4. **Type Safety** - Reduced runtime errors
 5. **Maintainable** - Single source of truth
 
@@ -400,6 +407,7 @@ const eventSource = streamAgentChat(
 **Date:** October 30, 2025
 
 **Next Steps:**
+
 1. Add image upload support
 2. Test with backend
 3. Add state visualization

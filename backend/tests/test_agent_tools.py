@@ -3,7 +3,6 @@ Unit tests for agent tools.
 """
 
 import pytest
-from app.agent.tools.segment_image import SegmentImageInput, segment_image
 from app.agent.tools.label_segments import LabelSegmentsInput, label_segments
 from app.agent.tools.validate_entities import ValidateEntitiesInput, validate_scene_entities
 

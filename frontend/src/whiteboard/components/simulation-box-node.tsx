@@ -84,6 +84,7 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
         resetSimulation,
         updateConfig,
         setFrameIndex,
+        loadSimulationRun,
     } = useSimulation();
 
     // Local state for playback speed (multiplier on playback cadence)
@@ -156,6 +157,9 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
     const draggable = mode === 'pan';
     const resizable = mode !== 'draw';
     const isSelected = selection.includes(node.id);
+
+    const conversationSnapshot = conversationId ? globalChat.getSimulationSnapshot(conversationId) : undefined;
+    const lastAppliedSnapshotRef = useRef<number | null>(null);
 
     const dragState = useRef<{
         pointerId: number | null;
@@ -390,6 +394,42 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [node.id, conversationId, frames.length]);
+
+    // Load latest agent snapshot (scene + frames) into global simulation context when this box's
+    // backing conversation produces new data. This keeps the rendered simulation in sync with
+    // modify_block tool results without waiting for manual refreshes.
+    useEffect(() => {
+        if (!conversationId || !conversationSnapshot) {
+            return;
+        }
+
+        if (!conversationSnapshot.scene && (!conversationSnapshot.frames || conversationSnapshot.frames.length === 0)) {
+            return;
+        }
+
+        const signature = conversationSnapshot.updatedAt ?? Date.now();
+        if (lastAppliedSnapshotRef.current === signature) {
+            return;
+        }
+        lastAppliedSnapshotRef.current = signature;
+
+        void loadSimulationRun({
+            scene: conversationSnapshot.scene,
+            frames: conversationSnapshot.frames,
+            imageSizePx:
+                conversationSnapshot.imageWidth && conversationSnapshot.imageHeight
+                    ? { width: conversationSnapshot.imageWidth, height: conversationSnapshot.imageHeight }
+                    : null,
+            meta: conversationSnapshot.meta,
+        });
+
+        globalChat.updateSimulationBox(node.id, {
+            conversationId,
+            hasSimulation: Array.isArray(conversationSnapshot.frames)
+                ? conversationSnapshot.frames.length > 0
+                : false,
+        });
+    }, [conversationId, conversationSnapshot, globalChat, loadSimulationRun, node.id]);
 
     const handleResizePointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
         event.stopPropagation();
