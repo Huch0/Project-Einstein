@@ -1,5 +1,7 @@
 # Next Steps: Per-Box Simulation State
 
+> Note: Any references to an "analytic" simulation path in this document are legacy. Analytic simulation has been removed; per-box state should orchestrate either local Matter.js interactive mode or backend-provided frames via the v0.5 workflow (/init_sim → /run_sim). Update integration points accordingly.
+
 ## Current Situation
 
 시뮬레이션 재생 컨트롤이 각 SimulationBox에 통합되었지만, **SimulationContext가 전역(global) 상태**라서 여러 SimulationBox를 동시에 사용할 때 문제가 발생합니다.

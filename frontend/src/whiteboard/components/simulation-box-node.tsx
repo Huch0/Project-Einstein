@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
-import { GripHorizontal, Trash2, Upload, MessageSquare, FlaskConical } from 'lucide-react';
+import { GripHorizontal, Trash2, Upload, MessageSquare, FlaskConical, Edit3, ChevronDown, ChevronUp } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 import { useWhiteboardStore } from '@/whiteboard/context';
@@ -22,6 +22,7 @@ import { useSimulation } from '@/simulation/SimulationContext';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { useGlobalChat } from '@/contexts/global-chat-context';
+import { resimulateScene } from '@/lib/simulation-api';
 
 interface SimulationBoxNodeProps {
     node: SimulationBoxNodeType;
@@ -84,6 +85,20 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
         resetSimulation,
         updateConfig,
         setFrameIndex,
+        setFrames,
+        setScene,
+        scene,
+        labels,
+        gravity,
+        dt,
+        friction,
+        duration,
+        restitution,
+        editingEnabled,
+        setEditingEnabled,
+        hasEverPlayed,
+        sceneModified,
+        setSceneModified,
     } = useSimulation();
 
     // Local state for playback speed (multiplier on playback cadence)
@@ -125,11 +140,62 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
     const [showChat, setShowChat] = useState(false);
     const [isEditingName, setIsEditingName] = useState(false);
     const [boxName, setBoxName] = useState(node.name || '');
+    
+    // Draggable panel states
+    const [controlsCollapsed, setControlsCollapsed] = useState(false);
+    const [chatCollapsed, setChatCollapsed] = useState(false);
+    const controlsDragRef = useRef({ startY: 0, isDragging: false });
+    const chatDragRef = useRef({ startY: 0, isDragging: false });
 
     // Simulation control handlers
-    const handlePlayPause = useCallback(() => {
-        setPlaying(!playing);
-    }, [playing, setPlaying]);
+    const handlePlayPause = useCallback(async () => {
+        // IMPORTANT: Disable editing when starting playback
+        if (!playing && editingEnabled) {
+            console.log('[SimulationBox] 🎬 Disabling edit mode before playback');
+            setEditingEnabled(false);
+        }
+        
+        if (!playing && sceneModified) {
+            // Scene was edited, need resimulation before playing
+            console.log('[SimulationBox] 🔄 Scene modified, triggering resimulation...');
+            
+            if (!globalChat.activeBoxId) {
+                console.error('[SimulationBox] ❌ No active conversation ID for resimulation');
+                return;
+            }
+            
+            try {
+                // Trigger resimulation with current (modified) scene
+                const result = await resimulateScene(
+                    globalChat.activeBoxId,
+                    duration || 5
+                );
+                
+                // Update only frames (scene already has edited positions)
+                if (result.frames && result.frames.length > 0) {
+                    console.log('[SimulationBox] ✅ Resimulation complete:', result.frames.length, 'frames');
+                    
+                    // Only update frames - scene keeps edited positions
+                    setFrames(result.frames);
+                    setFrameIndex(0);
+                    setSceneModified(false);
+                    
+                    console.log('[SimulationBox] 📦 New frames loaded with edited positions');
+                    
+                    // Now start playing with new frames
+                    setPlaying(true);
+                } else {
+                    console.warn('[SimulationBox] ⚠️ Resimulation returned no frames');
+                }
+            } catch (error) {
+                console.error('[SimulationBox] ❌ Resimulation failed:', error);
+                // Don't start playing if resimulation failed
+            }
+        } else {
+            // Normal play/pause toggle
+            setPlaying(!playing);
+        }
+    }, [playing, sceneModified, editingEnabled, globalChat.activeBoxId, duration, setFrames, setFrameIndex, setSceneModified, setPlaying, setEditingEnabled]);
 
     const handleReset = useCallback(() => {
         resetSimulation();
@@ -152,6 +218,43 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
         // Adjust integrator step based on speed multiplier; higher speed = smaller dt
         updateConfig({ dt: 0.02 / speed });
     }, [updateConfig]);
+
+    const handleSave = useCallback(() => {
+        console.log('[SimulationBox] 💾 Saving simulation...');
+        
+        // 시뮬레이션 데이터를 JSON으로 저장
+        const simulationData = {
+            boxName: node.name || 'Simulation',
+            timestamp: new Date().toISOString(),
+            scene: scene,
+            frames: frames,
+            config: {
+                gravity,
+                dt,
+                friction,
+                duration,
+                restitution,
+            },
+            entities: labels?.entities || [],
+            metadata: {
+                totalFrames: frames.length,
+                currentFrame: currentIndex,
+                playbackSpeed: playbackSpeed,
+            }
+        };
+
+        const blob = new Blob([JSON.stringify(simulationData, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `${(node.name || 'simulation').replace(/\s+/g, '_')}_${new Date().toISOString().split('T')[0]}.json`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        
+        console.log('[SimulationBox] ✅ Simulation saved successfully');
+    }, [node.name, scene, frames, gravity, dt, friction, duration, restitution, labels, currentIndex, playbackSpeed]);
 
     const draggable = mode === 'pan';
     const resizable = mode !== 'draw';
@@ -407,8 +510,11 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
             width: node.bounds.width,
             height: node.bounds.height,
             transform: `translate(${node.transform.x}px, ${node.transform.y}px)`,
+            zIndex: isSelected ? 100 : 10,
+            opacity: 1,
+            visibility: 'visible' as const,
         }),
-        [node.bounds.height, node.bounds.width, node.transform.x, node.transform.y]
+        [node.bounds.height, node.bounds.width, node.transform.x, node.transform.y, isSelected]
     );
 
     const containerClassName = cn(
@@ -544,15 +650,49 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
                         </button>
                     )}
                      */}
+                    {/* Edit Objects Button */}
+                    <button
+                        type="button"
+                        className={cn(
+                            "rounded px-2 py-1 transition-colors bg-background flex items-center gap-1",
+                            editingEnabled 
+                                ? "text-primary hover:bg-primary/20" 
+                                : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                        )}
+                        onClick={() => {
+                            console.log('[SimulationBox] 🐛 DEBUG: Edit button clicked', { hasEverPlayed, playing, editingEnabled });
+                            if (hasEverPlayed) {
+                                console.log('[SimulationBox] Edit blocked: simulation has been played. Reset required.');
+                                return;
+                            }
+                            console.log('[SimulationBox] Toggle editing mode:', !editingEnabled);
+                            setPlaying(false); // Ensure simulation is stopped
+                            setEditingEnabled(!editingEnabled);
+                        }}
+                        aria-label="Toggle editing mode"
+                        title={
+                            hasEverPlayed
+                                ? "Reset simulation to enable editing"
+                                : editingEnabled 
+                                    ? "Editing enabled (double-click objects to drag)" 
+                                    : "Enable editing mode"
+                        }
+                        data-node-action="true"
+                        disabled={playing || hasEverPlayed}
+                    >
+                        <Edit3 className="h-3.5 w-3.5" />
+                        <span className="text-xs">Edit</span>
+                    </button>
                     {/* Remove Box */}
                     <button
                         type="button"
-                        className="rounded p-1 text-muted-foreground transition-colors hover:bg-destructive hover:text-destructive-foreground bg-background"
+                        className="rounded px-2 py-1 text-muted-foreground transition-colors hover:bg-destructive hover:text-destructive-foreground bg-background flex items-center gap-1"
                         onClick={() => removeNode(node.id)}
                         aria-label="Remove simulation box"
                         data-node-action="true"
                     >
                         <Trash2 className="h-3.5 w-3.5" />
+                        <span className="text-xs">Delete</span>
                     </button>
                 </div>
             </div>
@@ -577,17 +717,60 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
                     </div>
                 )}
 
-                {/* Agent Chat Panel */}
+                {/* Agent Chat Panel - Draggable */}
                 {showChat && (
-                    <AgentChatPanel
-                        boxName={node.name}
-                        conversationId={conversationId}
-                        context={agentContext}
-                        onSendMessage={sendMessage}
-                        onClose={() => setShowChat(false)}
-                        loading={agentLoading}
-                        availableBoxes={availableBoxes}
-                    />
+                    <div className="absolute inset-0 z-30 flex flex-col bg-background">
+                        {/* Drag Handle */}
+                        <div
+                            className="flex items-center justify-center h-4 cursor-ns-resize hover:bg-accent/50 transition-colors border-b border-border/50 bg-background"
+                            onPointerDown={(e) => {
+                                chatDragRef.current = { startY: e.clientY, isDragging: true };
+                                e.currentTarget.setPointerCapture(e.pointerId);
+                            }}
+                            onPointerMove={(e) => {
+                                if (!chatDragRef.current.isDragging) return;
+                                const deltaY = e.clientY - chatDragRef.current.startY;
+                                if (Math.abs(deltaY) > 30) {
+                                    if (deltaY > 0 && !chatCollapsed) {
+                                        setChatCollapsed(true);
+                                    } else if (deltaY < 0 && chatCollapsed) {
+                                        setChatCollapsed(false);
+                                    }
+                                    chatDragRef.current.isDragging = false;
+                                }
+                            }}
+                            onPointerUp={() => {
+                                chatDragRef.current.isDragging = false;
+                            }}
+                            onPointerCancel={() => {
+                                chatDragRef.current.isDragging = false;
+                            }}
+                            title={chatCollapsed ? "Drag up to show chat" : "Drag down to hide chat"}
+                        >
+                            {chatCollapsed ? (
+                                <ChevronUp className="h-3 w-3 text-muted-foreground" />
+                            ) : (
+                                <ChevronDown className="h-3 w-3 text-muted-foreground" />
+                            )}
+                        </div>
+                        
+                        {/* Chat Content */}
+                        {!chatCollapsed ? (
+                            <AgentChatPanel
+                                boxName={node.name}
+                                conversationId={conversationId}
+                                context={agentContext}
+                                onSendMessage={sendMessage}
+                                onClose={() => setShowChat(false)}
+                                loading={agentLoading}
+                                availableBoxes={availableBoxes}
+                            />
+                        ) : (
+                            <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground bg-background">
+                                Drag up to show chat
+                            </div>
+                        )}
+                    </div>
                 )}
 
                 {/* Simulation Viewport */}
@@ -601,26 +784,70 @@ export default function SimulationBoxNode({ node, mode, camera }: SimulationBoxN
                         />
                     </div>
 
-                    {/* Simulation Playback Controls */}
+                    {/* Simulation Playback Controls - Draggable */}
                     {frames.length > 0 && (
-                        <div className="border-t border-border bg-background/95 p-2" data-node-action="true">
-                            <SimulationControls
-                                isPlaying={playing}
-                                currentFrame={currentIndex}
-                                totalFrames={frames.length}
-                                playbackSpeed={playbackSpeed}
-                                onPlayPause={handlePlayPause}
-                                onReset={handleReset}
-                                onStep={handleStep}
-                                onFrameChange={handleFrameChange}
-                                onSpeedChange={handleSpeedChange}
-                                disabled={agentLoading}
-                            />
+                        <div 
+                            className="relative border-t border-border bg-background/95"
+                            data-node-action="true"
+                        >
+                            {/* Drag Handle */}
+                            <div
+                                className="flex items-center justify-center h-4 cursor-ns-resize hover:bg-accent/50 transition-colors border-b border-border/50"
+                                onPointerDown={(e) => {
+                                    controlsDragRef.current = { startY: e.clientY, isDragging: true };
+                                    e.currentTarget.setPointerCapture(e.pointerId);
+                                }}
+                                onPointerMove={(e) => {
+                                    if (!controlsDragRef.current.isDragging) return;
+                                    const deltaY = e.clientY - controlsDragRef.current.startY;
+                                    if (Math.abs(deltaY) > 30) {
+                                        if (deltaY > 0 && !controlsCollapsed) {
+                                            setControlsCollapsed(true);
+                                        } else if (deltaY < 0 && controlsCollapsed) {
+                                            setControlsCollapsed(false);
+                                        }
+                                        controlsDragRef.current.isDragging = false;
+                                    }
+                                }}
+                                onPointerUp={() => {
+                                    controlsDragRef.current.isDragging = false;
+                                }}
+                                onPointerCancel={() => {
+                                    controlsDragRef.current.isDragging = false;
+                                }}
+                                title={controlsCollapsed ? "Drag up to show controls" : "Drag down to hide controls"}
+                            >
+                                {controlsCollapsed ? (
+                                    <ChevronUp className="h-3 w-3 text-muted-foreground" />
+                                ) : (
+                                    <ChevronDown className="h-3 w-3 text-muted-foreground" />
+                                )}
+                            </div>
+                            
+                            {/* Controls Content */}
+                            {!controlsCollapsed && (
+                                <div className="p-2">
+                                    <SimulationControls
+                                        isPlaying={playing}
+                                        currentFrame={currentIndex}
+                                        totalFrames={frames.length}
+                                        playbackSpeed={playbackSpeed}
+                                        onPlayPause={handlePlayPause}
+                                        onReset={handleReset}
+                                        onStep={handleStep}
+                                        onFrameChange={handleFrameChange}
+                                        onSpeedChange={handleSpeedChange}
+                                        onSave={handleSave}
+                                        disabled={agentLoading}
+                                        editingEnabled={editingEnabled}
+                                    />
+                                </div>
+                            )}
                         </div>
                     )}
                 </div>
             </div>
-            {isSelected && resizable ? (
+            {isSelected && resizable && !editingEnabled ? (
                 <div className="pointer-events-none absolute inset-0 z-10">
                     <div className="absolute inset-0 rounded-lg border border-primary/60 shadow-[0_0_0_1px_rgba(37,99,235,0.35)]" />
                     {RESIZE_HANDLES.map(({ id, style, cursor }) => (

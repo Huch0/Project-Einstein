@@ -139,6 +139,8 @@ interface SimulationRunPayload {
   renderImageDataUrl?: string | null;
 }
 
+export type SimulationMode = 'playback' | 'interactive';
+
 export interface SimulationConfig {
   // Universal physics config (not pulley-specific)
   gravity: number;
@@ -148,18 +150,55 @@ export interface SimulationConfig {
   restitution: number;
 }
 
+// Editing mode for interactive object manipulation
+export type EditingMode = 'disabled' | 'enabled';
+
+// Entity update callback type (for Frontend Matter.js body updates)
+export type UpdateEntityCallback = (
+  entityId: string, 
+  updates: {
+    position?: [number, number];
+    mass?: number;
+    friction?: number;
+    velocity?: [number, number];
+    angularVelocity?: number;
+  }
+) => void;
+
 interface SimulationState extends SimulationConfig {
   frames: SimulationFrame[];
   playing: boolean;
   currentIndex: number;
+  simulationMode: SimulationMode;
+  setSimulationMode: (mode: SimulationMode) => void;
+  
+  // Local optimistic scene mutation (no resimulation)
+  updateBodyLocal: (bodyId: string, updates: Partial<{ position_m: [number, number]; mass_kg: number; material: any; velocity_m_s: [number, number] }>) => void;
+  
+  // Editing mode (for interactive object manipulation)
+  editingEnabled: boolean;
+  setEditingEnabled: (enabled: boolean) => void;
+  
+  // Track if simulation has ever been played (to prevent edit after playback)
+  hasEverPlayed: boolean;
+  
+  // Track if scene was modified in edit mode (triggers resimulation on play)
+  sceneModified: boolean;
+  setSceneModified: (modified: boolean) => void;
+  
   acceleration?: number;
   tension?: number;
   staticCondition?: boolean;
   resetSimulation: () => void;
   setPlaying: (p: boolean) => void;
   setFrameIndex: (index: number) => void;
+  setFrames: (frames: SimulationFrame[]) => void;
+  setScene: (scene: any | null) => void;
   updateConfig: (partial: Partial<SimulationConfig>) => void;
-  updateSceneAndResimulate: (sceneUpdates: any | ((prev: any | null) => any | null)) => Promise<void>; // Universal scene update
+  
+  // [Modified] Added autoPlay optional parameter to signature
+  updateSceneAndResimulate: (sceneUpdates: any | ((prev: any | null) => any | null), autoPlay?: boolean) => Promise<void>; 
+  
   detections: DiagramParseDetection[];
   imageSizePx: { width: number; height: number } | null;
   scale_m_per_px: number | null;
@@ -168,6 +207,14 @@ interface SimulationState extends SimulationConfig {
   parseAndBind: (file: File) => Promise<DiagramParseResponse>;
   loadSimulationRun: (payload: SimulationRunPayload) => Promise<void>;
   renderImageDataUrl: string | null;
+  
+  // Entity selection (for click-to-edit)
+  selectedEntityId: string | null;
+  setSelectedEntityId: (id: string | null) => void;
+  
+  // Frontend entity update (for Interactive Mode)
+  updateEntityCallback: UpdateEntityCallback | null;
+  registerUpdateEntityCallback: (callback: UpdateEntityCallback) => void;
   normalizationReport: SceneNormalizationReport | null;
 }
 
@@ -184,6 +231,10 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
   const [frames, setFrames] = useState<SimulationFrame[]>([]);
   const [playing, setPlaying] = useState(false);
   const [currentIndex, setCurrentIndex] = useState(0);
+  const [simulationMode, setSimulationMode] = useState<SimulationMode>('playback');
+  const [editingEnabled, setEditingEnabled] = useState(false);
+  const [hasEverPlayed, setHasEverPlayed] = useState(false);
+  const [sceneModified, setSceneModified] = useState(false); // Track if scene was edited
   const [acceleration, setAcceleration] = useState<number | undefined>();
   const [tension, setTension] = useState<number | undefined>();
   const [staticCondition, setStaticCondition] = useState<boolean | undefined>();
@@ -197,7 +248,37 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
   const [scene, setScene] = useState<any | null>(null);
   const [labels, setLabels] = useState<{ entities: Array<{ segment_id: string; label: string; props?: Record<string, unknown> }> } | null>(null);
   const [renderImageDataUrl, setRenderImageDataUrl] = useState<string | null>(null);
+  
+  // Store original scene for reset functionality
+  const originalSceneRef = useRef<any | null>(null);
+  const originalFramesRef = useRef<SimulationFrame[]>([]);
+  
+  // Entity selection state
+  const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
+  
+  // Frontend entity update callback (registered by SimulationLayer)
+  const [updateEntityCallback, setUpdateEntityCallback] = useState<UpdateEntityCallback | null>(null);
+  
+  const registerUpdateEntityCallback = useCallback((callback: UpdateEntityCallback) => {
+    setUpdateEntityCallback(() => callback);
+  }, []);
   const [normalizationReport, setNormalizationReport] = useState<SceneNormalizationReport | null>(null);
+
+  // Local optimistic body update (mutate scene only)
+  const updateBodyLocal = useCallback((bodyId: string, updates: Partial<{ position_m: [number, number]; mass_kg: number; material: any; velocity_m_s: [number, number] }>) => {
+    setScene((prev: any | null) => {
+      if (!prev || !Array.isArray((prev as any).bodies)) return prev;
+      const next = cloneSceneSnapshot(prev);
+      const bodies = (next as any).bodies as any[];
+      const idx = bodies.findIndex((b) => typeof b?.id === 'string' && b.id === bodyId);
+      if (idx === -1) {
+        console.warn('[SimulationContext] updateBodyLocal: body not found', bodyId);
+        return prev;
+      }
+      bodies[idx] = { ...bodies[idx], ...updates };
+      return next;
+    });
+  }, []);
 
   const normalizeSceneForState = useCallback(
     (sceneInput: any | null, overrides?: SceneNormalizationOverrides) => {
@@ -250,15 +331,33 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
 
   const resetSimulation = useCallback(() => {
     console.log('[SimulationContext] resetSimulation called');
-    // Stop playback and reset to beginning
+    
+    // Stop playback and reset to beginning (frame 0)
     setPlaying(false);
     setCurrentIndex(0);
+    setHasEverPlayed(false);
+    setSceneModified(false);
     lastTimestamp.current = null;
-    console.log('[SimulationContext] reset complete, playing set to false');
+    
+    // Restore original scene and frames if available
+    if (originalSceneRef.current) {
+      console.log('[SimulationContext] Restoring original scene from backup');
+      // Deep clone to avoid mutation
+      setScene(cloneSceneSnapshot(originalSceneRef.current));
+    }
+    
+    if (originalFramesRef.current.length > 0) {
+      console.log('[SimulationContext] Restoring original frames:', originalFramesRef.current.length);
+      setFrames([...originalFramesRef.current]);
+    } else {
+      console.log('[SimulationContext] No original frames to restore - keeping current frames');
+    }
+    
+    console.log('[SimulationContext] reset complete, playing set to false, frame index = 0');
   }, []);
 
   const performResimulation = useCallback(
-    (sceneToRun: any | null) => {
+    (sceneToRun: any | null, autoPlay: boolean = false) => {
       if (!sceneToRun) {
         console.warn('[SimulationContext] performResimulation skipped: no scene provided');
         setFrames([]);
@@ -267,7 +366,7 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
       }
 
       const requestId = ++loadRequestRef.current;
-      setPlaying(false);
+      setPlaying(false); // Calculation is synchronous/blocking anyway, but ensures UI state
 
       try {
         const duration = typeof config.duration === 'number' && config.duration > 0 ? config.duration : 5;
@@ -295,7 +394,18 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
         setFrames(mappedFrames);
         setCurrentIndex(0);
         lastTimestamp.current = null;
-        setPlaying(mappedFrames.length > 0);
+        
+        // [Modified] Respect the autoPlay flag
+        if (autoPlay) {
+            console.log('[SimulationContext] Resimulation complete, auto-playing');
+            setPlaying(true);
+        } else {
+            setPlaying(false);
+        }
+        
+        // Update original frames backup for Reset functionality
+        console.log('[SimulationContext] Updating original frames backup:', mappedFrames.length, 'frames');
+        originalFramesRef.current = [...mappedFrames];
 
         const dtFromScene =
           typeof sceneToRun?.world?.time_step_s === 'number' && sceneToRun.world.time_step_s > 0
@@ -314,45 +424,52 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
 
   // Update scene and immediately re-run Matter.js with the latest parameters
   const updateSceneAndResimulate = useCallback(
-    async (sceneUpdates: any | ((prev: any | null) => any | null)) => {
-      let normalizationResult: { scene: any | null; report: SceneNormalizationReport | null } = {
-        scene: null,
-        report: null,
-      };
-
-      setScene((prevScene: any | null) => {
-        const base = cloneSceneSnapshot(prevScene);
-        const candidate =
-          typeof sceneUpdates === 'function'
-            ? sceneUpdates(base)
+    async (
+        sceneUpdates: any | ((prev: any | null) => any | null), 
+        autoPlay: boolean = false
+    ) => {
+      // 1. 상태 업데이트 전에 먼저 새로운 씬을 계산합니다.
+      // 현재 scene 상태를 가져오기 위해 closure의 'scene' 값을 사용하거나, 
+      // 함수형 업데이트가 꼭 필요하다면 아래와 같이 처리해야 합니다.
+      
+      // 안전하게 현재 scene을 기반으로 후보군 계산
+      const currentBase = cloneSceneSnapshot(scene);
+      const candidate = typeof sceneUpdates === 'function'
+            ? sceneUpdates(currentBase)
             : sceneUpdates;
 
-        if (candidate === undefined) {
-          normalizationResult = normalizeSceneForState(base);
-          return normalizationResult.scene;
-        }
-
-        if (candidate === null) {
+      // 2. Normalization 수행
+      let normalizationResult: { scene: any | null; report: SceneNormalizationReport | null };
+      
+      if (candidate === undefined) {
+          normalizationResult = normalizeSceneForState(currentBase);
+      } else if (candidate === null) {
           normalizationResult = { scene: null, report: null };
-          return null;
-        }
+      } else {
+          normalizationResult = normalizeSceneForState(candidate);
+      }
 
-        normalizationResult = normalizeSceneForState(candidate);
-        return normalizationResult.scene;
-      });
-
+      // 3. 결과 검증 (이제 동기적으로 확실히 체크 가능)
       if (!normalizationResult.scene) {
-        console.warn('[SimulationContext] updateSceneAndResimulate cleared the scene');
+        console.warn('[SimulationContext] updateSceneAndResimulate cleared the scene (validation failed)');
+        setScene(null);
         setNormalizationReport(null);
         setFrames([]);
         setPlaying(false);
         return;
       }
 
+      // 4. 상태 업데이트 (유효한 경우에만)
       setNormalizationReport(normalizationResult.report ?? null);
-      performResimulation(normalizationResult.scene);
+      setScene(normalizationResult.scene); // 계산된 결과로 상태 설정
+      
+      console.log('[SimulationContext] Updating original scene backup with modified scene');
+      originalSceneRef.current = cloneSceneSnapshot(normalizationResult.scene);
+      
+      // 5. 시뮬레이션 실행 (autoPlay 플래그 전달)
+      performResimulation(normalizationResult.scene, autoPlay);
     },
-    [normalizeSceneForState, performResimulation],
+    [scene, normalizeSceneForState, performResimulation], // 'scene' 의존성 추가 필요
   );
 
   const updateConfig = useCallback(
@@ -440,7 +557,7 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     } else {
       setLabels(null);
     }
-    // Prefer backend Rapier frames if present; else fall back to analytic
+  // Prefer backend frames if present
     const sim = (res.meta as any)?.simulation;
     const framesFromBackend = sim?.frames as Array<any> | undefined;
     if (Array.isArray(framesFromBackend) && framesFromBackend.length > 0) {
@@ -490,8 +607,7 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
       gravity: res.parameters.gravity_m_s2,
       friction: res.parameters.mu_k,
     }));
-    // Optional: rerun analytic with new params
-    // runAnalytic();
+  // Analytic path removed; rely on backend or local Matter.js only.
     return res;
   }, []);
 
@@ -517,15 +633,26 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     setScale(payload.scale_m_per_px ?? null);
     setLabels(payload.labels ?? null);
   setRenderImageDataUrl(payload.renderImageDataUrl ?? null);
+  
+    // Store original scene for reset functionality
+    if (normalization.scene) {
+      originalSceneRef.current = cloneSceneSnapshot(normalization.scene);
+      console.log('[SimulationContext] Original scene stored for reset');
+    }
 
     const applyFrames = (framesToApply: SimulationFrame[], dtCandidate?: number) => {
       if (requestId !== loadRequestRef.current) {
         return;
       }
-      setFrames(framesToApply);
-      setCurrentIndex(0);
-      lastTimestamp.current = null;
-      setPlaying(framesToApply.length > 0);
+  setFrames(framesToApply);
+  setCurrentIndex(0);
+  lastTimestamp.current = null;
+  // Prevent auto-play when loading frames unless explicitly triggered by control handler.
+  setPlaying(false);
+      
+      // Store original frames for reset functionality
+      originalFramesRef.current = [...framesToApply];
+      console.log('[SimulationContext] Original frames stored for reset:', framesToApply.length);
 
       if (typeof dtCandidate === 'number' && Number.isFinite(dtCandidate) && dtCandidate > 0) {
         setConfig(prev => ({ ...prev, dt: dtCandidate }));
@@ -691,11 +818,32 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     playingRef.current = playing;
+    
+    // Track if simulation has ever been played
+    if (playing) {
+      console.log('[SimulationContext] ▶️ Simulation STARTED');
+      setHasEverPlayed(true);
+    } else {
+      console.log('[SimulationContext] ⏸️ Simulation PAUSED/STOPPED');
+    }
+    
     if (!playing && frameRequestRef.current !== null) {
       cancelAnimationFrame(frameRequestRef.current);
       frameRequestRef.current = null;
     }
   }, [playing]);
+
+  // Auto-stop simulation when editing is enabled
+  useEffect(() => {
+    if (editingEnabled && playing) {
+      console.log('[SimulationContext] ✏️ Edit mode enabled → Auto-stopping simulation');
+      setPlaying(false);
+    } else if (editingEnabled) {
+      console.log('[SimulationContext] ✏️ Edit mode ENABLED (simulation already stopped)');
+    } else {
+      console.log('[SimulationContext] 📝 Edit mode DISABLED');
+    }
+  }, [editingEnabled, playing]);
 
   // Playback loop
   useEffect(() => {
@@ -743,12 +891,22 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     frames,
     playing,
     currentIndex,
+    simulationMode,
+    setSimulationMode,
+    updateBodyLocal,
+    editingEnabled,
+    setEditingEnabled,
+    hasEverPlayed,
+    sceneModified,
+    setSceneModified,
     acceleration,
     tension,
     staticCondition,
     resetSimulation,
     setPlaying,
     setFrameIndex,
+    setFrames,
+    setScene,
     updateConfig,
     updateSceneAndResimulate,
     detections,
@@ -759,6 +917,14 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     parseAndBind,
     loadSimulationRun,
     renderImageDataUrl,
+    
+    // Entity selection
+    selectedEntityId,
+    setSelectedEntityId,
+    
+    // Frontend entity update
+    updateEntityCallback,
+    registerUpdateEntityCallback,
     normalizationReport,
   };
   return <SimulationContext.Provider value={value}>{children}</SimulationContext.Provider>;

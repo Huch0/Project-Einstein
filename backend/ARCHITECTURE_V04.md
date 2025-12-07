@@ -1,5 +1,7 @@
 # Project Einstein v0.4 - Architecture Overview
 
+> [DEPRECATED IN v0.5] This document describes the v0.4 chat-driven initialization flow. As of v0.5, initialization is handled via the new two-phase workflow with /init_sim and /run_sim. See .github/instructions/instruction.instructions.md for the current spec. The /chat endpoint remains for Q&A only and is not used for initialization.
+
 ## 🎯 Chat & Agent Integration Complete
 
 ```

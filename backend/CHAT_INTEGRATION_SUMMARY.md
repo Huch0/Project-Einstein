@@ -1,5 +1,7 @@
 # Chat & Agent Integration Summary (v0.4)
 
+> [DEPRECATED IN v0.5] The chat-based initialization workflow described here has been replaced. Use the /init_sim (initialization) and /run_sim (execution) endpoints as specified in .github/instructions/instruction.instructions.md. Keep /chat for Q&A; do not use it for image upload or initialization.
+
 ## ✅ 완료된 작업
 
 ### 1. **Unified Chat Router 구현** (`unified_chat.py`)

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from 'react';
-import { Hand, UploadCloud } from 'lucide-react';
+import { Hand, UploadCloud, FlaskConical } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import {
@@ -20,6 +20,12 @@ import WhiteboardCanvas from '@/whiteboard/WhiteboardCanvas';
 import type { InteractionMode } from '@/whiteboard/types';
 import { cn } from '@/lib/utils';
 import { calculateImageNodeBounds } from '@/whiteboard/utils';
+import { 
+    SAMPLE_PULLEY_IMAGE, 
+    SAMPLE_IMAGE_SIZE,
+    createTestSimulationPayload 
+} from '@/lib/test-fixtures';
+import { useSimulation } from '@/simulation/SimulationContext';
 
 const INITIAL_MODE: InteractionMode = 'simulation';
 
@@ -42,7 +48,8 @@ function SimulationCanvasInner({ className }: SimulationCanvasStackProps) {
     const [mode, setMode] = useState<InteractionMode>(INITIAL_MODE);
     const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
     const [open, setOpen] = useState(false);
-    const { strokeNodes, clearStrokes, createImageBox, setSelection } = useWhiteboardStore();
+    const { strokeNodes, clearStrokes, createImageBox, createSimulationBox, setSelection } = useWhiteboardStore();
+    const { loadSimulationRun } = useSimulation();
 
     const hasCanvasContent = strokeNodes.length > 0;
 
@@ -98,6 +105,55 @@ function SimulationCanvasInner({ className }: SimulationCanvasStackProps) {
         imageInputRef.current?.click();
     };
 
+    const handleAddTestSimulation = async () => {
+        console.log('[SimulationWrapper] Adding test simulation...');
+        
+        // Calculate positions for side-by-side layout
+        const imageWidth = 400;
+        const imageHeight = 300;
+        const simWidth = 600;
+        const simHeight = 400;
+        const gap = 40;
+        
+        const totalWidth = imageWidth + gap + simWidth;
+        const startX = dimensions.width > 0 ? Math.max(40, (dimensions.width - totalWidth) / 2) : 80;
+        const imageY = dimensions.height > 0 ? Math.max(40, (dimensions.height - imageHeight) / 2) : 100;
+        const simY = dimensions.height > 0 ? Math.max(40, (dimensions.height - simHeight) / 2) : 100;
+        
+        // Create image box (left side)
+        const imageNodeId = createImageBox({
+            source: { kind: 'upload', uri: SAMPLE_PULLEY_IMAGE },
+            originalSize: { width: SAMPLE_IMAGE_SIZE.width, height: SAMPLE_IMAGE_SIZE.height },
+            initial: {
+                bounds: { width: imageWidth, height: imageHeight },
+                transform: { x: startX, y: imageY, scaleX: 1, scaleY: 1, rotation: 0 },
+            },
+        });
+        
+        console.log('[SimulationWrapper] Image box created:', imageNodeId);
+        
+        // Create simulation box (right side)
+        const simNodeId = createSimulationBox({
+            bounds: { width: simWidth, height: simHeight },
+            transform: { x: startX + imageWidth + gap, y: simY, scaleX: 1, scaleY: 1, rotation: 0 },
+            name: 'Test Atwood Machine',
+        });
+        
+        console.log('[SimulationWrapper] Simulation box created:', simNodeId);
+        
+        // Load test simulation data into global simulation context
+        try {
+            const testPayload = createTestSimulationPayload();
+            await loadSimulationRun(testPayload);
+            console.log('[SimulationWrapper] Test simulation loaded successfully');
+        } catch (error) {
+            console.error('[SimulationWrapper] Failed to load test simulation:', error);
+        }
+        
+        // Select both boxes
+        setSelection([imageNodeId, simNodeId]);
+    };
+
     return (
         <div
             ref={wrapperRef}
@@ -136,6 +192,16 @@ function SimulationCanvasInner({ className }: SimulationCanvasStackProps) {
                     </Button>
                 </div>
                 <div className="flex items-center gap-2">
+                    <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={handleAddTestSimulation}
+                        className="border-dashed"
+                    >
+                        <FlaskConical className="mr-2 h-4 w-4" />
+                        Add Test Simulation
+                    </Button>
                     <Button
                         type="button"
                         variant="outline"

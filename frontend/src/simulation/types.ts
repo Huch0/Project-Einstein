@@ -20,6 +20,8 @@ export const bodySchema = z.object({
   mass_kg: z.number().positive(),
   position_m: z.tuple([z.number(), z.number()]),
   velocity_m_s: z.tuple([z.number(), z.number()]).default([0, 0]),
+  // Optional link back to the original SAM/vision segment id from backend
+  source_segment_id: z.union([z.string(), z.number()]).nullable().optional(),
   material: materialSchema.default({ name: 'default', friction: 0, restitution: 0 }),
 });
 
@@ -34,12 +36,15 @@ export const pulleyConstraintSchema = z.object({
   wheel_radius_m: z.number().positive().default(0.1),
 });
 
+// Generalized scene schema: allow variable number of bodies and constraints.
+// For now we still recognize pulley constraints, but do not enforce fixed counts here.
 export const sceneSchema = z.object({
   version: z.literal('0.1.0').default('0.1.0'),
-  kind: z.literal('pulley.single_fixed_v0'),
+  // Allow other kinds in future; keep as string to avoid over-constraining
+  kind: z.string().default('pulley.single_fixed_v0'),
   world: worldSettingsSchema,
-  bodies: z.array(bodySchema).length(2),
-  constraints: z.array(pulleyConstraintSchema).length(1),
+  bodies: z.array(bodySchema).min(1),
+  constraints: z.array(pulleyConstraintSchema).min(0),
   notes: z.string().optional(),
 });
 

@@ -73,7 +73,25 @@ function createBody(bodyDef: any, timeStep_s: number, overrides?: { restitution?
     const matterY = usesCanvasSpace ? scenePosition[1] : -scenePosition[1];
     const collider = bodyDef?.collider ?? null;
     const isStatic = bodyDef?.type === 'static';
-    const isEnvironment = isStatic || ['surface', 'ground', 'ramp', 'rope', 'anchor'].includes(bodyDef?.id?.split('_')[0] ?? '');
+    
+    // [FIX] Force dynamic bodies for common movable objects (override backend static flag)
+    const bodyId = bodyDef?.id?.toLowerCase() ?? '';
+    const shouldBeDynamic = 
+        bodyId.includes('mass') || 
+        bodyId.includes('ball') || 
+        bodyId.includes('block') ||
+        bodyId.includes('box') ||
+        bodyId.includes('weight') ||
+        (collider?.type === 'circle' && !bodyId.includes('pulley') && !bodyId.includes('wheel'));
+    
+    const finalIsStatic = shouldBeDynamic ? false : isStatic;
+    
+    // Debug: log only when forcing static->dynamic conversion
+    if (shouldBeDynamic && isStatic) {
+        console.log(`🔧 Forcing body "${bodyDef?.id}" to dynamic`);
+    }
+    
+    const isEnvironment = finalIsStatic || ['surface', 'ground', 'ramp', 'rope', 'anchor'].includes(bodyDef?.id?.split('_')[0] ?? '');
     const effectiveDt = Number.isFinite(timeStep_s) && timeStep_s > 0 ? timeStep_s : 0.016;
 
     const renderConfig = bodyDef?.render && typeof bodyDef.render === 'object' ? bodyDef.render : undefined;
@@ -123,7 +141,7 @@ function createBody(bodyDef: any, timeStep_s: number, overrides?: { restitution?
     }
 
     const commonOpts: Matter.IBodyDefinition = {
-        isStatic,
+        isStatic: finalIsStatic,
         friction: surfaceFriction,
         frictionStatic: surfaceFriction,
         frictionAir: 0.0,
@@ -173,7 +191,7 @@ function createBody(bodyDef: any, timeStep_s: number, overrides?: { restitution?
         Body.setAngle(singleBody, initialAngle);
     }
 
-    if (!isStatic) {
+    if (!finalIsStatic) {
         const targetMass = Number(bodyDef?.mass_kg);
         if (Number.isFinite(targetMass) && targetMass > 0) {
             Body.setMass(singleBody, targetMass);
@@ -215,6 +233,9 @@ export function initializeMatterScene(scene: any, overrides?: { restitution?: nu
         : 0.016;
     const engine = Engine.create({
         gravity: { x: gx, y: gy },
+        enableSleeping: false, // Disable sleeping to prevent collision skips
+        positionIterations: 10, // Increase for better collision resolution
+        velocityIterations: 8, // Increase for better collision resolution
     });
 
     const bodyMap = new Map<string, Matter.Body>();
@@ -225,6 +246,34 @@ export function initializeMatterScene(scene: any, overrides?: { restitution?: nu
         const body = createBody(bodyDef, timeStep, overrides);
         bodyMap.set(bodyDef.id, body);
         World.add(engine.world, body);
+    }
+
+    // [FIX] Add ground if none exists to prevent objects from falling through
+    const hasGround = Array.from(bodyMap.values()).some(body => 
+        body.isStatic && body.position.y > 5 // Static body near bottom
+    );
+    
+    if (!hasGround) {
+        console.log('🏗️ No ground detected - adding default ground plane');
+        const ground = Bodies.rectangle(
+            0, // Center X
+            10, // Y position (10 meters down in scene coords)
+            100, // Width: 100 meters
+            1, // Height: 1 meter thick
+            {
+                isStatic: true,
+                friction: 0.8,
+                restitution: 0.3,
+                label: 'auto_ground',
+                render: {
+                    fillStyle: '#374151',
+                    strokeStyle: '#4b5563',
+                    lineWidth: 2,
+                }
+            }
+        );
+        World.add(engine.world, ground);
+        bodyMap.set('auto_ground', ground);
     }
 
     const ropeLikeKeys = new Set([
@@ -389,7 +438,7 @@ export function initializeMatterScene(scene: any, overrides?: { restitution?: nu
     return { engine, bodyMap, pulleyConstraints };
 }
 
-function enforcePulleyConstraints(constraints: BuiltScene['pulleyConstraints']) {
+export function enforcePulleyConstraints(constraints: BuiltScene['pulleyConstraints']) {
     for (const pulley of constraints) {
         const { bodyA, bodyB, anchor, totalLength } = pulley;
         const pA = bodyA.position;

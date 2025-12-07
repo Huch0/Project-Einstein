@@ -5,10 +5,11 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import { Slider } from '@/components/ui/slider';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Play, Pause, StepForward, RotateCcw } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Play, Pause, StepForward, RotateCcw, Box } from 'lucide-react';
+import { useMemo, useState, useCallback, useEffect } from 'react';
 import { useSimulation } from '@/simulation/SimulationContext';
 import { useGlobalChat } from '@/contexts/global-chat-context';
+import { updateBody } from '@/lib/simulation-api';
 import {
   Select,
   SelectContent,
@@ -16,6 +17,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { useToast } from '@/hooks/use-toast';
 import { Input } from '@/components/ui/input';
 
 type Scope = 'global' | 'entity';
@@ -65,12 +67,44 @@ export default function ParametersPanel() {
     gravity, dt, restitution, duration,
     updateConfig, resetSimulation, 
     playing, setPlaying, scene, labels,
-    updateSceneAndResimulate
+    updateSceneAndResimulate,
+    updateBodyLocal,
+    sceneModified,
+    setSceneModified,
+    selectedEntityId: contextSelectedEntityId,
+    setSelectedEntityId: setContextSelectedEntityId,
+    updateEntityCallback,
+    editingEnabled,
+    setEditingEnabled,
+    hasEverPlayed,
+    frames,
+    currentIndex,
+    setFrameIndex,
   } = useSimulation();
   const globalChat = useGlobalChat();
+  const { toast } = useToast();
   const [scope, setScope] = useState<Scope>('global');
   const [selectedBoxId, setSelectedBoxId] = useState<string | null>(null);
   const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
+  const [isUpdating, setIsUpdating] = useState(false);
+  
+  // Sync Context selectedEntityId to local state and auto-switch to entity scope
+  useEffect(() => {
+    if (contextSelectedEntityId !== null && contextSelectedEntityId !== selectedEntityId) {
+      setSelectedEntityId(contextSelectedEntityId);
+      
+      // Auto-switch to entity scope only if entities are available
+      if (labels?.entities && labels.entities.length > 0) {
+        setScope('entity');
+      }
+    }
+  }, [contextSelectedEntityId, selectedEntityId, labels?.entities]);
+  
+  // Sync local selectedEntityId to Context
+  const handleEntitySelect = useCallback((entityId: string) => {
+    setSelectedEntityId(entityId);
+    setContextSelectedEntityId(entityId);
+  }, [setContextSelectedEntityId]);
   
   // Physics parameters (must be at top level, not conditionally called)
   const [friction, setFriction] = useState(0.5);
@@ -80,6 +114,40 @@ export default function ParametersPanel() {
   const [positionState, setPositionState] = useState<PositionState>(() => ({ ...DEFAULT_POSITION_STATE }));
   const [gravityX, setGravityX] = useState(0);
   const [gravityY, setGravityY] = useState(gravity);
+
+  // Backend sync helper for material updates
+  const syncMaterialToBackend = useCallback(async (
+    bodyId: string,
+    material: { friction?: number; restitution?: number },
+    resimulate: boolean = false
+  ) => {
+    const conversationId = selectedBoxId || globalChat.activeBoxId;
+    if (!conversationId) {
+      console.warn('[ParametersPanel] No conversation ID for backend sync');
+      return;
+    }
+
+    setIsUpdating(true);
+    try {
+      await updateBody(conversationId, bodyId, { material }, resimulate);
+      
+      if (resimulate) {
+        toast({
+          title: '✅ Material Updated',
+          description: `Body ${bodyId} material synced with resimulation`,
+        });
+      }
+    } catch (error) {
+      console.error('[ParametersPanel] Backend sync failed:', error);
+      toast({
+        title: '⚠️ Sync Failed',
+        description: 'Material changes saved locally only',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsUpdating(false);
+    }
+  }, [selectedBoxId, globalChat.activeBoxId, toast]);
 
   // Get simulation boxes from GlobalChatContext
   const simulationBoxes = useMemo(() => {
@@ -94,21 +162,76 @@ export default function ParametersPanel() {
 
   // Get entities from selected box or fallback to current scene
   const entities = useMemo(() => {
-    // For now, use labels.entities as before
-    // TODO: Fetch from selectedBox.conversationId context
-    return labels?.entities ?? [];
+    const entitiesList = labels?.entities ?? [];
+    
+    // Debug: Log entities to see actual structure
+    if (entitiesList.length > 0) {
+      console.log('[ParametersPanel] 📋 Entities structure:', entitiesList);
+    }
+    
+    return entitiesList;
   }, [labels, selectedBox]);
+  
+  // Resolve selected id to a concrete body.id. Prefer body.id usage everywhere.
+  const resolveToBodyId = useCallback((id: string | null): string | null => {
+    if (!id || !scene?.bodies) return null;
+    // Direct match by body.id
+    if (scene.bodies.some((b: any) => b?.id === id)) return id;
+    // Fallback: find by source_segment_id (backend-provided)
+    const bySegment = scene.bodies.find((b: any) => String(b?.source_segment_id ?? '') === String(id));
+    if (bySegment?.id) return bySegment.id;
+    // Last resort: return as-is
+    return id;
+  }, [scene?.bodies]);
+
+  // Normalized id the rest of the panel will use (always a body.id when possible)
+  const normalizedSelectedEntityId = useMemo(() => resolveToBodyId(selectedEntityId), [selectedEntityId, resolveToBodyId]);
+  
+  // Helper: does any entity match this segment id value
+  const eSafeHasSegment = useCallback((ents: Array<{ segment_id: string }>, segId: unknown): boolean => {
+    if (segId === undefined || segId === null) return false;
+    return ents.some(e => String(e.segment_id) === String(segId));
+  }, []);
+
+  // Validate selectedEntityId exists in scene or entities
+  useEffect(() => {
+    if (!selectedEntityId) return;
+    
+    const normalized = normalizedSelectedEntityId;
+    // Check if it exists in scene bodies
+    const inScene = scene?.bodies?.some((b: any) => b.id === normalized);
+    // Check if it exists in entities by either body.id or body.source_segment_id
+    const inEntities = entities.some(e => e.segment_id === normalized) ||
+      scene?.bodies?.some((b: any) => b.id === normalized && eSafeHasSegment(entities, b.source_segment_id))
+      || false;
+
+    if (!inScene && !inEntities && entities.length > 0) {
+      console.group('[ParametersPanel] 🔍 Entity Validation');
+      console.warn('Selected body ID:', selectedEntityId);
+      console.warn('Normalized ID:', normalized);
+      console.warn('In scene bodies:', inScene);
+      console.warn('In entities:', inEntities);
+      console.table([
+        { type: 'Scene Bodies', ids: scene?.bodies?.map((b: any) => b.id).join(', ') },
+        { type: 'Entities', ids: entities.map(e => e.segment_id).join(', ') }
+      ]);
+      console.groupEnd();
+    }
+  }, [selectedEntityId, entities, normalizedSelectedEntityId, eSafeHasSegment, scene?.bodies]);
 
   useEffect(() => {
-    if (!selectedEntityId || !scene?.bodies) {
+    if (!normalizedSelectedEntityId || !scene?.bodies) {
       setVelocityState({ ...DEFAULT_VELOCITY_STATE });
       setPositionState({ ...DEFAULT_POSITION_STATE });
       setEntityRestitution(1);
       return;
     }
 
-    const body = scene.bodies.find((b: any) => b.id === selectedEntityId);
+    // SIMPLIFIED: Direct body.id lookup (normalizedSelectedEntityId is already the body.id)
+    const body = scene.bodies.find((b: any) => b.id === normalizedSelectedEntityId);
+    
     if (!body) {
+      console.warn(`[ParametersPanel] Body not found for ID: ${normalizedSelectedEntityId}`);
       setVelocityState({ ...DEFAULT_VELOCITY_STATE });
       setPositionState({ ...DEFAULT_POSITION_STATE });
       setEntityRestitution(1);
@@ -140,7 +263,7 @@ export default function ParametersPanel() {
     } else {
       setEntityRestitution(1);
     }
-  }, [selectedEntityId, scene?.bodies]);
+  }, [normalizedSelectedEntityId, scene?.bodies]);
 
   const applyVelocityUpdate = useCallback(
     (entityId: string, vx: number, vy: number) => {
@@ -316,12 +439,21 @@ export default function ParametersPanel() {
 
         <div className="flex items-center justify-between">
           <CardTitle className="font-headline text-lg">Controls & Parameters</CardTitle>
-          {labels && labels.entities?.length ? (
-            <div className="flex gap-1 rounded-md border bg-background p-1">
-              <Button type="button" variant={scope === 'global' ? 'default' : 'ghost'} size="sm" onClick={() => setScope('global')} aria-pressed={scope==='global'}>Global</Button>
-              <Button type="button" variant={scope === 'entity' ? 'default' : 'ghost'} size="sm" onClick={() => setScope('entity')} aria-pressed={scope==='entity'} disabled={entities.length === 0}>Entity</Button>
-            </div>
-          ) : null}
+          <div className="flex gap-2">
+            {sceneModified && !playing && (
+              <span className="text-xs px-2 py-1 rounded bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 border border-amber-300/60">
+                Edited
+              </span>
+            )}
+            {/* Interactive editing is available when simulation is stopped; no separate mode toggle */}
+            {/* Entity Scope Toggle */}
+            {labels && scene?.bodies?.length ? (
+              <div className="flex gap-1 rounded-md border bg-background p-1">
+                <Button type="button" variant={scope === 'global' ? 'default' : 'ghost'} size="sm" onClick={() => setScope('global')} aria-pressed={scope==='global'}>Global</Button>
+                <Button type="button" variant={scope === 'entity' ? 'default' : 'ghost'} size="sm" onClick={() => setScope('entity')} aria-pressed={scope==='entity'} disabled={!scene?.bodies || scene.bodies.length === 0}>Entity</Button>
+              </div>
+            ) : null}
+          </div>
         </div>
       </CardHeader>
       <CardContent className="flex-1 overflow-hidden p-0 min-h-0">
@@ -338,20 +470,137 @@ export default function ParametersPanel() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="space-y-4">
                 <h3 className="font-medium text-sm text-muted-foreground">Simulation Controls</h3>
-                <div className="grid grid-cols-4 gap-2">
-                  <Button variant="outline" size="icon" aria-label="Play" onClick={() => { setPlaying(true); }} disabled={playing}>
+                <div className="grid grid-cols-5 gap-2">
+                  <Button 
+                    variant="outline" 
+                    size="icon" 
+                    aria-label="Play" 
+                    onClick={() => { 
+                      setEditingEnabled(false); // Disable editing when playing
+                      setPlaying(true); 
+                    }} 
+                    disabled={playing || editingEnabled}
+                    title={editingEnabled ? "Disable Edit mode to play" : "Play simulation"}
+                  >
                     <Play className="h-4 w-4" />
                   </Button>
-                  <Button variant="outline" size="icon" aria-label="Pause" onClick={() => setPlaying(false)} disabled={!playing}>
+                  <Button 
+                    variant="outline" 
+                    size="icon" 
+                    aria-label="Pause" 
+                    onClick={() => setPlaying(false)} 
+                    disabled={!playing}
+                  >
                     <Pause className="h-4 w-4" />
                   </Button>
-                  <Button variant="outline" size="icon" aria-label="Step Forward">
+                  <Button 
+                    variant="outline" 
+                    size="icon" 
+                    aria-label="Step Forward" 
+                    disabled={playing || editingEnabled}
+                    title="Step forward one frame"
+                  >
                     <StepForward className="h-4 w-4" />
                   </Button>
-                  <Button variant="outline" size="icon" aria-label="Reset" onClick={() => resetSimulation()}>
+                  <Button 
+                    variant="outline" 
+                    size="icon" 
+                    aria-label="Reset" 
+                    onClick={() => {
+                      resetSimulation();
+                      setEditingEnabled(false); // Reset also disables editing
+                    }}
+                  >
                     <RotateCcw className="h-4 w-4" />
                   </Button>
+                  <Button 
+                    variant={editingEnabled ? "default" : "outline"} 
+                    size="icon" 
+                    aria-label="Edit Mode" 
+                    onClick={() => {
+                      console.log('[ParametersPanel] 🖊️ Edit button clicked:', {
+                        currentEditingEnabled: editingEnabled,
+                        playing,
+                        hasEverPlayed,
+                      });
+                      
+                      if (editingEnabled) {
+                        console.log('[ParametersPanel] → Disabling edit mode');
+                        setEditingEnabled(false);
+                      } else {
+                        console.log('[ParametersPanel] → Enabling edit mode (stopping simulation)');
+                        setPlaying(false); // Stop simulation before editing
+                        setEditingEnabled(true);
+                      }
+                    }}
+                    disabled={playing || hasEverPlayed}
+                    title={
+                      playing 
+                        ? "Stop simulation to edit" 
+                        : hasEverPlayed 
+                          ? "Reset simulation to enable editing" 
+                          : editingEnabled 
+                            ? "Editing enabled" 
+                            : "Enable edit mode"
+                    }
+                  >
+                    <Box className="h-4 w-4" />
+                  </Button>
                 </div>
+                {editingEnabled && !playing && scene && (
+                  <p className="text-xs text-green-600 dark:text-green-400 font-medium">
+                    ✏️ Edit Mode: Click objects to select, double-click to drag
+                  </p>
+                )}
+                {playing && (
+                  <p className="text-xs text-blue-600 dark:text-blue-400 font-medium">
+                    ▶️ Simulation running
+                  </p>
+                )}
+                {!playing && !editingEnabled && hasEverPlayed && scene && (
+                  <p className="text-xs text-amber-600 dark:text-amber-400 font-medium">
+                    ⏸️ Paused: Press Reset to enable editing, or Play to continue
+                  </p>
+                )}
+                {!playing && !editingEnabled && !hasEverPlayed && scene && (
+                  <p className="text-xs text-muted-foreground">
+                    🎮 Ready: Press Play to run simulation or Edit to modify objects
+                  </p>
+                )}
+                
+                {/* Timeline Scrubber */}
+                {frames.length > 0 && (
+                  <div className="grid gap-2 pt-2 border-t">
+                    <div className="flex justify-between items-center">
+                      <Label htmlFor="timeline" className="text-xs font-medium">Timeline</Label>
+                      <span className="text-xs text-muted-foreground">
+                        Frame {currentIndex + 1} / {frames.length}
+                        {frames[currentIndex]?.t !== undefined && ` (${frames[currentIndex].t.toFixed(2)}s)`}
+                      </span>
+                    </div>
+                    <Slider
+                      id="timeline"
+                      value={[currentIndex]}
+                      min={0}
+                      max={Math.max(0, frames.length - 1)}
+                      step={1}
+                      onValueChange={(v) => {
+                        if (!playing) {
+                          setFrameIndex(v[0]);
+                        }
+                      }}
+                      disabled={playing}
+                      className="cursor-pointer"
+                    />
+                    <div className="flex justify-between text-[10px] text-muted-foreground">
+                      <span>0.00s</span>
+                      <span>{frames.length > 0 && frames[frames.length - 1]?.t !== undefined 
+                        ? `${frames[frames.length - 1].t.toFixed(2)}s` 
+                        : `${duration.toFixed(2)}s`}
+                      </span>
+                    </div>
+                  </div>
+                )}
               </div>
               <div className="space-y-6">{scope === 'global' && (
             <>
@@ -461,19 +710,29 @@ export default function ParametersPanel() {
               </div>
             </>
           )}
-          {scope === 'entity' && entities.length > 0 && (
+          {scope === 'entity' && scene?.bodies && scene.bodies.length > 0 && (
             <>
               {/* Entity Selector */}
               <div className="space-y-2">
                 <Label>Select Entity</Label>
-                <Select value={selectedEntityId ?? ''} onValueChange={setSelectedEntityId}>
+                <Select 
+                  value={normalizedSelectedEntityId || undefined} 
+                  onValueChange={handleEntitySelect}
+                >
                   <SelectTrigger>
-                    <SelectValue placeholder="Select an entity..." />
+                    <SelectValue placeholder="Select an entity...">
+                      {normalizedSelectedEntityId && (() => {
+                        // Display the body.id or segment_id
+                        const body = scene?.bodies?.find((b: any) => b.id === normalizedSelectedEntityId);
+                        return body?.id || normalizedSelectedEntityId;
+                      })()}
+                    </SelectValue>
                   </SelectTrigger>
                   <SelectContent>
-                    {entities.map((entity) => (
-                      <SelectItem key={entity.segment_id} value={entity.segment_id}>
-                        {entity.label} (ID: {entity.segment_id})
+                    {/* List all scene bodies as selectable entities */}
+                    {scene?.bodies?.map((body: any) => (
+                      <SelectItem key={body.id} value={body.id}>
+                        {body.id} {body.label ? `(${body.label})` : ''}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -481,13 +740,31 @@ export default function ParametersPanel() {
               </div>
 
               {/* Entity Parameters */}
-              {selectedEntityId && (() => {
-                const entity = entities.find(e => e.segment_id === selectedEntityId);
-                if (!entity) return null;
+              {normalizedSelectedEntityId && (() => {
+                // SIMPLIFIED: Find body directly by normalizedSelectedEntityId
+                // This works whether normalizedSelectedEntityId is a body.id or segment_id
+                const sceneBody = scene?.bodies?.find((b: any) => b.id === normalizedSelectedEntityId);
                 
-                // Get mass from scene.bodies (pure universal approach)
-                const sceneBody = scene?.bodies?.find((b: any) => b.id === entity.segment_id);
-                const currentMass = sceneBody?.mass_kg ?? 3.0; // Default 3kg if not found
+                if (!sceneBody) {
+                  console.warn(`[ParametersPanel] ⚠️ No scene body found for ID: ${normalizedSelectedEntityId}`);
+                  return (
+                    <div className="text-sm text-muted-foreground py-4">
+                      Selected entity not found in scene bodies.
+                      <div className="text-xs mt-2">
+                        Selected ID: <code>{normalizedSelectedEntityId}</code>
+                      </div>
+                    </div>
+                  );
+                }
+                
+                // Try to find matching entity for metadata (optional)
+                const entity = entities.find(e => e.segment_id === normalizedSelectedEntityId) || {
+                  segment_id: normalizedSelectedEntityId,
+                  label: sceneBody.label || 'Unknown',
+                  props: {}
+                };
+                
+                const currentMass = sceneBody?.mass_kg ?? 3.0;
 
                 return (
                   <div className="space-y-4">
@@ -547,17 +824,36 @@ export default function ParametersPanel() {
                         step={0.1} 
                         onValueChange={(v) => { 
                           const m = v[0];
-                          // Update scene body mass (universal approach only)
-                          if (scene?.bodies) {
-                            updateSceneAndResimulate((prev: any | null) => {
-                              if (!prev?.bodies) {
-                                return prev;
-                              }
-                              const updatedBodies = prev.bodies.map((b: any) =>
-                                b.id === entity.segment_id ? { ...b, mass_kg: m } : b,
-                              );
-                              return { ...prev, bodies: updatedBodies };
-                            });
+                          
+                          if (!playing && updateEntityCallback) {
+                            // Interactive Mode: Update Frontend Matter.js immediately
+                            // Backend sync happens automatically via debounced callback
+                            updateEntityCallback(entity.segment_id, { mass: m });
+                            // Optimistic local scene mutation (no resim during edit mode)
+                            if (editingEnabled) {
+                              updateBodyLocal(entity.segment_id, { mass_kg: m });
+                              setSceneModified(true);
+                            } else if (scene?.bodies) {
+                              // If not in edit mode, apply & resim immediately
+                              updateSceneAndResimulate((prev: any | null) => {
+                                if (!prev?.bodies) return prev;
+                                const updatedBodies = prev.bodies.map((b: any) =>
+                                  b.id === entity.segment_id ? { ...b, mass_kg: m } : b,
+                                );
+                                return { ...prev, bodies: updatedBodies };
+                              });
+                            }
+                          } else {
+                            // Playback Mode: Update scene (backend resimulation)
+                            if (scene?.bodies) {
+                              updateSceneAndResimulate((prev: any | null) => {
+                                if (!prev?.bodies) return prev;
+                                const updatedBodies = prev.bodies.map((b: any) =>
+                                  b.id === entity.segment_id ? { ...b, mass_kg: m } : b,
+                                );
+                                return { ...prev, bodies: updatedBodies };
+                              });
+                            }
                           }
                         }} 
                       />
@@ -567,54 +863,75 @@ export default function ParametersPanel() {
                     <div className="grid gap-2">
                       <div className="flex justify-between items-center">
                         <Label htmlFor={`friction-${entity.segment_id}`}>Friction</Label>
-                        <span className="text-sm text-muted-foreground">{(sceneBody?.material?.friction ?? friction).toFixed(2)}</span>
+                        <span className="text-sm text-muted-foreground">{friction.toFixed(2)}</span>
                       </div>
                       <Slider 
                         id={`friction-${entity.segment_id}`}
-                        value={[sceneBody?.material?.friction ?? friction]} 
+                        value={[friction]} 
                         min={0} 
                         max={1} 
-                        step={0.01} 
+                        step={0.05} 
+                        disabled={isUpdating}
                         onValueChange={(v) => { 
                           setFriction(v[0]);
-                          // Update scene body material
-                          if (scene?.bodies) {
-                            const frictionValue = v[0];
-                            updateSceneAndResimulate((prev: any | null) => {
-                              if (!prev?.bodies) {
-                                return prev;
-                              }
-                              const updatedBodies = prev.bodies.map((b: any) => {
-                                if (b.id !== entity.segment_id) {
-                                  return b;
-                                }
-                                const material = { ...(b.material ?? {}), friction: frictionValue };
-                                return { ...b, material };
+                          const frictionValue = v[0];
+                          
+                          if (!playing && updateEntityCallback) {
+                            // Interactive Mode: Update Frontend Matter.js immediately
+                            updateEntityCallback(entity.segment_id, { friction: frictionValue });
+                            if (editingEnabled) {
+                              updateBodyLocal(entity.segment_id, { material: { ...(sceneBody.material ?? {}), friction: frictionValue } });
+                              setSceneModified(true);
+                            } else if (scene?.bodies) {
+                              updateSceneAndResimulate((prev: any | null) => {
+                                if (!prev?.bodies) return prev;
+                                const updatedBodies = prev.bodies.map((b: any) => {
+                                  if (b.id !== entity.segment_id) return b;
+                                  const material = { ...(b.material ?? {}), friction: frictionValue };
+                                  return { ...b, material };
+                                });
+                                return { ...prev, bodies: updatedBodies };
                               });
-                              return { ...prev, bodies: updatedBodies };
-                            });
+                            }
+                          } else {
+                            // Playback Mode: Update scene (backend resimulation)
+                            if (scene?.bodies) {
+                              updateSceneAndResimulate((prev: any | null) => {
+                                if (!prev?.bodies) return prev;
+                                const updatedBodies = prev.bodies.map((b: any) => {
+                                  if (b.id !== entity.segment_id) return b;
+                                  const material = { ...(b.material ?? {}), friction: frictionValue };
+                                  return { ...b, material };
+                                });
+                                return { ...prev, bodies: updatedBodies };
+                              });
+                            }
                           }
                         }} 
                       />
                     </div>
-
+                    
                     {/* Restitution Parameter */}
                     <div className="grid gap-2">
                       <div className="flex justify-between items-center">
-                        <Label htmlFor={`restitution-${entity.segment_id}`}>Restitution (Bounciness)</Label>
-                        <span className="text-sm text-muted-foreground">{(sceneBody?.material?.restitution ?? entityRestitution).toFixed(2)}</span>
+                        <Label htmlFor={`restitution-${entity.segment_id}`}>Restitution (Bounce)</Label>
+                        <span className="text-sm text-muted-foreground">{restitution.toFixed(2)}</span>
                       </div>
                       <Slider 
                         id={`restitution-${entity.segment_id}`}
-                        value={[sceneBody?.material?.restitution ?? entityRestitution]} 
+                        value={[restitution]} 
                         min={0} 
                         max={1} 
-                        step={0.01} 
+                        step={0.05} 
+                        disabled={isUpdating}
                         onValueChange={(v) => { 
                           setEntityRestitution(v[0]);
                           // Update scene body material
-                          if (scene?.bodies) {
-                            const restitutionValue = v[0];
+                          const restitutionValue = v[0];
+                          if (editingEnabled) {
+                            updateBodyLocal(entity.segment_id, { material: { ...(sceneBody.material ?? {}), restitution: restitutionValue } });
+                            setSceneModified(true);
+                          } else if (scene?.bodies) {
                             updateSceneAndResimulate((prev: any | null) => {
                               if (!prev?.bodies) {
                                 return prev;
@@ -629,7 +946,13 @@ export default function ParametersPanel() {
                               return { ...prev, bodies: updatedBodies };
                             });
                           }
-                        }} 
+                        }}
+                        onValueCommit={(v) => {
+                          // Sync to backend when user finishes dragging slider
+                          if (!playing) {
+                            syncMaterialToBackend(entity.segment_id, { restitution: v[0] }, false);
+                          }
+                        }}
                       />
                     </div>
 
@@ -647,7 +970,22 @@ export default function ParametersPanel() {
                         step={0.1}
                         onValueChange={(v) => {
                           if (!selectedEntityId) return;
-                          handleVelocityMagnitudeChange(entity.segment_id, v[0]);
+                          if (editingEnabled) {
+                            // Optimistic only in edit mode
+                            const angleRad = degToRad(velocityState.angleDeg);
+                            const vx = v[0] * Math.cos(angleRad);
+                            const vy = v[0] * Math.sin(angleRad);
+                            updateBodyLocal(entity.segment_id, { velocity_m_s: [vx, vy] });
+                            setVelocityState(prev => ({
+                              ...prev,
+                              magnitude: v[0],
+                              vxText: formatVelocityText(vx),
+                              vyText: formatVelocityText(vy),
+                            }));
+                            setSceneModified(true);
+                          } else {
+                            handleVelocityMagnitudeChange(entity.segment_id, v[0]);
+                          }
                         }}
                       />
                       <div className="flex justify-between items-center">
@@ -662,7 +1000,22 @@ export default function ParametersPanel() {
                         step={1}
                         onValueChange={(v) => {
                           if (!selectedEntityId) return;
-                          handleVelocityAngleChange(entity.segment_id, v[0]);
+                          if (editingEnabled) {
+                            const normalized = normalizeAngleDeg(v[0]);
+                            const angleRad = degToRad(normalized);
+                            const vx = velocityState.magnitude * Math.cos(angleRad);
+                            const vy = velocityState.magnitude * Math.sin(angleRad);
+                            updateBodyLocal(entity.segment_id, { velocity_m_s: [vx, vy] });
+                            setVelocityState(prev => ({
+                              ...prev,
+                              angleDeg: normalized,
+                              vxText: formatVelocityText(vx),
+                              vyText: formatVelocityText(vy),
+                            }));
+                            setSceneModified(true);
+                          } else {
+                            handleVelocityAngleChange(entity.segment_id, v[0]);
+                          }
                         }}
                       />
                       <div className="grid gap-3">
@@ -677,7 +1030,18 @@ export default function ParametersPanel() {
                               inputMode="decimal"
                               value={velocityState.vxText}
                               onChange={(event) =>
-                                handleVelocityComponentInput(entity.segment_id, 'vx', event.target.value)
+                                editingEnabled ? (() => {
+                                  const value = event.target.value;
+                                  setVelocityState(prev => ({ ...prev, vxText: value }));
+                                  if (!isPartialNumberInput(value) && !isPartialNumberInput(velocityState.vyText)) {
+                                    const vxNum = parseFloat(value);
+                                    const vyNum = parseFloat(velocityState.vyText);
+                                    if (Number.isFinite(vxNum) && Number.isFinite(vyNum)) {
+                                      updateBodyLocal(entity.segment_id, { velocity_m_s: [vxNum, vyNum] });
+                                      setSceneModified(true);
+                                    }
+                                  }
+                                })() : handleVelocityComponentInput(entity.segment_id, 'vx', event.target.value)
                               }
                             />
                           </div>
@@ -690,7 +1054,18 @@ export default function ParametersPanel() {
                               inputMode="decimal"
                               value={velocityState.vyText}
                               onChange={(event) =>
-                                handleVelocityComponentInput(entity.segment_id, 'vy', event.target.value)
+                                editingEnabled ? (() => {
+                                  const value = event.target.value;
+                                  setVelocityState(prev => ({ ...prev, vyText: value }));
+                                  if (!isPartialNumberInput(value) && !isPartialNumberInput(velocityState.vxText)) {
+                                    const vyNum = parseFloat(value);
+                                    const vxNum = parseFloat(velocityState.vxText);
+                                    if (Number.isFinite(vxNum) && Number.isFinite(vyNum)) {
+                                      updateBodyLocal(entity.segment_id, { velocity_m_s: [vxNum, vyNum] });
+                                      setSceneModified(true);
+                                    }
+                                  }
+                                })() : handleVelocityComponentInput(entity.segment_id, 'vy', event.target.value)
                               }
                             />
                           </div>
@@ -732,15 +1107,18 @@ export default function ParametersPanel() {
                         step={0.1}
                         onValueChange={(v) => {
                           const av = v[0];
-                          if (scene?.bodies) {
-                            updateSceneAndResimulate((prev: any | null) => {
-                              if (!prev?.bodies) return prev;
-                              const updatedBodies = prev.bodies.map((b: any) =>
-                                b.id === entity.segment_id ? { ...b, angular_velocity_rad_s: av } : b,
-                              );
-                              return { ...prev, bodies: updatedBodies };
-                            });
-                          }
+                              if (editingEnabled) {
+                                updateBodyLocal(entity.segment_id, { angular_velocity_rad_s: av } as any);
+                                setSceneModified(true);
+                              } else if (scene?.bodies) {
+                                updateSceneAndResimulate((prev: any | null) => {
+                                  if (!prev?.bodies) return prev;
+                                  const updatedBodies = prev.bodies.map((b: any) =>
+                                    b.id === entity.segment_id ? { ...b, angular_velocity_rad_s: av } : b,
+                                  );
+                                  return { ...prev, bodies: updatedBodies };
+                                });
+                              }
                         }}
                       />
                     </div>
